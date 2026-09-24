@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\AuthFailure;
 use App\Http\ApiResponse;
 use App\Http\Middleware\ApiEnvelope;
 use Illuminate\Foundation\Application;
@@ -41,6 +42,10 @@ return Application::configure(basePath: dirname(__DIR__))
             function (Throwable $exception, Request $request) {
                 if (! $request->is('api', 'api/*')) {
                     return null;
+                }
+
+                if ($exception instanceof AuthFailure) {
+                    return $exception->response();
                 }
 
                 if ($exception instanceof HttpExceptionInterface) {

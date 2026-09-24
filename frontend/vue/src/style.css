@@ -21,12 +21,20 @@ a:hover, button:hover:not(:disabled) { color: #4d6548; }
 .site-header { background: #fff; border-bottom: 1px solid #dddcd5; }
 .header-inner { width: min(100% - 48px, 1360px); margin: auto; min-height: 88px; display: flex; align-items: center; justify-content: space-between; gap: 28px; }
 .brand-row, .version-area, .visitor-nav, .current-versions { display: flex; align-items: center; }
-.brand-row { gap: 38px; min-width: 0; }
-.brand { display: inline-flex; align-items: center; min-height: 44px; font-size: 2rem; font-weight: 750; letter-spacing: .08em; text-decoration: none; white-space: nowrap; }
-.visitor-nav { gap: 26px; border-left: 1px solid #d5d8d0; padding-left: 32px; }
-.visitor-nav a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; text-decoration: none; white-space: nowrap; }
+.brand-row { flex: 1 1 auto; gap: 38px; min-width: 0; }
+.brand { display: inline-flex; flex-shrink: 0; align-items: center; min-height: 44px; font-size: 2rem; font-weight: 750; letter-spacing: .08em; text-decoration: none; white-space: nowrap; }
+.visitor-nav { flex: 1 1 auto; min-width: 0; gap: 26px; border-left: 1px solid #d5d8d0; padding-left: 32px; }
+.visitor-nav a, .visitor-nav .account-name { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; text-decoration: none; }
+.visitor-nav a { flex-shrink: 0; white-space: nowrap; }
 .visitor-nav a[aria-current="page"] { color: #4b6248; font-weight: 700; text-decoration: underline; }
-.version-area { gap: 16px; }
+.visitor-nav .account-name { flex: 1 1 auto; min-width: 0; gap: 3px; font-weight: 700; }
+.account-nickname { min-width: 0; overflow-wrap: anywhere; }
+.nav-action, .secondary-button, .inline-button { min-height: 44px; padding: 8px 14px; border: 1px solid #536c4f; border-radius: 3px; background: #fff; color: #385238; font-weight: 700; }
+.nav-action { flex-shrink: 0; }
+.nav-action:disabled { opacity: .68; }
+.inline-button { padding-inline: 6px; border: 0; background: none; text-decoration: underline; }
+.lock-note { margin: 16px 0 0; color: #852f2a; font-variant-numeric: tabular-nums; }
+.version-area { flex: 0 0 auto; gap: 16px; }
 .current-versions { gap: 18px; flex-wrap: wrap; color: #49564d; font-size: .875rem; }
 .current-versions span { white-space: nowrap; }
 .current-versions strong { margin-left: 6px; color: #28372f; font-weight: 650; }
@@ -89,7 +97,8 @@ input:disabled { background: #f1f1ee; }
   .brand-row { display: grid; grid-template-columns: 1fr auto; }
   .visitor-nav { display: none; grid-column: 1 / -1; margin: 0; padding: 12px 0 6px; border: 0; border-top: 1px solid #d5d8d0; background: #fff; }
   .visitor-nav.is-open { display: flex; align-items: stretch; flex-direction: column; gap: 0; }
-  .visitor-nav a { display: flex; align-items: center; min-height: 44px; }
+  .visitor-nav a, .visitor-nav .account-name { display: flex; align-items: center; min-height: 44px; }
+  .nav-action { align-self: flex-start; }
   .close-link { display: block; align-self: flex-start; margin-top: 8px; }
   .current-versions { gap: 2px 16px; }
   .version-panel-inner { flex-direction: column; gap: 18px; }

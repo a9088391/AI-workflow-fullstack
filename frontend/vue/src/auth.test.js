@@ -1,0 +1,81 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { API_BASE, SESSION_KEY, clearSession, formatCountdown, interpretLogin, interpretLogout, interpretMe, readSession, remainingSeconds, retryAfterSeconds, saveSession, validateLogin } from './auth.js'
+
+const account = { id: 1, email: 'demo@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
+const login = { success: true, message: 'OK', data: { access_token: 'token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: account } }
+
+// 模擬同分頁跨前端的 Web Storage，確認只保存目前後端與原到期時間。
+function storage() {
+  const values = new Map()
+  return {
+    values,
+    // 模擬瀏覽器未找到 key 時的 null，而不是 Map 的 undefined。
+    getItem(key) { return values.get(key) ?? null },
+    // 保存測試資料以檢查實際 schema。
+    setItem(key, value) { values.set(key, value) },
+    // 檢查壞資料與登出後的移除行為。
+    removeItem(key) { values.delete(key) },
+  }
+}
+
+// 壞資料與錯後端不得讓頁面跳過 /api/me；正確資料須保留原到期時間。
+test('session schema and corruption', () => {
+  const s = storage()
+  saveSession(s, 'token', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: API_BASE, accessToken: 'token', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(s.values.get(SESSION_KEY).includes('password'), false)
+  s.values.set(SESSION_KEY, '{broken')
+  assert.equal(readSession(s), null)
+  assert.equal(s.values.has(SESSION_KEY), false)
+  s.values.set(SESSION_KEY, JSON.stringify({ backend: API_BASE, accessToken: 'token', expiresAt: '2026-09-24 18:00:00', password: 'forbidden' }))
+  assert.equal(readSession(s), null)
+  s.values.set(SESSION_KEY, JSON.stringify({ backend: 'http://localhost:8082', accessToken: 'token', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+  assert.equal(s.values.has(SESSION_KEY), false)
+  clearSession(s)
+})
+
+// Email 僅折 ASCII／U+0020；密碼不裁切，格式錯誤不應送進鎖定計數。
+test('login form validation', () => {
+  assert.deepEqual(validateLogin({ email: ' A@EXAMPLE.COM ', password: 'abcd' }), { email: 'a@example.com', errors: {} })
+  assert.ok(validateLogin({ email: '\tA@EXAMPLE.COM\t', password: 'abcd' }).errors.email)
+  assert.ok(validateLogin({ email: 'a@example.com', password: ' abcd' }).errors.password)
+  assert.ok(validateLogin({ email: 'a@example.com', password: 'A'.repeat(17) }).errors.password)
+})
+
+// 完整登入與直接 Account /api/me 才能授權；登出需空 data 確認。
+test('auth envelopes reject incomplete success', () => {
+  assert.equal(interpretLogin(200, login, null).ok, true)
+  assert.equal(interpretLogin(200, { ...login, data: { ...login.data, user: { ...account, role: 'owner' } } }, null).ok, false)
+  assert.equal(interpretLogin(200, { ...login, data: { ...login.data, token_type: 'Token' } }, null).ok, false)
+  assert.equal(interpretMe(200, { success: true, message: 'OK', data: account }).ok, true)
+  assert.equal(interpretMe(200, { success: true, message: 'OK', data: { user: account } }).ok, false)
+  assert.equal(interpretLogout(200, { success: true, message: 'OK', data: {} }).ok, true)
+  assert.equal(interpretLogout(200, { success: true, message: 'OK', data: { revoked: true } }).ok, false)
+  assert.equal(interpretLogout(500, { success: false, error_code: 'E9999' }).ok, false)
+})
+
+// 429 標頭僅正整數有效；倒數按經過時間計算，歸零才可重新操作。
+test('lockout header and elapsed countdown', () => {
+  for (const invalid of [null, '0', '-1', '+1', '1.5', ' 5', '5 ', '1e2', 'Wed, 24 Sep 2026 10:00:00 GMT']) assert.equal(retryAfterSeconds(invalid), null)
+  assert.equal(retryAfterSeconds('300'), 300)
+  assert.equal(interpretLogin(429, { success: false, error_code: 'E0105', log_id: 'trace' }, '300').retryAfter, 300)
+  assert.equal(remainingSeconds(300000, 1500), 299)
+  assert.equal(remainingSeconds(300000, 300000), 0)
+  assert.equal(formatCountdown(299), '04:59')
+  assert.equal(formatCountdown(3600), '01:00:00')
+})
+
+// 欄位錯誤可修正，錯密碼、停用和失效憑證須保持不同處置代碼。
+test('auth failure codes and safe details', () => {
+  const invalid = interpretLogin(422, { success: false, error_code: 'E0001', errors: { email: ['請輸入符合格式的 Email'] }, log_id: 'trace' }, null)
+  assert.deepEqual(invalid.errors, { email: ['請輸入符合格式的 Email'] })
+  assert.equal(invalid.logId, 'trace')
+  assert.equal(interpretLogin(401, { success: false, error_code: 'E0101' }, null).code, 'E0101')
+  assert.equal(interpretMe(401, { success: false, error_code: 'E0002' }).code, 'E0002')
+  assert.equal(interpretMe(403, { success: false, error_code: 'E0102' }).code, 'E0102')
+  assert.equal(interpretMe(500, { success: false, error_code: 'E0104' }).code, 'E0104')
+  assert.match(interpretMe(500, { success: false, error_code: 'E0104' }).message, /後台認證設定異常/)
+  assert.match(interpretLogin(422, { success: false, error_code: 'E0001', errors: { _body: ['Body 須為 JSON object'] } }, null).message, /Body 須為 JSON object/)
+})

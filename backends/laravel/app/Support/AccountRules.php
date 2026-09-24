@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Exceptions\AuthFailure;
+
 class AccountRules
 {
     /** 僅裁切 Email 前後 ASCII 空格並轉小寫，保留其他空白以符合共同帳號契約。 */
@@ -35,5 +37,21 @@ class AccountRules
     public static function hashPassword(string $password): string
     {
         return password_hash($password, PASSWORD_ARGON2ID, ['memory_cost' => 19456, 'time_cost' => 2, 'threads' => 1]);
+    }
+
+    /** 先確認共用 PHC 格式與成本，再用原生 Argon2id 驗密碼；毀損不是登入失敗事件。 */
+    public static function verifyPassword(string $password, string $hash): bool
+    {
+        if (preg_match('/\A\$argon2id\$v=19\$m=19456,t=2,p=1\$([A-Za-z0-9+\/]{22})\$([A-Za-z0-9+\/]{43})\z/D', $hash, $parts) !== 1) {
+            throw new AuthFailure('E0104');
+        }
+        foreach ([1 => 16, 2 => 32] as $index => $length) {
+            $bytes = base64_decode($parts[$index], true);
+            if ($bytes === false || strlen($bytes) !== $length || rtrim(base64_encode($bytes), '=') !== $parts[$index]) {
+                throw new AuthFailure('E0104');
+            }
+        }
+
+        return password_verify($password, $hash);
     }
 }

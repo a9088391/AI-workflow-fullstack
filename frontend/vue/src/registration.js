@@ -14,7 +14,7 @@ function validDomainLabel(label) {
 }
 
 // 依核准格式逐段檢查 Email，禁止寬鬆的瀏覽器原生格式悄悄放行。
-function validEmail(value) {
+export function validEmail(value) {
   // 正規化後必須完全是 ASCII，且整個地址不得超過共用上限。
   if (value.length > 254 || !/^[\x00-\x7F]+$/.test(value)) return false
   const parts = value.split('@')
