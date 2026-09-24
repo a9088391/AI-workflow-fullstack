@@ -1,0 +1,9 @@
+.git
+.scratch
+.local
+docs
+**/vendor
+**/node_modules
+**/.env
+**/.env.pending
+**/storage/logs/*.log

@@ -1,0 +1,8 @@
+/.env
+/.env.pending
+/.local/
+/backends/laravel/vendor/
+/backends/laravel/.env
+/backends/laravel/.phpunit.cache
+/backends/laravel/storage/logs/*.log
+/backends/laravel/bootstrap/cache/*.php
