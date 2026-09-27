@@ -7,6 +7,7 @@ import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as auth from './auth.js'
 import * as registration from './registration.js'
+import * as articles from './articles.js'
 
 // 執行實際 App script 與 Vue reactivity，只替換瀏覽器及 HTTP 邊界以控制回應順序。
 function loginPage() {
@@ -24,7 +25,7 @@ function loginPage() {
   }
   auth.saveSession(sessionStorage, 'retained-token', '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration,
+    ...vue, ...auth, ...registration, ...articles,
     AbortController, URLSearchParams, performance, console,
     setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage,
     document: {},

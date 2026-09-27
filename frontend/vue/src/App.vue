@@ -2,15 +2,35 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { API_BASE, clearSession, formatCountdown, interpretLogin, interpretLogout, interpretMe, readSession, remainingSeconds, saveSession, validateLogin } from './auth.js'
 import { interpretRegistrationResponse, validateRegistration } from './registration.js'
+import { articleCreated, articleFailure, articlePage, backendName, localPage, readArticle, readArticleList, validateArticle } from './articles.js'
 
 const path = window.location.pathname
-const page = path === '/vue/' ? 'articles' : path === '/vue/register' ? 'register' : path === '/vue/login' ? 'login' : 'missing'
+const page = articlePage(path)
 // 各路徑使用自己的分頁名稱，避免重載後把文章或找不到頁面誤認為註冊。
-document.title = { articles: '文章集｜文章入口', register: '文章集｜註冊會員', login: '文章集｜會員登入', missing: '文章集｜找不到頁面' }[page]
+document.title = { articles: '文章集｜文章列表', article: '文章集｜閱讀文章', 'article-new': '文章集｜發表文章', 'my-articles': '文章集｜我的文章', register: '文章集｜註冊會員', login: '文章集｜會員登入', missing: '文章集｜找不到頁面' }[page]
 const registered = page === 'login' && new URLSearchParams(window.location.search).get('registered') === '1'
+// 成功提示只由已確認建立後的轉頁參數啟用，並限制在「我的文章」頁。
+const published = page === 'my-articles' && new URLSearchParams(window.location.search).get('published') === '1'
+const target = new URLSearchParams(window.location.search).get('return_to')
+const returnTo = target && localPage(target) && target !== '/vue/login' && target !== '/vue/register' ? target : '/vue/'
+const protectedPage = page === 'article-new' || page === 'my-articles'
+const requestedId = page === 'article' ? Number(path.slice('/vue/articles/'.length)) : null
+const rawPage = new URLSearchParams(window.location.search).get('page')
+const listPage = page === 'articles' || page === 'my-articles' ? rawPage && /^[1-9][0-9]*$/.test(rawPage) && Number.isSafeInteger(Number(rawPage)) ? Number(rawPage) : 1 : 1
 const email = ref('')
 const password = ref('')
 const nickname = ref('')
+const articleTitle = ref('')
+const articleBody = ref('')
+const articleData = ref(null)
+const articleList = ref(null)
+const contentLoading = ref(false)
+const contentPending = ref(false)
+const contentReady = ref(false)
+const reLogin = ref(false)
+const disabledAccount = ref(false)
+const writeUnknown = ref(false)
+let draftOwner = null
 const errors = ref({})
 const summary = ref('')
 const summaryCode = ref('')
@@ -37,6 +57,9 @@ let authTimeout = null
 let authEpoch = 0
 let lockTimer = null
 let alive = false
+let contentController = null
+let contentTimeout = null
+let contentEpoch = 0
 
 // 倒數是記憶體狀態；用單調時鐘校正分頁背景節流後的實際剩餘時間。
 const lockedSeconds = computed(() => lockDeadline.value ? remainingSeconds(lockDeadline.value, lockNow.value) : 0)
@@ -46,9 +69,9 @@ const locked = computed(() => lockedSeconds.value > 0)
 const lockText = computed(() => locked.value ? `登入暫時鎖定，約剩 ${formatCountdown(lockedSeconds.value)}` : lockNotice.value)
 
 // 草稿僅存在目前頁面記憶體；任何未送出內容都應觸發離頁確認。
-const hasDraft = computed(() => page === 'register' && !submitted && Boolean(email.value || password.value || nickname.value))
-const fieldOrder = ['email', 'password', 'nickname']
-const fieldNames = { email: 'Email', password: '密碼', nickname: '暱稱' }
+const hasDraft = computed(() => !submitted && (page === 'register' && Boolean(email.value || password.value || nickname.value) || page === 'article-new' && Boolean(articleTitle.value || articleBody.value)))
+const fieldOrder = ['email', 'password', 'nickname', 'title', 'body']
+const fieldNames = { email: 'Email', password: '密碼', nickname: '暱稱', title: '標題', body: '內文' }
 
 // 摘要只列出有訊息的欄位，避免空的後端陣列產生無作用連結。
 function hasFieldError(field) {
@@ -71,6 +94,127 @@ function stopRequest() {
   timeout = null
   requestController?.abort()
   requestController = null
+}
+
+// 切頁、登出或換帳號後取消文章請求；epoch 阻擋不遵守 abort 的舊回應。
+function stopContentRequest() {
+  contentEpoch += 1
+  if (contentTimeout) clearTimeout(contentTimeout)
+  contentTimeout = null
+  contentController?.abort()
+  contentController = null
+}
+
+// 每次文章讀寫只保留目前請求，逾時後仍讓使用者自行查證寫入結果。
+function startContentRequest() {
+  stopContentRequest()
+  contentController = new AbortController()
+  const controller = contentController
+  const epoch = contentEpoch
+  // 定時取消前端等待；寫入是否完成仍以伺服器回應或查證結果為準。
+  contentTimeout = setTimeout(() => controller.abort(), 20000)
+  return { controller, epoch }
+}
+
+// 回應必須屬於目前頁面與目前帳號，避免舊資料重新出現。
+function currentContentRequest(request, token) {
+  return alive && contentController === request.controller && contentEpoch === request.epoch && credential.value?.accessToken === token
+}
+
+// 只清理仍屬目前操作的計時器與取消控制。
+function finishContentRequest(request, token) {
+  if (!currentContentRequest(request, token)) return
+  if (contentTimeout) clearTimeout(contentTimeout)
+  contentTimeout = null
+  contentController = null
+}
+
+// 列表與詳情沿同一讀取流程；驗證過的 JWT 才附上，失效不能悄悄改為訪客。
+async function loadContent() {
+  if (!['articles', 'article', 'my-articles'].includes(page) || contentLoading.value || contentPending.value || authChecking.value || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value || protectedPage && !account.value || credential.value && !account.value) return
+  contentLoading.value = true
+  contentReady.value = false
+  articleData.value = null
+  articleList.value = null
+  summary.value = ''
+  const request = startContentRequest()
+  const token = credential.value?.accessToken
+  const endpoint = page === 'article' ? `/api/articles/${requestedId}` : page === 'my-articles' ? '/api/me/articles' : '/api/articles'
+  const query = page === 'article' ? '' : `?page=${listPage}&per_page=20`
+  try {
+    const response = await fetch(`${API_BASE}${endpoint}${query}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: request.controller.signal })
+    const body = await response.json()
+    if (!currentContentRequest(request, token)) return
+    if (response.status === 200 && body?.success === true) {
+      const data = page === 'article' ? readArticle(response.status, body, requestedId) : readArticleList(response.status, body, listPage)
+      if (!data) { await showError('伺服器回應不完整，請手動重新讀取。'); return }
+      if (page === 'article') articleData.value = data
+      else articleList.value = data
+      contentReady.value = true
+      return
+    }
+    const result = articleFailure(body)
+    if (response.status === 401 && result.code === 'E0002') {
+      forgetCredential()
+      reLogin.value = protectedPage
+    } else if (response.status === 403 && result.code === 'E0102') {
+      forgetCredential()
+      disabledAccount.value = true
+    }
+    await showError(result.message, result.errors, result.logId, result.code)
+  } catch {
+    if (currentContentRequest(request, token)) await showError('讀取失敗或伺服器回應不完整，請手動重試。')
+  } finally {
+    if (currentContentRequest(request, token)) {
+      contentLoading.value = false
+      finishContentRequest(request, token)
+    } else if (alive && !contentController) contentLoading.value = false
+  }
+}
+
+// 發文僅送 title/body；確認 201 空 data 後才帶提示回我的文章第一頁，失敗保留草稿。
+async function submitArticle() {
+  if (page !== 'article-new' || contentPending.value || authChecking.value || !account.value || !credential.value || reLogin.value || disabledAccount.value) return
+  const checked = validateArticle({ title: articleTitle.value, body: articleBody.value })
+  if (Object.keys(checked).length) { await showError('欄位資料不正確，請確認後再送出', checked); return }
+  contentPending.value = true
+  writeUnknown.value = false
+  summary.value = ''
+  errors.value = {}
+  logId.value = ''
+  const request = startContentRequest()
+  const token = credential.value.accessToken
+  try {
+    const response = await fetch(`${API_BASE}/api/articles`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ title: articleTitle.value, body: articleBody.value }), signal: request.controller.signal })
+    const body = await response.json()
+    if (!currentContentRequest(request, token)) return
+    if (articleCreated(response.status, body)) {
+      submitted = true
+      window.location.assign('/vue/me/articles?published=1')
+      return
+    }
+    const result = articleFailure(body)
+    if (response.status >= 500 || response.status === 201) writeUnknown.value = true
+    if (response.status === 401 && result.code === 'E0002') {
+      draftOwner = account.value.id
+      forgetCredential()
+      reLogin.value = true
+    } else if (response.status === 403 && result.code === 'E0102') {
+      forgetCredential()
+      disabledAccount.value = true
+    }
+    await showError(result.message, result.errors, result.logId, result.code)
+  } catch {
+    if (currentContentRequest(request, token)) {
+      writeUnknown.value = true
+      await showError('無法確認發文結果；請先到我的文章查證，再決定是否手動重試。')
+    }
+  } finally {
+    if (currentContentRequest(request, token)) {
+      contentPending.value = false
+      finishContentRequest(request, token)
+    } else if (alive && !contentController) contentPending.value = false
+  }
 }
 
 // 離頁或下一次認證請求會撤銷舊回應；epoch 再擋住未遵守 abort 的完成事件。
@@ -140,7 +284,7 @@ function clearLock() {
 
 // 改變帳密使前次請求失效；解鎖後只在更換 Email 時清除該帳號的舊鎖定訊息。
 watch([email, password], ([nextEmail], [previousEmail]) => {
-  if (page !== 'login') return
+  if (page !== 'login' && !reLogin.value) return
   if (pending.value) {
     stopAuthRequest()
     pending.value = false
@@ -260,6 +404,12 @@ async function submitRegistration() {
 
 // 停用或憑證失效會立刻隱藏已授權畫面，避免下次重載再沿用舊 JWT。
 function forgetCredential() {
+  stopContentRequest()
+  contentLoading.value = false
+  contentPending.value = false
+  articleData.value = null
+  articleList.value = null
+  contentReady.value = false
   account.value = null
   credential.value = null
   try { clearSession(sessionStorage) } catch { /* 儲存不可用時，仍先撤銷畫面授權。 */ }
@@ -268,7 +418,9 @@ function forgetCredential() {
 // 重新整理只能從保存的 token 嘗試驗證，GET /api/me 成功前不顯示帳號權限。
 async function verifyAccount() {
   // 認證共用取消機制；重驗不得中斷登入或登出，否則舊操作的等待狀態無法正常結束。
-  if (!credential.value || authChecking.value || pending.value || logoutPending.value) return
+  if (!credential.value || authChecking.value || pending.value || logoutPending.value || contentPending.value) return
+  const previousAccount = account.value
+  if (page === 'article-new' && previousAccount && hasDraft.value) draftOwner = previousAccount.id
   authChecking.value = true
   account.value = null
   summary.value = ''
@@ -280,11 +432,24 @@ async function verifyAccount() {
     if (!currentAuthRequest(request) || credential.value?.accessToken !== token) return
     const result = interpretMe(response.status, body)
     if (result.ok) {
+      if (page === 'article-new' && draftOwner !== null && draftOwner !== result.account.id) {
+        articleTitle.value = ''
+        articleBody.value = ''
+        await showError('目前登入帳號已變更，原帳號草稿已清除；請重新輸入。')
+      }
+      if (page === 'article-new') draftOwner = result.account.id
       account.value = result.account
-      if (page === 'login') window.location.assign('/vue/')
+      if (page === 'login') window.location.assign(returnTo)
     } else {
-      if ((response.status === 401 && result.code === 'E0002') || (response.status === 403 && result.code === 'E0102')) forgetCredential()
-      await showError(result.message, {}, result.logId)
+      if (response.status === 401 && result.code === 'E0002') {
+        if (page === 'article-new' && previousAccount) draftOwner = previousAccount.id
+        forgetCredential()
+        reLogin.value = protectedPage
+      } else if (response.status === 403 && result.code === 'E0102') {
+        forgetCredential()
+        disabledAccount.value = true
+      }
+      await showError(result.message, {}, result.logId, result.code)
     }
   } catch {
     if (currentAuthRequest(request)) await showError('目前無法確認登入狀態，憑證已保留；請手動重新驗證。')
@@ -292,13 +457,14 @@ async function verifyAccount() {
     if (currentAuthRequest(request)) {
       authChecking.value = false
       finishAuthRequest(request)
+      if (account.value && page !== 'login') loadContent()
     }
   }
 }
 
 // 只有格式合法、伺服器完整成功且憑證已保存，才進入已登入入口。
 async function submitLogin() {
-  if (pending.value || locked.value || authChecking.value) return
+  if (pending.value || locked.value || authChecking.value || !((page === 'login') || (protectedPage && reLogin.value))) return
   const checked = validateLogin({ email: email.value, password: password.value })
   if (Object.keys(checked.errors).length) {
     await showError('欄位資料不正確，請確認後再送出', checked.errors)
@@ -333,7 +499,19 @@ async function submitLogin() {
       credential.value = { backend: API_BASE, accessToken: result.accessToken, expiresAt: result.expiresAt }
       account.value = result.account
       clearLock()
-      window.location.assign('/vue/')
+      if (page === 'login') window.location.assign(returnTo)
+      else {
+        reLogin.value = false
+        if (draftOwner !== null && draftOwner !== result.account.id) {
+          articleTitle.value = ''
+          articleBody.value = ''
+          await showError('已登入不同帳號，原帳號草稿已清除；請重新輸入。')
+        } else {
+          summary.value = ''
+          if (page === 'my-articles') loadContent()
+        }
+        draftOwner = result.account.id
+      }
       return
     }
     if (response.status === 403 && result.code === 'E0102') {
@@ -354,7 +532,9 @@ async function submitLogin() {
 
 // 伺服器確認撤銷前保留憑證；失敗時明示未登出並讓使用者手動重試。
 async function submitLogout() {
-  if (logoutPending.value || !account.value || !credential.value) return
+  if (logoutPending.value || contentPending.value || !account.value || !credential.value) return
+  // 先讓使用者決定是否捨棄純記憶體草稿，取消時不能先撤銷伺服器憑證。
+  if (hasDraft.value && !window.confirm('尚有未送出的內容，確定登出並捨棄嗎？')) return
   logoutPending.value = true
   summary.value = ''
   const request = startAuthRequest()
@@ -366,12 +546,18 @@ async function submitLogout() {
     const result = interpretLogout(response.status, body)
     if (result.ok) {
       forgetCredential()
+      submitted = true
       window.location.assign('/vue/login')
       return
     }
     const invalidCredential = (response.status === 401 && result.code === 'E0002') || (response.status === 403 && result.code === 'E0102')
-    if (invalidCredential) forgetCredential()
-    await showError(invalidCredential ? result.message : `登出未完成。${result.message}`, {}, result.logId)
+    if (invalidCredential) {
+      if (page === 'article-new' && hasDraft.value) draftOwner = account.value.id
+      forgetCredential()
+      reLogin.value = response.status === 401 && protectedPage
+      disabledAccount.value = response.status === 403
+    }
+    await showError(invalidCredential ? result.message : `登出未完成。${result.message}`, {}, result.logId, result.code)
   } catch {
     if (currentAuthRequest(request)) await showError('登出未完成：連線中斷或伺服器回應不完整；憑證已保留，請手動重試。')
   } finally {
@@ -400,6 +586,8 @@ onMounted(() => {
   window.addEventListener('pageshow', onPageShow)
   try { credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
   if (credential.value) verifyAccount()
+  else if (protectedPage) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
+  else loadContent()
 })
 
 // 導覽離頁時同時停止表單與認證請求，以及純記憶體鎖定倒數。
@@ -407,6 +595,7 @@ function onPageHide() {
   alive = false
   stopRequest()
   stopAuthRequest()
+  stopContentRequest()
   if (lockTimer) clearInterval(lockTimer)
   lockTimer = null
 }
@@ -434,7 +623,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -456,7 +645,7 @@ onBeforeUnmount(() => {
     <main id="main-content" class="main-content">
       <section v-if="page === 'register'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
-        <p class="intro">建立帳號後即可登入。文章與留言功能將陸續提供。</p>
+        <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
           <h2 id="error-title">{{ summary }}</h2>
           <ul v-if="Object.keys(errors).length">
@@ -474,17 +663,28 @@ onBeforeUnmount(() => {
         <p class="form-footer">已有帳號？<a href="/vue/login">前往登入</a></p>
       </section>
 
-      <section v-else-if="page === 'articles'" class="message-page" aria-labelledby="page-title">
-        <h1 id="page-title">文章集</h1>
-        <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title"><h2 id="error-title">{{ summary }}</h2><div v-if="logId" class="trace"><span>追蹤編號：<span class="trace-id">{{ logId }}</span></span><button type="button" @click="copyLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
+      <section v-else-if="page === 'articles' || page === 'article' || page === 'article-new' || page === 'my-articles'" class="reading-page" aria-labelledby="page-title">
+        <div class="reading-heading"><div><p class="eyebrow">文章集 / {{ page === 'articles' ? '公開閱讀' : page === 'article' ? '文章詳情' : page === 'article-new' ? '會員發表' : '會員文章' }}</p><h1 id="page-title">{{ page === 'articles' ? '最新文章' : page === 'article' ? '閱讀文章' : page === 'article-new' ? '發表文章' : '我的文章' }}</h1></div><a v-if="account && page === 'articles'" class="secondary-button" href="/vue/articles/new">發表文章</a></div>
+        <p v-if="published && account" class="success-note" role="status">文章已發表，以下為我的文章。</p>
+        <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title"><h2 id="error-title">{{ summary }}</h2><ul v-if="errorFields.length"><li v-for="name in errorFields" :key="name"><button type="button" @click="focusField(name)">{{ fieldNames[name] }}：{{ errors[name].join('；') }}</button></li></ul><div v-if="logId" class="trace"><span>追蹤編號：<span class="trace-id">{{ logId }}</span></span><button type="button" @click="copyLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
         <p v-if="authChecking" role="status">正在確認登入狀態，請稍候…</p>
-        <template v-else-if="account"><p>歡迎，{{ account.nickname }}{{ account.role === 'admin' ? '（管理員）' : '' }}。</p><p>文章列表尚未提供。</p></template>
-        <template v-else-if="credential"><p>目前尚未確認登入狀態，請手動重新驗證。</p><button type="button" class="secondary-button" @click="verifyAccount">重新驗證登入</button></template>
-        <template v-else><p>文章列表尚未提供。您現在可以先登入或建立會員帳號。</p><a class="text-link" href="/vue/login">前往登入</a><a class="text-link" href="/vue/register">前往註冊</a></template>
+        <p v-if="contentLoading" role="status">正在讀取文章，請稍候…</p>
+        <p v-if="credential && !account && !authChecking && !reLogin" class="pending-note">目前無法確認登入狀態；憑證已保留。<button type="button" class="inline-button" @click="verifyAccount">重新驗證登入</button></p>
+        <p v-if="!credential && !reLogin && !disabledAccount && summaryCode === 'E0002'">請重新登入後手動讀取。<a class="text-link" :href="`/vue/login?return_to=${encodeURIComponent(path)}`">前往登入</a></p>
+        <template v-if="reLogin && !disabledAccount">
+          <p class="pending-note">原頁內容會暫留在此頁記憶體。請重新登入；成功後由您手動送出。</p>
+          <form class="relogin-form" novalidate @submit.prevent="submitLogin"><div class="field"><label for="email">Email</label><input id="email" v-model="email" type="email" autocomplete="email" :disabled="pending || locked" :aria-invalid="Boolean(errors.email)" /><p v-if="errors.email" class="field-error">{{ errors.email.join('；') }}</p></div><div class="field"><label for="password">密碼</label><input id="password" v-model="password" type="password" autocomplete="current-password" :disabled="pending || locked" :aria-invalid="Boolean(errors.password)" /><p v-if="errors.password" class="field-error">{{ errors.password.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="pending || locked">{{ pending ? '登入處理中…' : '重新登入' }}</button><p v-if="lockText" class="lock-note" aria-live="off">{{ lockText }}</p></form>
+        </template>
+        <template v-if="page === 'articles' || page === 'my-articles'">
+          <div v-if="articleList && contentReady" class="article-results"><p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁<span v-if="articleList.pagination.total_pages">／共 {{ articleList.pagination.total_pages }} 頁</span></p><p v-if="!articleList.list.length" role="status">{{ articleList.pagination.total && listPage > articleList.pagination.total_pages ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。' }}</p><ol v-else class="article-list"><li v-for="item in articleList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><h2><a :href="`/vue/articles/${item.id}`">{{ item.title }}</a></h2><p class="article-excerpt">{{ item.body }}</p><a class="read-link" :href="`/vue/articles/${item.id}`">閱讀全文</a></li></ol><nav v-if="articleList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="文章分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < articleList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="articleList.pagination.total && listPage > articleList.pagination.total_pages" :href="path">回第一頁</a></nav></div>
+          <button v-else-if="!contentLoading && !authChecking && !reLogin && !disabledAccount && summaryCode !== 'E0002' && (!protectedPage || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button>
+        </template>
+        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p><a class="text-link" href="/vue/">返回文章列表</a></p></template>
+        <template v-else-if="page === 'article-new'"><p class="intro">標題與內文會以純文字公開顯示。發表後可在我的文章查看。</p><form novalidate @submit.prevent="submitArticle"><div class="field"><label for="title">標題</label><input id="title" v-model="articleTitle" type="text" :disabled="contentPending || !account || disabledAccount" :aria-invalid="Boolean(errors.title)" :aria-describedby="errors.title ? 'title-error title-help' : 'title-help'" /><p id="title-help" class="field-help">1–200 個字，不可全為空白。</p><p v-if="errors.title" id="title-error" class="field-error">{{ errors.title.join('；') }}</p></div><div class="field"><label for="body">內文</label><textarea id="body" v-model="articleBody" :disabled="contentPending || !account || disabledAccount" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'body-error body-help' : 'body-help'"></textarea><p id="body-help" class="field-help">1–20,000 個字；原樣保留換行。</p><p v-if="errors.body" id="body-error" class="field-error">{{ errors.body.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="contentPending || !account || reLogin || disabledAccount">{{ contentPending ? '發表處理中…' : '發表文章' }}</button><p v-if="contentPending" class="pending-note" role="status">正在發表，請稍候；不要重複送出。</p></form><p v-if="writeUnknown" class="pending-note">發文結果尚未確認。<a class="text-link" href="/vue/me/articles">先到我的文章查證</a></p></template>
       </section>
       <section v-else-if="page === 'login'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">會員登入</h1>
-        <p class="intro">登入後即可使用會員功能。文章與留言功能將陸續提供。</p>
+        <p class="intro">登入後即可發表文章與查看自己的文章。</p>
         <p v-if="registered" class="success-note" role="status">帳號已建立，請輸入帳密登入。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
           <h2 id="error-title">{{ summary }}</h2>

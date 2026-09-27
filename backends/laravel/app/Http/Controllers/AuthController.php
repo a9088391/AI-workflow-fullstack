@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Exceptions\AuthFailure;
 use App\Http\ApiResponse;
 use App\Support\AccountRules;
+use App\Support\AuthenticatedAccount;
 use App\Support\JwtTokens;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -93,34 +94,15 @@ class AuthController extends Controller
     /** 先認證再驗參數，依帳號→登入紀錄順序鎖定，避免與重設密碼／停用競爭。 */
     private function protectedRequest(Request $request, bool $logout): JsonResponse
     {
-        $authorization = $request->header('Authorization', '');
-        if (preg_match('/\ABearer ([^\s]+)\z/Di', $authorization, $match) !== 1) {
-            throw new AuthFailure;
-        }
-        $claims = JwtTokens::verify($match[1]);
-
-        // 在同一交易內重验現在的帳號和登入，外部已驗過簽章不能取代撤銷查核。
-        return DB::transaction(function () use ($request, $claims, $logout): JsonResponse {
-            $account = DB::table('accounts')->where('id', $claims->sub)->lockForUpdate()->first();
-            $session = DB::table('login_sessions')->where('jti', $claims->jti)->lockForUpdate()->first();
-            $now = $this->now();
-            if ($now->getTimestamp() < $claims->nbf || $now->getTimestamp() >= $claims->exp
-                || $account === null || $session === null || (string) $session->account_id !== $claims->sub || $session->backend_id !== 'laravel'
-                || CarbonImmutable::parse($session->issued_at)->getTimestamp() !== $claims->iat || CarbonImmutable::parse($session->expires_at)->getTimestamp() !== $claims->exp) {
-                throw new AuthFailure;
-            }
-            if ($account->status === 'disabled') {
-                throw new AuthFailure('E0102');
-            }
-            if ($session->revoked_at !== null) {
-                throw new AuthFailure;
-            }
+        // 共用認證於同一交易中檢查簽章、帳號與 session，維持既有鎖定順序。
+        return DB::transaction(function () use ($request, $logout): JsonResponse {
+            [$account, $jti] = AuthenticatedAccount::resolve($request);
             $input = $this->input($request, []);
             if ($input instanceof JsonResponse) {
                 return $input;
             }
             if ($logout) {
-                DB::table('login_sessions')->where('jti', $claims->jti)->update(['revoked_at' => $this->timestamp($now)]);
+                DB::table('login_sessions')->where('jti', $jti)->update(['revoked_at' => $this->timestamp($this->now())]);
             }
 
             return $this->success($logout ? [] : $this->account($account));
