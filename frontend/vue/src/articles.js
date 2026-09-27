@@ -1,7 +1,8 @@
 // 只接受本票已實作的本機頁面，防止登入返回目標成為任意網址。
 export function localPage(path) {
-  if (path === '/vue/' || path === '/vue/login' || path === '/vue/register' || path === '/vue/articles/new' || path === '/vue/me/articles') return true
-  return /^\/vue\/articles\/[0-9]+$/.test(path) && Number.isSafeInteger(Number(path.slice('/vue/articles/'.length))) && Number(path.slice('/vue/articles/'.length)) > 0
+  if (path === '/vue/' || path === '/vue/login' || path === '/vue/register' || path === '/vue/articles/new' || path === '/vue/me/articles' || path === '/vue/me/comments') return true
+  const match = path.match(/^\/vue\/(?:articles|comments)\/([0-9]+)$/)
+  return Boolean(match && Number.isSafeInteger(Number(match[1])) && Number(match[1]) > 0)
 }
 
 // 靜態 new 優先於 ID；未知路徑維持找不到頁面。
@@ -11,7 +12,8 @@ export function articlePage(path) {
   if (path === '/vue/login') return 'login'
   if (path === '/vue/articles/new') return 'article-new'
   if (path === '/vue/me/articles') return 'my-articles'
-  return localPage(path) ? 'article' : 'missing'
+  if (path === '/vue/me/comments') return 'my-comments'
+  return localPage(path) ? path.startsWith('/vue/comments/') ? 'comment' : 'article' : 'missing'
 }
 
 const blank = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u
@@ -29,11 +31,11 @@ const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
 // 公開 ID／版本都須是安全正整數，避免大數在 JavaScript 中失真。
 const id = (value) => Number.isSafeInteger(value) && value > 0
 
-// 僅把完整文章物件交給畫面，避免不完整成功回應被當成可讀資料。
-export function isArticle(value) {
+// 文章與留言共享作者、來源與狀態契約；只接受完整資料，避免誤顯示授權內容。
+export function isContent(value, maximumBody) {
   return value && typeof value === 'object' && !Array.isArray(value)
-    && id(value.id) && id(value.version) && typeof value.title === 'string' && [...value.title].length >= 1 && [...value.title].length <= 200 && !blank.test(value.title)
-    && typeof value.body === 'string' && [...value.body].length >= 1 && [...value.body].length <= 20000 && !blank.test(value.body)
+    && id(value.id) && id(value.version)
+    && typeof value.body === 'string' && [...value.body].length >= 1 && [...value.body].length <= maximumBody && !blank.test(value.body)
     && value.author && typeof value.author === 'object' && !Array.isArray(value.author)
     && Object.keys(value.author).length === 2 && id(value.author.id) && typeof value.author.nickname === 'string' && [...value.author.nickname].length >= 1 && [...value.author.nickname].length <= 30 && !blank.test(value.author.nickname)
     && Object.hasOwn(backends, value.created_backend) && typeof value.created_at === 'string' && timestamp.test(value.created_at)
@@ -41,14 +43,19 @@ export function isArticle(value) {
     && (value.visibility === 'visible' || value.visibility === 'hidden') && typeof value.can_restore === 'boolean'
 }
 
+// 文章另檢查標題，保留既有完整閱讀契約。
+export function isArticle(value) {
+  return isContent(value, 20000) && typeof value.title === 'string' && [...value.title].length >= 1 && [...value.title].length <= 200 && !blank.test(value.title)
+}
+
 // 來源識別由後端填入；前端只映射顯示名稱。
 export function backendName(value) { return backends[value] || value }
 
 // 分頁使用後端原頁碼與總數；合法超頁仍是空清單而非零筆資料。
-export function readArticleList(status, body, requestedPage) {
+export function readArticleList(status, body, requestedPage, resource = isArticle) {
   const data = body?.data
   const p = data?.pagination
-  if (status !== 200 || body?.success !== true || body.message !== 'OK' || !Array.isArray(data?.list) || !data.list.every(isArticle)
+  if (status !== 200 || body?.success !== true || body.message !== 'OK' || !Array.isArray(data?.list) || !data.list.every(resource)
     || !p || p.page !== requestedPage || p.per_page !== 20 || !Number.isSafeInteger(p.total) || p.total < 0
     || p.total_pages !== Math.ceil(p.total / 20)) return null
   return data

@@ -1,6 +1,6 @@
 # 會員文章展示：Vue／Laravel
 
-目前提供 Vue 註冊／登入／登出、公開文章列表／閱讀、發文與我的文章，以及對應 Laravel API 和共用 PostgreSQL。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。文章編修／下架介面、留言和其他框架尚未提供。
+目前提供 Vue 註冊／登入／登出、公開文章列表／閱讀、發文與我的文章、公開留言、我的留言與作者留言詳情，以及對應 Laravel API 和共用 PostgreSQL。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。文章與留言編修／下架介面和其他框架尚未提供。Laravel 已加入 `POST /api/articles/{article_id}/comments`，Vue 可在公開文章發表留言，成功後留在原文章重讀留言第一頁；送出失效時保留同帳號的頁面記憶體草稿，重新登入後須手動送出。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
@@ -10,13 +10,15 @@
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；NGINX 只轉送前端，瀏覽器直接向 `http://localhost:8081/api/...` 呼叫 Laravel。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表與 `articles` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；NGINX 只轉送前端，瀏覽器直接向 `http://localhost:8081/api/...` 呼叫 Laravel。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
 Vue 登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為 API 基底位址 `http://localhost:8081`，`expiresAt` 是原登入到期時間。未保存密碼或帳號資料；重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分，確認失敗時可手動重試。登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。
 
 文章頁路徑為 `/vue/`、`/vue/articles/{article_id}`、`/vue/articles/new`、`/vue/me/articles`。發文遇登入失效時，文字只保留在原頁記憶體；同帳號重登後可手動送出，換帳號則清除原草稿。重新整理或關頁不保留草稿；寫入結果不明時須先到我的文章查證，不自動重送。
 
-文章契約測試只在 `ticket03_` 開頭的隔離 Compose 專案執行：`COMPOSE_PROJECT_NAME=ticket03_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/article_http.php`。測試會建立帳號及文章，並透過隔離資料庫 fixture 驗證下架可讀性、管理範圍、來源／作者欄位、純文字、排序分頁與錯誤回應；不對正式展示資料執行。
+文章契約測試只在 `ticket03_` 或 `ticket04_` 開頭的隔離 Compose 專案執行：`COMPOSE_PROJECT_NAME=ticket03_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/article_http.php`。測試會建立帳號及文章，並透過隔離資料庫 fixture 驗證下架可讀性、管理範圍、來源／作者欄位、純文字、排序分頁與錯誤回應；不對正式展示資料執行。
+
+留言頁路徑為 `/vue/me/comments`、`/vue/comments/{comment_id}`，文章閱讀頁亦提供留言分頁。作者可讀自己的下架留言及父文章下架後的留言；只回留言與 `article_id`，不授予父文章內容讀取權。留言契約測試僅允許 `ticket04_` 隔離 Compose 專案：`COMPOSE_PROJECT_NAME=ticket04_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/comment_http.php`。測試以真實 HTTP 新增留言，並以隔離 SQL fixture 驗證下架狀態與父文章鎖競爭，涵蓋讀取範圍、排序、分頁、原文、Unicode 長度、U+0000 拒絕與錯誤先後。
 
 本機整合測試請設 `COMPOSE_PROJECT_NAME` 為隔離名稱，避免把測試帳號寫進展示資料。例如啟動隔離的後端後執行 `COMPOSE_PROJECT_NAME=ticket01_test php -d zend.assertions=1 ops/tests/register_http.php`。測試會產生隨機 Email，確認暱稱含 U+0000 時回 422/E0001；字面六字元 `\u0000` 仍是合法文字。`ops/tests/sql_entry.sh` 會另建隔離資料庫 volume 測試 SQL 版本、備份、鎖與回滾，結束時保留 volume 與 `.local/` 證據供查核。
 

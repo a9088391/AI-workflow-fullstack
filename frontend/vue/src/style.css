@@ -139,3 +139,13 @@ input:disabled, textarea:disabled { background: #f1f1ee; }
 }
 
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+.related-content { margin: 42px 0 30px; padding-top: 28px; border-top: 1px solid #d7dbd2; overflow-wrap: anywhere; }
+.related-content h2 { margin: 0 0 24px; font-size: 1.5rem; }
+.related-content h3 { font-size: 1.125rem; line-height: 1.6; }
+.related-content .error-summary h3 { margin: 0; font-size: 1rem; }
+.comment-body { margin: 18px 0 10px; }
+
+.comment-form { margin-top: 48px; padding-top: 28px; border-top: 1px solid #d7dbd2; }
+.comment-form h2 { margin: 0 0 24px; font-size: 1.5rem; }
+.comment-form textarea { min-height: 160px; }

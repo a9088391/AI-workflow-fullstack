@@ -2,9 +2,10 @@
 
 declare(strict_types=1);
 
-// 只可對 Ticket 03 專用資料庫執行；此測試會用 SQL fixture 調整文章與帳號狀態。
-if (! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket03_')) {
-    throw new RuntimeException('請使用 ticket03_ 開頭的隔離 Compose project');
+// 只可對 Ticket 03／04 專用資料庫執行；此測試會用 SQL fixture 調整文章與帳號狀態。
+if (! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket03_')
+    && ! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket04_')) {
+    throw new RuntimeException('請使用 ticket03_ 或 ticket04_ 開頭的隔離 Compose project');
 }
 $articleBase = getenv('API_BASE') ?: 'http://localhost:8081';
 
