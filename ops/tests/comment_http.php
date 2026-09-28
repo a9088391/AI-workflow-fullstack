@@ -2,9 +2,10 @@
 
 declare(strict_types=1);
 
-// 只可對 Ticket 04 專用資料庫執行；此測試會用 SQL fixture 調整留言、文章與帳號狀態。
-if (! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket04_')) {
-    throw new RuntimeException('請使用 ticket04_ 開頭的隔離 Compose project');
+// 只可對 Ticket 04／05 專用資料庫執行；此測試會用 SQL fixture 調整留言、文章與帳號狀態。
+if (! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket04_')
+    && (getenv('COMPOSE_PROJECT_NAME') ?: '') !== 'ticket05_test') {
+    throw new RuntimeException('請使用 ticket04_ 開頭或 ticket05_test 的隔離 Compose project');
 }
 $commentBase = getenv('API_BASE') ?: 'http://localhost:8081';
 

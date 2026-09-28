@@ -6,6 +6,7 @@ use App\Http\ApiResponse;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use JsonException;
 use stdClass;
 
@@ -80,8 +81,16 @@ trait ContentContract
                 $errors[$name] = ['此欄位為必填'];
             } elseif ($body->$name === null) {
                 $errors[$name] = ['此欄位不可為 null'];
-            } elseif (! is_string($body->$name)) {
+            } elseif (($limit === 'version' && ! is_int($body->$name)) || ($limit !== 'version' && ! is_string($body->$name))) {
                 $errors[$name] = ['欄位型態不正確'];
+            } elseif ($limit === 'version') {
+                if ($body->$name < 1 || $body->$name > 9007199254740991) {
+                    $errors[$name] = ['欄位格式或範圍不正確'];
+                }
+            } elseif ($limit === 'visibility') {
+                if (! in_array($body->$name, ['visible', 'hidden'], true)) {
+                    $errors[$name] = ['欄位格式或範圍不正確'];
+                }
             } elseif (str_contains($body->$name, "\0")
                 || mb_strlen($body->$name, 'UTF-8') < 1 || mb_strlen($body->$name, 'UTF-8') > $limit
                 || preg_match('/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u', $body->$name) !== 1) {
@@ -96,6 +105,47 @@ trait ContentContract
         }
 
         return $errors === [] ? $body : $this->invalid($errors);
+    }
+
+    /** 恢復只限有恢復權者；再次下架保留管理員限制，管理員操作自己內容按作者規則。 */
+    private function visibilityChanges(stdClass $content, stdClass $viewer, string $visibility): array|JsonResponse
+    {
+        $own = (int) $viewer->id === (int) $content->author_id;
+        if ($visibility === 'visible' && $content->visibility === 'hidden'
+            && $viewer->role !== 'admin' && $content->restore_control !== 'author') {
+            return $this->error(403, 'E0003', '沒有權限使用此功能');
+        }
+
+        // 管理員接管他人作者下架視為實際變更；作者重複下架不能降低恢復限制。
+        $control = $visibility === 'visible' ? null : ($content->restore_control ?? 'author');
+        if ($visibility === 'hidden' && $viewer->role === 'admin' && ! $own) {
+            $control = 'admin';
+        }
+
+        return ['visibility' => $visibility, 'restore_control' => $control];
+    }
+
+    /** 在已取得列鎖的交易內先比對版本再更新；同值不動時間，上限由 DB 約束完整回滾。 */
+    private function saveChanges(string $table, stdClass $content, stdClass $body, array $changes): JsonResponse
+    {
+        if ((int) $content->version !== $body->version) {
+            return $this->error(409, 'E0201', '內容已更新，請確認最新內容後再送出');
+        }
+        $changed = false;
+        foreach ($changes as $name => $value) {
+            if ($value !== $content->$name) {
+                $changed = true;
+                break;
+            }
+        }
+        // stale 同值仍在上方拒絕；只有真正變更才遞增版本與讀取資料庫時間。
+        if ($changed) {
+            DB::table($table)->where('id', $content->id)->where('version', $body->version)->update([
+                ...$changes, 'version' => DB::raw('version + 1'), 'updated_at' => DB::raw('clock_timestamp()'),
+            ]);
+        }
+
+        return $this->success([]);
     }
 
     /** URL 整數接受前導零，但仍受共同安全整數上限約束。 */

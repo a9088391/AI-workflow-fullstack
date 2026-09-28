@@ -1,7 +1,7 @@
 // 只接受本票已實作的本機頁面，防止登入返回目標成為任意網址。
 export function localPage(path) {
   if (path === '/vue/' || path === '/vue/login' || path === '/vue/register' || path === '/vue/articles/new' || path === '/vue/me/articles' || path === '/vue/me/comments') return true
-  const match = path.match(/^\/vue\/(?:articles|comments)\/([0-9]+)$/)
+  const match = path.match(/^\/vue\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
   return Boolean(match && Number.isSafeInteger(Number(match[1])) && Number(match[1]) > 0)
 }
 
@@ -13,16 +13,18 @@ export function articlePage(path) {
   if (path === '/vue/articles/new') return 'article-new'
   if (path === '/vue/me/articles') return 'my-articles'
   if (path === '/vue/me/comments') return 'my-comments'
-  return localPage(path) ? path.startsWith('/vue/comments/') ? 'comment' : 'article' : 'missing'
+  if (!localPage(path)) return 'missing'
+  const resource = path.startsWith('/vue/comments/') ? 'comment' : 'article'
+  return path.endsWith('/edit') ? `${resource}-edit` : resource
 }
 
 const blank = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u
 
-// Unicode 碼點與契約空白集合一致；原文字及 CR/LF 原樣交給 API。
+// Unicode 碼點與契約空白集合一致；原文字及 CR/LF 原樣送出，拒絕無法儲存的 U+0000。
 export function validateArticle(input) {
   const errors = {}
-  if (typeof input.title !== 'string' || [...input.title].length < 1 || [...input.title].length > 200 || blank.test(input.title)) errors.title = ['欄位格式或範圍不正確']
-  if (typeof input.body !== 'string' || [...input.body].length < 1 || [...input.body].length > 20000 || blank.test(input.body)) errors.body = ['欄位格式或範圍不正確']
+  if (typeof input.title !== 'string' || [...input.title].length < 1 || [...input.title].length > 200 || blank.test(input.title) || input.title.includes('\u0000')) errors.title = ['欄位格式或範圍不正確']
+  if (typeof input.body !== 'string' || [...input.body].length < 1 || [...input.body].length > 20000 || blank.test(input.body) || input.body.includes('\u0000')) errors.body = ['欄位格式或範圍不正確']
   return errors
 }
 
@@ -74,7 +76,7 @@ export function articleCreated(status, body) {
 // 錯誤依 code 控制流程，欄位明細與未知欄位訊息保留供修正。
 export function articleFailure(body) {
   const code = body?.success === false && typeof body.error_code === 'string' ? body.error_code : ''
-  const known = { E0001: '欄位資料不正確，請確認後再送出', E0002: '登入已逾期，請重新登入', E0003: '沒有權限使用此功能', E0004: '找不到指定資料或 API', E0102: '此帳號已停用，請聯絡系統管理員', E9999: '系統暫時無法處理，請稍後再試' }
+  const known = { E0001: '欄位資料不正確，請確認後再送出', E0002: '登入已逾期，請重新登入', E0003: '沒有權限使用此功能', E0004: '找不到指定資料或 API', E0102: '此帳號已停用，請聯絡系統管理員', E0201: '內容已更新，請確認最新內容後再送出', E9999: '系統暫時無法處理，請稍後再試' }
   const errors = {}
   const extra = []
   if (code === 'E0001' && body.errors && typeof body.errors === 'object' && !Array.isArray(body.errors)) {
@@ -88,4 +90,9 @@ export function articleFailure(body) {
   }
   const message = known[code] || (body?.success === false && typeof body.message === 'string' ? body.message : '伺服器回應不完整，請稍後手動重試。')
   return { code, errors, message: extra.length ? `${message}：${extra.join('；')}` : message, logId: typeof body?.log_id === 'string' ? body.log_id : '' }
+}
+
+// 已知資源更新只接受 200 空 data；成功後仍須 GET 同一 ID 確認伺服器值。
+export function contentUpdated(status, body) {
+  return status === 200 && body?.success === true && body.message === 'OK' && body.data && typeof body.data === 'object' && !Array.isArray(body.data) && Object.keys(body.data).length === 0
 }

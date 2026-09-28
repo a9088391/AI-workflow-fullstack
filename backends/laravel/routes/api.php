@@ -21,3 +21,8 @@ Route::get('/articles/{article_id}/comments', [CommentController::class, 'index'
 Route::post('/articles/{article_id}/comments', [CommentController::class, 'store']);
 Route::get('/me/comments', [CommentController::class, 'mine']);
 Route::get('/comments/{comment_id}', [CommentController::class, 'show']);
+
+Route::put('/articles/{article_id}', [ArticleController::class, 'update']);
+Route::put('/articles/{article_id}/visibility', [ArticleController::class, 'visibility']);
+Route::put('/comments/{comment_id}', [CommentController::class, 'update']);
+Route::put('/comments/{comment_id}/visibility', [CommentController::class, 'visibility']);

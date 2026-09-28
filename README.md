@@ -1,6 +1,6 @@
 # 會員文章展示：Vue／Laravel
 
-目前提供 Vue 註冊／登入／登出、公開文章列表／閱讀、發文與我的文章、公開留言、我的留言與作者留言詳情，以及對應 Laravel API 和共用 PostgreSQL。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。文章與留言編修／下架介面和其他框架尚未提供。Laravel 已加入 `POST /api/articles/{article_id}/comments`，Vue 可在公開文章發表留言，成功後留在原文章重讀留言第一頁；送出失效時保留同帳號的頁面記憶體草稿，重新登入後須手動送出。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
+目前提供 Vue 註冊／登入／登出、公開文章列表／閱讀、發文與我的文章、公開留言、我的留言與作者留言詳情，以及對應 Laravel API 和共用 PostgreSQL。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 已加入文章／留言編修及詳情下架／恢復介面；前端測試、build、隔離環境的生命週期真實 HTTP 測試及主要瀏覽器流程已通過。其他框架尚未提供。Laravel 已加入 `POST /api/articles/{article_id}/comments`，Vue 可在公開文章發表留言，成功後留在原文章重讀留言第一頁；送出失效時保留同帳號的頁面記憶體草稿，重新登入後須手動送出。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
@@ -14,11 +14,19 @@ Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；NGI
 
 Vue 登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為 API 基底位址 `http://localhost:8081`，`expiresAt` 是原登入到期時間。未保存密碼或帳號資料；重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分，確認失敗時可手動重試。登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。
 
-文章頁路徑為 `/vue/`、`/vue/articles/{article_id}`、`/vue/articles/new`、`/vue/me/articles`。發文遇登入失效時，文字只保留在原頁記憶體；同帳號重登後可手動送出，換帳號則清除原草稿。重新整理或關頁不保留草稿；寫入結果不明時須先到我的文章查證，不自動重送。
+文章頁路徑為 `/vue/`、`/vue/articles/{article_id}`、`/vue/articles/new`、`/vue/articles/{article_id}/edit`、`/vue/me/articles`。發文遇登入失效時，文字只保留在原頁記憶體；同帳號重登後可手動送出，換帳號則清除原草稿。重新整理或關頁不保留草稿；寫入結果不明時須先到我的文章查證，不自動重送。
 
-文章契約測試只在 `ticket03_` 或 `ticket04_` 開頭的隔離 Compose 專案執行：`COMPOSE_PROJECT_NAME=ticket03_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/article_http.php`。測試會建立帳號及文章，並透過隔離資料庫 fixture 驗證下架可讀性、管理範圍、來源／作者欄位、純文字、排序分頁與錯誤回應；不對正式展示資料執行。
+文章契約測試只在 `ticket03_`、`ticket04_` 開頭或 `ticket05_test`的隔離 Compose 專案執行：`COMPOSE_PROJECT_NAME=ticket03_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/article_http.php`。測試會建立帳號及文章，並透過隔離資料庫 fixture 驗證下架可讀性、管理範圍、來源／作者欄位、純文字、排序分頁與錯誤回應；不對正式展示資料執行。
 
-留言頁路徑為 `/vue/me/comments`、`/vue/comments/{comment_id}`，文章閱讀頁亦提供留言分頁。作者可讀自己的下架留言及父文章下架後的留言；只回留言與 `article_id`，不授予父文章內容讀取權。留言契約測試僅允許 `ticket04_` 隔離 Compose 專案：`COMPOSE_PROJECT_NAME=ticket04_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/comment_http.php`。測試以真實 HTTP 新增留言，並以隔離 SQL fixture 驗證下架狀態與父文章鎖競爭，涵蓋讀取範圍、排序、分頁、原文、Unicode 長度、U+0000 拒絕與錯誤先後。
+留言頁路徑為 `/vue/me/comments`、`/vue/comments/{comment_id}`、`/vue/comments/{comment_id}/edit`，文章閱讀頁亦提供留言分頁。作者可讀自己的下架留言及父文章下架後的留言；只回留言與 `article_id`，不授予父文章內容讀取權。留言契約測試僅允許 `ticket04_` 開頭或 `ticket05_test` 隔離 Compose 專案：`COMPOSE_PROJECT_NAME=ticket04_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/comment_http.php`。測試以真實 HTTP 新增留言，並以隔離 SQL fixture 驗證下架狀態與父文章鎖競爭，涵蓋讀取範圍、排序、分頁、原文、Unicode 長度、U+0000 拒絕與錯誤先後。
+
+Vue 編輯頁僅允許作者；留言須另確認父文章公開。編修以讀取時的 `version` 送出，200 空 `data` 後依同一 ID 重讀；409 保留文字與版本，重讀展示最新內容，由使用者確認整合／捨棄後才採用新版本並手動送出。下架／恢復按目前身分、伺服器 `can_restore` 與操作確認呈現，衝突須重讀再確認。結果不明時保留警告及同 ID 查證入口，不自動重送。原頁重登同帳號保留草稿，不同帳號清除文字與衝突狀態。
+
+Laravel 文章／留言生命週期端點為 `PUT /api/articles/{article_id}`、`PUT /api/comments/{comment_id}` 及各自的 `/visibility`。編修只允許作者，文章送出 `title`、`body`、`version`，留言送出 `body`、`version`；下架／恢復送出 `visibility`（`visible`／`hidden`）及 `version`。`version` 必須為 1–9,007,199,254,740,991 的 JSON 整數。先認證與格式驗證，再依可讀性、操作資格及版本回 404／403／409；成功回空 `data:{}`。正確版本的同值操作不更新版本或時間，過期同值仍回 `409/E0201`。
+
+作者可改自己的下架文章；留言作者可改自己的個別下架留言，但父文章必須公開。作者及管理員可下架，作者只能恢復由作者控制的下架內容；管理員再次下架他人作者下架內容會接管恢復權並增加版本。管理員操作自己的內容按作者下架規則，仍具有管理員恢復資格。父文章下架不阻止符合資格的留言下架／恢復，但恢復留言不使父文章公開。文章／留言編修保留原文、換行與 HTML 字面文字；含 U+0000 拒絕為 `422/E0001`。版本達上限的實際變更由資料庫約束拒絕為既有 `500/E9999`，整筆交易回滾，不寫入溢位版本。
+
+生命週期契約測試只允許 `COMPOSE_PROJECT_NAME=ticket05_test`：`COMPOSE_PROJECT_NAME=ticket05_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/lifecycle_http.php`。集中 SQL `0006_content_lifecycle_update.sql` 已新增文章與留言生命週期寫入所需的欄位級權限；`ticket05_test` 已備份並套用，欄位權限與 checksum 查驗通過，生命週期真實 HTTP 測試通過。測試會建立帳號／內容及修改 fixture，驗證精確錯誤、權限、同值無副作用、恢復控制、版本上限回滾，並觀察父文章下架、兩個寫入與登入撤銷的真實等鎖競爭。測試不對展示資料執行。
 
 本機整合測試請設 `COMPOSE_PROJECT_NAME` 為隔離名稱，避免把測試帳號寫進展示資料。例如啟動隔離的後端後執行 `COMPOSE_PROJECT_NAME=ticket01_test php -d zend.assertions=1 ops/tests/register_http.php`。測試會產生隨機 Email，確認暱稱含 U+0000 時回 422/E0001；字面六字元 `\u0000` 仍是合法文字。`ops/tests/sql_entry.sh` 會另建隔離資料庫 volume 測試 SQL 版本、備份、鎖與回滾，結束時保留 volume 與 `.local/` 證據供查核。
 

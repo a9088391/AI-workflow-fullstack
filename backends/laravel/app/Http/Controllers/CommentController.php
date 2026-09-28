@@ -89,6 +89,60 @@ class CommentController extends Controller
         });
     }
 
+    /** 作者編修原文；共用交易流程保持認證、可讀性、操作權與版本的判定順序。 */
+    public function update(Request $request, string $comment_id): JsonResponse
+    {
+        return $this->mutate($request, $comment_id, false);
+    }
+
+    /** 作者或管理員調整下架狀態；恢復權與版本必須在同一交易中判定及更新。 */
+    public function visibility(Request $request, string $comment_id): JsonResponse
+    {
+        return $this->mutate($request, $comment_id, true);
+    }
+
+    /** 先鎖定認證狀態再鎖內容，以最新資料原子判定權限、同值及版本競爭。 */
+    private function mutate(Request $request, string $comment_id, bool $visibility): JsonResponse
+    {
+        // callback 內保留認證鎖到提交，避免停用或撤銷先提交後仍接受寫入。
+        return DB::transaction(function () use ($request, $comment_id, $visibility): JsonResponse {
+            $viewer = AuthenticatedAccount::resolve($request)[0];
+            $query = $this->query($request, false, false);
+            if ($query instanceof JsonResponse) {
+                return $query;
+            }
+            $id = $this->integer($comment_id);
+            if ($id === null) {
+                return $this->invalid(['comment_id' => ['欄位格式或範圍不正確']]);
+            }
+            $body = $this->body($request, $visibility ? ['visibility' => 'visibility', 'version' => 'version'] : ['body' => 2000, 'version' => 'version']);
+            if ($body instanceof JsonResponse) {
+                return $body;
+            }
+
+            // 探索父 ID 不先鎖留言，固定文章→留言順序；取得鎖後重新核對關聯。
+            $parentId = DB::table('comments')->where('id', $id)->value('article_id');
+            $article = $parentId === null ? null : DB::table('articles')->where('id', $parentId)->lockForUpdate()->first();
+            $content = $article === null ? null : DB::table('comments')->where('id', $id)->lockForUpdate()->first();
+            // 先隱藏無權閱讀內容的存在，再檢查作者操作資格；版本不得洩漏隱藏資料。
+            if ($content === null || $content->article_id !== $article->id
+                || ($viewer->role !== 'admin' && $viewer->id !== $content->author_id
+                    && ($content->visibility === 'hidden' || $article->visibility === 'hidden'))) {
+                return $this->error(404, 'E0004', '找不到指定資料或 API');
+            }
+            if (($viewer->id !== $content->author_id && (! $visibility || $viewer->role !== 'admin'))
+                || (! $visibility && $article->visibility !== 'visible')) {
+                return $this->error(403, 'E0003', '沒有權限使用此功能');
+            }
+            $changes = $visibility ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['body' => $body->body];
+            if ($changes instanceof JsonResponse) {
+                return $changes;
+            }
+
+            return $this->saveChanges('comments', $content, $body, $changes);
+        });
+    }
+
     /** 我的留言獨立於父文章可見性，只回留言欄位與 article_id。 */
     public function mine(Request $request): JsonResponse
     {

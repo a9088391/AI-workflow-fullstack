@@ -97,6 +97,54 @@ class ArticleController extends Controller
         });
     }
 
+    /** 作者編修原文；共用交易流程保持認證、可讀性、操作權與版本的判定順序。 */
+    public function update(Request $request, string $article_id): JsonResponse
+    {
+        return $this->mutate($request, $article_id, false);
+    }
+
+    /** 作者或管理員調整下架狀態；恢復權與版本必須在同一交易中判定及更新。 */
+    public function visibility(Request $request, string $article_id): JsonResponse
+    {
+        return $this->mutate($request, $article_id, true);
+    }
+
+    /** 先鎖定認證狀態再鎖內容，以最新資料原子判定權限、同值及版本競爭。 */
+    private function mutate(Request $request, string $article_id, bool $visibility): JsonResponse
+    {
+        // callback 內保留認證鎖到提交，避免停用或撤銷先提交後仍接受寫入。
+        return DB::transaction(function () use ($request, $article_id, $visibility): JsonResponse {
+            $viewer = AuthenticatedAccount::resolve($request)[0];
+            $query = $this->query($request, false, false);
+            if ($query instanceof JsonResponse) {
+                return $query;
+            }
+            $id = $this->integer($article_id);
+            if ($id === null) {
+                return $this->invalid(['article_id' => ['欄位格式或範圍不正確']]);
+            }
+            $body = $this->body($request, $visibility ? ['visibility' => 'visibility', 'version' => 'version'] : ['title' => 200, 'body' => 20000, 'version' => 'version']);
+            if ($body instanceof JsonResponse) {
+                return $body;
+            }
+
+            $content = DB::table('articles')->where('id', $id)->lockForUpdate()->first();
+            // 先隱藏無權閱讀內容的存在，再檢查作者操作資格；版本不得洩漏隱藏資料。
+            if ($content === null || ($content->visibility === 'hidden' && $viewer->role !== 'admin' && $viewer->id !== $content->author_id)) {
+                return $this->error(404, 'E0004', '找不到指定資料或 API');
+            }
+            if ($viewer->id !== $content->author_id && (! $visibility || $viewer->role !== 'admin')) {
+                return $this->error(403, 'E0003', '沒有權限使用此功能');
+            }
+            $changes = $visibility ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['title' => $body->title, 'body' => $body->body];
+            if ($changes instanceof JsonResponse) {
+                return $changes;
+            }
+
+            return $this->saveChanges('articles', $content, $body, $changes);
+        });
+    }
+
     /** 個人列表包含自己的下架文章，管理員作為作者亦使用同一規則。 */
     public function mine(Request $request): JsonResponse
     {

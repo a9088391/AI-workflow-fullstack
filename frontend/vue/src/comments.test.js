@@ -26,7 +26,7 @@ function list(items, page = 1, total = items.length) { return success({ list: it
 test('comment routes and response parsing preserve page, parent and public author contracts', () => {
   assert.equal(articles.articlePage('/vue/me/comments'), 'my-comments')
   assert.equal(articles.articlePage('/vue/comments/009'), 'comment')
-  for (const path of ['/vue/comments/0', '/vue/comments/9007199254740992', '/vue/comments/9/edit', '//evil.test', 'https://evil.test']) assert.equal(articles.localPage(path), false)
+  for (const path of ['/vue/comments/0', '/vue/comments/9007199254740992', '//evil.test', 'https://evil.test']) assert.equal(articles.localPage(path), false)
   assert.equal(comments.readComment(200, success(comment), 9)?.body, comment.body)
   assert.equal(comments.readComment(200, success(comment), 8), null)
   assert.equal(comments.readComment(200, success({ ...comment, author: { ...comment.author, email: member.email } }), 9), null)
@@ -42,6 +42,8 @@ test('comment routes and response parsing preserve page, parent and public autho
 function app(path, token = 'saved-token', search = '') {
   const requests = []
   const redirects = []
+  const confirmations = []
+  let approve = false
   const history = []
   const storage = new Map()
   const lifecycle = {}
@@ -58,8 +60,8 @@ function app(path, token = 'saved-token', search = '') {
     ...vue, ...auth, ...registration, ...articles, ...comments,
     AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage, document: {},
     window: {
-      // 保留草稿時取消登出，確保不發出撤銷請求。
-      confirm() { return false },
+      // 記錄使用者確認；預設取消，避免測試意外捨棄既有草稿。
+      confirm(message) { confirmations.push(message); return approve },
       history: {
         // 記錄同頁分頁更新，確認成功未轉向猜測的新 ID。
         replaceState(state, title, url) { history.push(url) },
@@ -88,7 +90,9 @@ function app(path, token = 'saved-token', search = '') {
   // 在原 effect scope 執行實際 script，沒有另寫一份狀態或顯示判斷。
   const page = scope.run(() => runInNewContext(`${script}\n;({ ${bindings.join(', ')} })`, context))
   lifecycle.mount()
-  return { page, requests, redirects, history, sessionStorage,
+  return { page, requests, redirects, history, sessionStorage, confirmations,
+    // 測試明確改變確認選擇，仍透過正式事件入口送出。
+    approve(value) { approve = value },
     // 元件清理後再停止 Vue effect，避免 timer 和 watcher 留在下一個案例。
     close() { lifecycle.unmount(); scope.stop() },
   }
@@ -504,4 +508,500 @@ test('unknown write guidance stays rendered through unreadable parent and parent
   assert.equal(instance.requests.length, requestCount)
   assert.equal(instance.page.commentBody.value, '待查證草稿')
 
+})
+
+// 驗證合法 edit ID 與固定錯誤文案，拒絕外站／溢位／多餘子路徑與 NUL。
+test('editor routes and PUT envelope keep safe IDs and fixed validation contracts', () => {
+  for (const [path, page] of [['/vue/articles/007/edit', 'article-edit'], ['/vue/comments/009/edit', 'comment-edit']]) {
+    assert.equal(articles.localPage(path), true)
+    assert.equal(articles.articlePage(path), page)
+  }
+  for (const path of ['/vue/articles/0/edit', '/vue/comments/9007199254740992/edit', '/vue/articles/-1/edit', '/vue/articles/new/edit', '/vue/articles/7/edit/extra', '//evil.test', 'https://evil.test']) assert.equal(articles.articlePage(path), 'missing')
+  assert.equal(articles.contentUpdated(200, success({})), true)
+  assert.equal(articles.contentUpdated(201, success({})), false)
+  assert.equal(articles.contentUpdated(200, success({ id: 7 })), false)
+  assert.equal(articles.articleFailure({ success: false, error_code: 'E0201' }).message, '內容已更新，請確認最新內容後再送出')
+  assert.deepEqual(articles.validateArticle({ title: 'a\u0000', body: 'b\u0000' }), { title: ['欄位格式或範圍不正確'], body: ['欄位格式或範圍不正確'] })
+  assert.deepEqual(articles.validateArticle({ title: '\\u0000', body: '<script>純文字</script>\r\n' }), {})
+})
+
+// 載入真實 App state；編輯與詳情都先經 /me，不繞過正式權限流程。
+async function resourcePage(t, path, resource = path.includes('/comments/') ? comment : article, identity = member, parent = article) {
+  const instance = app(path)
+  instance.approve(true)
+  t.after(instance.close)
+  assert.equal(instance.page.contentReady.value, false)
+  await respond(instance.requests[0], 200, success(identity))
+  await respond(instance.requests[1], 200, success(resource))
+  if (path.includes('/comments/')) await respond(instance.requests[2], 200, success(parent))
+  else if (!path.endsWith('/edit')) await respond(instance.requests[2], 200, list([]))
+  return instance
+}
+
+// 訪客保留合法原路徑，登入頁接受 edit 返回目標；未知 ID 不發資源請求。
+test('direct editor access requires verification and preserves a local login return', async (t) => {
+  const guest = app('/vue/comments/009/edit', null)
+  const login = app('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F007%2Fedit')
+  const invalid = app('/vue/articles/9007199254740992/edit', null)
+  for (const instance of [guest, login, invalid]) t.after(instance.close)
+  assert.equal(guest.redirects[0], '/vue/login?return_to=%2Fvue%2Fcomments%2F009%2Fedit')
+  assert.equal(login.page.returnTo, '/vue/articles/007/edit')
+  assert.equal(invalid.requests.length, 0)
+  assert.match(await renderedPage(invalid.page), /找不到頁面/)
+  const checking = app('/vue/articles/7/edit')
+  t.after(checking.close)
+  assert.doesNotMatch(await renderedPage(checking.page), /<textarea/)
+  await respond(checking.requests[0], 401, { success: false, error_code: 'E0002' })
+  assert.equal(checking.requests.length, 1)
+  assert.equal(checking.page.reLogin.value, true)
+})
+
+// 同值送出保留載入原 CRLF／HTML 字面值；200 後只 GET 同 ID，不猜 ID 或先改資源。
+test('no-op article edit sends raw server text and rereads the same ID after empty 200', async (t) => {
+  const raw = { ...article, title: '<b>標題</b>', body: '第一行\r\n<script>字面值</script>\r第三行', visibility: 'hidden', can_restore: false }
+  const instance = await resourcePage(t, '/vue/articles/007/edit', raw)
+  assert.equal(instance.page.canEdit.value, true)
+  assert.equal(instance.page.hasDraft.value, false)
+  assert.equal(instance.page.articleBody.value, raw.body)
+  let html = await renderedPage(instance.page)
+  assert.match(html, /&lt;script&gt;字面值&lt;\/script&gt;/)
+  assert.match(html, /讀者 · 2026-09-24 10:00:00 · 建立於 Gin/)
+  assert.match(html, /已下架/)
+  assert.doesNotMatch(html, /<script>/)
+  const write = instance.page.submitEdit()
+  assert.equal(instance.requests[2].url, `${auth.API_BASE}/api/articles/7`)
+  assert.equal(instance.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(instance.requests[2].body), { title: raw.title, body: raw.body, version: 1 })
+  assert.equal(instance.page.articleData.value.version, 1)
+  await respond(instance.requests[2], 200, success({}))
+  await write
+  assert.equal(instance.requests[3].url, `${auth.API_BASE}/api/articles/7`)
+  assert.equal(instance.requests[3].method, undefined)
+  await respond(instance.requests[3], 200, success(raw))
+  assert.equal(instance.page.articleData.value.visibility, 'hidden')
+  assert.equal(instance.page.hasDraft.value, false)
+  assert.deepEqual(instance.redirects, [])
+  // 原生 textarea 只在真的輸入時改草稿，避免 mount 的換行正規化造成假修改。
+  instance.page.editBodyInput({ target: { value: '新文字\n第二行' } })
+  assert.equal(instance.page.articleBody.value, '新文字\n第二行')
+  assert.equal(instance.page.hasDraft.value, true)
+})
+
+// 作者可以改自己下架留言；父文章 404／5xx／下架都關閉編修，且獨立重試不丟草稿。
+test('comment editor retains own content and draft until parent is confirmed public', async (t) => {
+  const instance = app('/vue/comments/9/edit')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(member))
+  await respond(instance.requests[1], 200, success(comment))
+  instance.page.commentBody.value = '作者草稿'
+  assert.equal(instance.page.canEdit.value, false)
+  await respond(instance.requests[2], 404, { success: false, error_code: 'E0004', data: { title: '不可洩漏' } })
+  assert.equal(instance.page.commentData.value.id, 9)
+  let html = await renderedPage(instance.page)
+  assert.match(html, /作者草稿/)
+  assert.doesNotMatch(html, /不可洩漏/)
+  assert.match(html, /<textarea[^>]*disabled/)
+  await instance.page.submitEdit()
+  assert.equal(instance.requests.length, 3)
+  for (const result of ['failed', 'hidden', 'visible']) {
+    const retry = instance.page.loadRelated()
+    const request = instance.requests.at(-1)
+    if (result === 'failed') await respond(request, 500, { success: false, error_code: 'E9999' })
+    else await respond(request, 200, success({ ...article, visibility: result }))
+    await retry
+    assert.equal(instance.page.canEdit.value, result === 'visible')
+    assert.equal(instance.page.commentBody.value, '作者草稿')
+  }
+  const write = instance.page.submitEdit()
+  assert.deepEqual(JSON.parse(instance.requests.at(-1).body), { body: '作者草稿', version: 1 })
+  await respond(instance.requests.at(-1), 200, success({}))
+  await write
+  assert.equal(instance.requests.at(-1).url, `${auth.API_BASE}/api/comments/9`)
+  await respond(instance.requests.at(-1), 200, success({ ...comment, body: '作者草稿', version: 2 }))
+  await respond(instance.requests.at(-1), 200, success(article))
+  assert.equal(instance.page.commentBody.value, '作者草稿')
+  assert.equal(instance.page.editVersion.value, 2)
+})
+
+// 管理員只有自己是作者才能編輯；詳情管理操作與父文章的公開資格分開。
+test('ownership limits editors while administrators retain permitted detail actions', async (t) => {
+  const admin = { ...member, id: 3, role: 'admin', nickname: '管理員' }
+  const other = await resourcePage(t, '/vue/articles/7/edit', article, admin)
+  assert.equal(other.page.canEdit.value, false)
+  assert.equal(other.page.editLoaded.value, false)
+  assert.doesNotMatch(await renderedPage(other.page), /<textarea/)
+  await other.page.submitEdit()
+  assert.equal(other.requests.length, 2)
+  const own = await resourcePage(t, '/vue/articles/7/edit', article, { ...member, role: 'admin' })
+  assert.equal(own.page.canEdit.value, true)
+  const ownComment = await resourcePage(t, '/vue/comments/9', comment, member, { ...article, visibility: 'hidden' })
+  assert.equal(ownComment.page.canEdit.value, false)
+  assert.equal(ownComment.page.canManageVisibility.value, true)
+  assert.match(await renderedPage(ownComment.page), />恢復<\/button>/)
+  assert.doesNotMatch(await renderedPage(ownComment.page), /href="[^\"]*\/edit"/)
+})
+
+// 409 保留文字及舊 version；GET 只提供比較，確認整合／捨棄後才可手動使用新 version。
+test('edit conflict requires a fresh comparison and explicit merge or discard before manual PUT', async (t) => {
+  const instance = await resourcePage(t, '/vue/articles/7/edit')
+  instance.page.articleTitle.value = '我的標題'
+  instance.page.articleBody.value = '我的文字'
+  const write = instance.page.submitEdit()
+  await respond(instance.requests[2], 409, { success: false, error_code: 'E0201' })
+  await write
+  assert.equal(instance.page.conflict.value, true)
+  assert.equal(instance.page.editVersion.value, 1)
+  await instance.page.submitEdit()
+  assert.equal(instance.requests.length, 3)
+  const read = instance.page.loadContent()
+  await respond(instance.requests[3], 200, success({ ...article, title: '別人的標題', body: '<em>最新文字</em>', version: 2 }))
+  await read
+  assert.equal(instance.page.articleBody.value, '我的文字')
+  assert.equal(instance.page.editVersion.value, 1)
+  const html = await renderedPage(instance.page)
+  assert.match(html, /我的文字/)
+  assert.match(html, /&lt;em&gt;最新文字&lt;\/em&gt;/)
+  assert.match(html, /最新內容（版本 2）/)
+  instance.approve(false)
+  instance.page.acceptComparison(false)
+  assert.equal(instance.page.editVersion.value, 1)
+  instance.approve(true)
+  instance.page.acceptComparison(false)
+  assert.equal(instance.page.editVersion.value, 2)
+  assert.equal(instance.page.articleBody.value, '我的文字')
+  assert.equal(instance.requests.length, 4)
+  const merged = instance.page.submitEdit()
+  assert.deepEqual(JSON.parse(instance.requests[4].body), { title: '我的標題', body: '我的文字', version: 2 })
+  await respond(instance.requests[4], 409, { success: false, error_code: 'E0201' })
+  await merged
+  const reread = instance.page.loadContent()
+  const latest = { ...article, title: '已更新', body: '第三版\r\n原文', version: 3 }
+  await respond(instance.requests[5], 200, success(latest))
+  await reread
+  instance.page.acceptComparison(true)
+  assert.equal(instance.page.articleBody.value, latest.body)
+  assert.equal(instance.page.articleTitle.value, latest.title)
+  assert.equal(instance.page.editVersion.value, 3)
+  assert.equal(instance.page.hasDraft.value, false)
+  assert.equal(instance.requests.length, 6)
+})
+
+// 管理員接管他人自行下架內容仍送 hidden；自己的下架不可借管理員身分取得接管控制。
+test('visibility uses server restoration rights and confirms administrator takeover', async (t) => {
+  const admin = { ...member, id: 3, role: 'admin' }
+  const hidden = { ...article, visibility: 'hidden', can_restore: true }
+  const instance = await resourcePage(t, '/vue/articles/7', hidden, admin)
+  const html = await renderedPage(instance.page)
+  assert.match(html, /再次下架並接管恢復權/)
+  assert.match(html, />恢復<\/button>/)
+  assert.doesNotMatch(html, /href="[^\"]*\/edit"/)
+  instance.approve(false)
+  await instance.page.submitVisibility('hidden')
+  assert.equal(instance.requests.length, 3)
+  instance.approve(true)
+  const write = instance.page.submitVisibility('hidden')
+  assert.deepEqual(JSON.parse(instance.requests[3].body), { visibility: 'hidden', version: 1 })
+  assert.match(instance.confirmations.at(-1), /管理員控制恢復/)
+  await respond(instance.requests[3], 200, success({}))
+  await write
+  await respond(instance.requests[4], 200, success({ ...hidden, version: 2 }))
+  await respond(instance.requests[5], 200, list([]))
+  assert.equal(instance.page.articleData.value.version, 2)
+  const ownAdmin = await resourcePage(t, '/vue/articles/7', { ...hidden, can_restore: false }, { ...member, role: 'admin' })
+  assert.equal(ownAdmin.page.canHide.value, false)
+  assert.doesNotMatch(await renderedPage(ownAdmin.page), />恢復<\/button>/)
+  await ownAdmin.page.submitVisibility('visible')
+  assert.equal(ownAdmin.requests.length, 3)
+})
+
+// 狀態衝突先阻止重送；手動 GET 後再次確認操作，使用最新詳情版本而非隱藏自動重試。
+test('visibility conflict rereads and reconfirms the operation before sending a new version', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9', comment)
+  const restore = instance.page.submitVisibility('visible')
+  await respond(instance.requests[3], 409, { success: false, error_code: 'E0201' })
+  await restore
+  await instance.page.submitVisibility('visible')
+  assert.equal(instance.requests.length, 4)
+  assert.equal(instance.confirmations.length, 1)
+  const read = instance.page.loadContent()
+  await respond(instance.requests[4], 200, success({ ...comment, version: 4 }))
+  await read
+  await respond(instance.requests[5], 404, { success: false, error_code: 'E0004' })
+  instance.approve(false)
+  await instance.page.submitVisibility('visible')
+  assert.equal(instance.requests.length, 6)
+  instance.approve(true)
+  const retried = instance.page.submitVisibility('visible')
+  assert.deepEqual(JSON.parse(instance.requests[6].body), { visibility: 'visible', version: 4 })
+  await respond(instance.requests[6], 200, success({}))
+  await retried
+  assert.equal(instance.requests[7].url, `${auth.API_BASE}/api/comments/9`)
+  await respond(instance.requests[7], 200, success({ ...comment, visibility: 'visible', can_restore: false, version: 5 }))
+  await respond(instance.requests[8], 404, { success: false, error_code: 'E0004' })
+  assert.equal(instance.page.commentData.value.visibility, 'visible')
+  assert.equal(instance.page.canEdit.value, false)
+  assert.equal(instance.page.conflict.value, false)
+})
+
+// PUT 等待中不可重讀／重驗；送出前的舊父文章回應和離頁後的成功均由 epoch 擋住。
+test('read retries, reauthentication and late responses cannot interrupt or replace pending PUT', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9/edit')
+  instance.page.commentBody.value = '等待中的草稿'
+  const previous = instance.page.loadRelated()
+  const oldParent = instance.requests[3]
+  const write = instance.page.submitEdit()
+  // 讀取父文章時編修資格未確認，不會送出；等本次公開確認後才能開始 PUT。
+  assert.equal(instance.requests.length, 4)
+  await respond(oldParent, 200, success(article))
+  await previous
+  await write
+  const stale = instance.page.loadRelated()
+  const staleParent = instance.requests[4]
+  await respond(staleParent, 200, success(article))
+  await stale
+  const put = instance.page.submitEdit()
+  const request = instance.requests[5]
+  await instance.page.loadContent()
+  await instance.page.loadRelated()
+  await instance.page.verifyAccount()
+  await instance.page.submitEdit()
+  assert.equal(instance.requests.length, 6)
+  assert.equal(request.signal.aborted, false)
+  assert.equal(instance.page.contentPending.value, true)
+  await respond(request, 200, success({}))
+  await put
+  await respond(instance.requests[6], 200, success({ ...comment, body: '等待中的草稿', version: 2 }))
+  const pendingParent = instance.requests[7]
+  const verify = instance.page.verifyAccount()
+  assert.equal(pendingParent.signal.aborted, true)
+  await respond(pendingParent, 401, { success: false, error_code: 'E0002' })
+  assert.equal(instance.page.reLogin.value, false)
+  await respond(instance.requests[8], 200, success(member))
+  await verify
+  await respond(instance.requests[9], 200, success({ ...comment, body: '等待中的草稿', version: 2 }))
+  await respond(instance.requests[10], 200, success(article))
+  const lateWrite = instance.page.submitEdit()
+  instance.page.onPageHide()
+  await respond(instance.requests[11], 200, success({}))
+  await lateWrite
+  assert.equal(instance.requests.length, 12)
+  assert.equal(instance.page.editVersion.value, 2)
+})
+
+// 403／404 撤下過期權限但保留原稿與 version，父文章隱藏後不得再送留言內文。
+test('write permission failures remove stale content while preserving draft and version', async (t) => {
+  for (const [status, code] of [[403, 'E0003'], [404, 'E0004']]) {
+    const instance = await resourcePage(t, '/vue/comments/9/edit')
+    instance.page.commentBody.value = '不得遺失的草稿'
+    const write = instance.page.submitEdit()
+    await respond(instance.requests[3], status, { success: false, error_code: code, data: { body: '拒絕資料不可洩漏' } })
+    await write
+    assert.equal(instance.page.commentData.value, null)
+    assert.equal(instance.page.parentArticle.value, null)
+    assert.equal(instance.page.canEdit.value, false)
+    assert.equal(instance.page.commentBody.value, '不得遺失的草稿')
+    assert.equal(instance.page.editVersion.value, 1)
+    assert.doesNotMatch(await renderedPage(instance.page), /拒絕資料不可洩漏/)
+    const read = instance.page.loadContent()
+    await respond(instance.requests[4], 200, success(comment))
+    await read
+    await respond(instance.requests[5], 200, success({ ...article, visibility: 'hidden' }))
+    await instance.page.submitEdit()
+    assert.equal(instance.requests.length, 6)
+    assert.equal(instance.page.commentBody.value, '不得遺失的草稿')
+  }
+})
+
+// 401 同帳號重登仍保留草稿／舊版本；不同帳號清除文字、版本與比較，不自動重送。
+test('same-page relogin preserves only the same account editor draft and conflict version', async (t) => {
+  for (const same of [true, false]) {
+    const instance = await resourcePage(t, '/vue/articles/7/edit')
+    instance.page.articleBody.value = '私有草稿'
+    const write = instance.page.submitEdit()
+    await respond(instance.requests[2], 409, { success: false, error_code: 'E0201' })
+    await write
+    const verification = instance.page.verifyAccount()
+    await respond(instance.requests[3], 401, { success: false, error_code: 'E0002' })
+    await verification
+    assert.equal(instance.page.articleData.value, null)
+    assert.equal(instance.page.articleBody.value, '私有草稿')
+    assert.equal(instance.page.editVersion.value, 1)
+    assert.doesNotMatch(await renderedPage(instance.page), /私有草稿/)
+    instance.page.email.value = same ? member.email : 'another@example.test'
+    instance.page.password.value = 'abc123'
+    await vue.nextTick()
+    const login = instance.page.submitLogin()
+    const identity = same ? member : { ...member, id: 3, email: 'another@example.test' }
+    await respond(instance.requests[4], 200, success({ access_token: 'fresh-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: identity }))
+    await login
+    assert.equal(instance.requests[5].url, `${auth.API_BASE}/api/articles/7`)
+    await respond(instance.requests[5], 200, success({ ...article, version: 2 }))
+    if (same) {
+      assert.equal(instance.page.articleBody.value, '私有草稿')
+      assert.equal(instance.page.editVersion.value, 1)
+      assert.equal(instance.page.conflict.value, true)
+      assert.equal(instance.page.comparison.value.version, 2)
+    } else {
+      assert.equal(instance.page.articleBody.value, '')
+      assert.equal(instance.page.editVersion.value, null)
+      assert.equal(instance.page.conflict.value, false)
+      assert.equal(instance.page.comparison.value, null)
+      assert.equal(instance.page.canEdit.value, false)
+    }
+    assert.equal(instance.requests.filter(
+      // 重登只讀取，不能代替使用者送出任何保留草稿。
+      (request) => request.method === 'PUT',
+    ).length, 1)
+  }
+})
+
+// 未知結果提示獨立於目前資源和父文章；404／5xx／重登入仍可依原 ID 手動查證。
+test('unknown PUT result guidance survives resource, parent and authentication failures without retry', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9/edit')
+  instance.page.commentBody.value = '待查證草稿'
+  const write = instance.page.submitEdit()
+  instance.requests[3].reject(new Error('connection interrupted'))
+  await write
+  assert.equal(instance.page.lifecycleUnknown.value, true)
+  assert.equal(instance.page.commentBody.value, '待查證草稿')
+  for (const status of [404, 500]) {
+    const read = instance.page.loadContent()
+    await respond(instance.requests.at(-1), status, { success: false, error_code: status === 404 ? 'E0004' : 'E9999' })
+    await read
+    const html = await renderedPage(instance.page)
+    assert.match(html, /更新結果尚未確認/)
+    assert.match(html, /href="\/vue\/comments\/9"[^>]*>依原 ID 開啟詳情查證/)
+    assert.doesNotMatch(html, /<textarea/)
+  }
+  const recovery = instance.page.loadContent()
+  await respond(instance.requests.at(-1), 200, success(comment))
+  await recovery
+  await respond(instance.requests.at(-1), 404, { success: false, error_code: 'E0004' })
+  assert.match(await renderedPage(instance.page), /更新結果尚未確認/)
+  assert.equal(instance.page.canEdit.value, false)
+  const verify = instance.page.verifyAccount()
+  await respond(instance.requests.at(-1), 401, { success: false, error_code: 'E0002' })
+  await verify
+  assert.match(await renderedPage(instance.page), /更新結果尚未確認/)
+  assert.equal(instance.page.commentBody.value, '待查證草稿')
+  assert.equal(instance.requests.filter(
+    // 未知結果的所有查證流程皆不能重送 PUT。
+    (request) => request.method === 'PUT',
+  ).length, 1)
+})
+
+// 停用停止授權流程；422 與未知 200／5xx 保留輸入，不能誤報已更新。
+test('edit failure contracts distinguish validation, disabled account and unknown writes', async (t) => {
+  for (const [status, body, unknown] of [[422, { success: false, error_code: 'E0001', errors: { body: ['欄位格式或範圍不正確'], version: ['版本資料不正確'] } }, false], [403, { success: false, error_code: 'E0102' }, false], [500, { success: false, error_code: 'E9999' }, true], [200, success({ id: 9 }), true]]) {
+    const instance = await resourcePage(t, '/vue/articles/7/edit')
+    instance.page.articleBody.value = '保存草稿'
+    const write = instance.page.submitEdit()
+    await respond(instance.requests[2], status, body)
+    await write
+    assert.equal(instance.page.articleBody.value, '保存草稿')
+    assert.equal(instance.page.editVersion.value, 1)
+    assert.equal(instance.page.lifecycleUnknown.value, unknown)
+    assert.equal(instance.requests.length, 3)
+    assert.equal(instance.page.contentPending.value, false)
+    if (status === 422) {
+      assert.deepEqual(Array.from(instance.page.errors.value.body), ['欄位格式或範圍不正確'])
+      assert.match(instance.page.summary.value, /版本資料不正確/)
+    }
+    if (status === 403) {
+      assert.equal(instance.page.disabledAccount.value, true)
+      assert.equal(instance.page.reLogin.value, false)
+      await instance.page.verifyAccount()
+      await instance.page.submitLogin()
+      await instance.page.submitEdit()
+      assert.equal(instance.requests.length, 3)
+      assert.doesNotMatch(await renderedPage(instance.page), /<textarea/)
+    }
+  }
+})
+
+// PUT 本身回 401 時沿原頁重登，同帳號仍使用原版，不能因重讀自動接受較新內容。
+test('PUT 401 preserves raw same-account editor text and only resumes manual submission', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9/edit')
+  instance.page.commentBody.value = '同帳號\r\n私有草稿'
+  const write = instance.page.submitEdit()
+  await respond(instance.requests[3], 401, { success: false, error_code: 'E0002' })
+  await write
+  assert.equal(instance.page.reLogin.value, true)
+  assert.equal(instance.page.commentData.value, null)
+  assert.equal(instance.page.commentBody.value, '同帳號\r\n私有草稿')
+  instance.page.email.value = member.email
+  instance.page.password.value = 'abc123'
+  await vue.nextTick()
+  const login = instance.page.submitLogin()
+  await respond(instance.requests[4], 200, success({ access_token: 'fresh-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await login
+  await respond(instance.requests[5], 200, success({ ...comment, version: 2 }))
+  await respond(instance.requests[6], 200, success(article))
+  assert.equal(instance.page.editVersion.value, 1)
+  assert.equal(instance.page.commentBody.value, '同帳號\r\n私有草稿')
+  assert.equal(instance.requests.length, 7)
+  const manual = instance.page.submitEdit()
+  assert.deepEqual(JSON.parse(instance.requests[7].body), { body: '同帳號\r\n私有草稿', version: 1 })
+  await respond(instance.requests[7], 409, { success: false, error_code: 'E0201' })
+  await manual
+  assert.equal(instance.page.conflict.value, true)
+  assert.equal(instance.page.editVersion.value, 1)
+})
+
+// 留言建立結果不明後，即使文章下架成功並重讀，也不能清除留言的查證入口。
+test('comment POST unknown remains independently actionable after visibility PUT success', async (t) => {
+  const instance = await writableArticle(t)
+  instance.page.commentBody.value = '尚待查證的留言'
+  const post = instance.page.submitComment()
+  instance.requests[3].reject(new Error('connection interrupted'))
+  await post
+  assert.equal(instance.page.writeUnknown.value, true)
+  instance.approve(true)
+  const hide = instance.page.submitVisibility('hidden')
+  assert.deepEqual(JSON.parse(instance.requests[4].body), { visibility: 'hidden', version: 1 })
+  await respond(instance.requests[4], 200, success({}))
+  await hide
+  await respond(instance.requests[5], 200, success({ ...article, visibility: 'hidden', version: 2 }))
+  await respond(instance.requests[6], 200, list([]))
+  const html = await renderedPage(instance.page)
+  assert.equal(instance.page.writeUnknown.value, true)
+  assert.match(html, /留言結果尚未確認/)
+  assert.match(html, /href="\/vue\/me\/comments"[^>]*>到我的留言查證<\/a>/)
+  assert.equal(instance.page.commentBody.value, '尚待查證的留言')
+  assert.equal(instance.requests.filter(
+    // 下架後的回讀只能是 GET，不得重送先前結果不明的留言。
+    (request) => request.method === 'POST' && request.url.endsWith('/comments'),
+  ).length, 1)
+})
+
+// 文章下架結果不明後，留言成功或失敗都不能清除原文章的同 ID 查證入口。
+test('visibility PUT unknown remains independently actionable after comment POST', async (t) => {
+  for (const commentResult of ['success', 'unknown']) {
+    const instance = await writableArticle(t)
+    instance.approve(true)
+    const hide = instance.page.submitVisibility('hidden')
+    instance.requests[3].reject(new Error('connection interrupted'))
+    await hide
+    assert.equal(instance.page.lifecycleUnknown.value, true)
+    instance.page.commentBody.value = '另一筆留言'
+    const post = instance.page.submitComment()
+    if (commentResult === 'success') await respond(instance.requests[4], 201, success({}))
+    else instance.requests[4].reject(new Error('connection interrupted'))
+    await post
+    if (commentResult === 'success') await respond(instance.requests[5], 200, list([]))
+    const html = await renderedPage(instance.page)
+    assert.equal(instance.page.lifecycleUnknown.value, true)
+    assert.match(html, /更新結果尚未確認/)
+    assert.match(html, /href="\/vue\/articles\/7"[^>]*>依原 ID 開啟詳情查證<\/a>/)
+    if (commentResult === 'unknown') {
+      assert.equal(instance.page.writeUnknown.value, true)
+      assert.match(html, /留言結果尚未確認/)
+      assert.match(html, /href="\/vue\/me\/comments"[^>]*>到我的留言查證<\/a>/)
+    }
+    assert.equal(instance.requests.filter(
+      // 後續留言僅由使用者送一次，不自動重送先前狀態 PUT。
+      (request) => request.method === 'PUT',
+    ).length, 1)
+    t.after(instance.close)
+  }
 })
