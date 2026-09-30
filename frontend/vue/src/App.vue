@@ -4,11 +4,21 @@ import { API_BASE, clearSession, formatCountdown, interpretLogin, interpretLogou
 import { interpretRegistrationResponse, validateRegistration } from './registration.js'
 import { readComment, readCommentList, validateComment } from './comments.js'
 import { articleCreated, contentUpdated, articleFailure, articlePage, backendName, localPage, readArticle, readArticleList, validateArticle } from './articles.js'
+import { readMember, readMemberList } from './admin.js'
 
 const path = window.location.pathname
 const page = articlePage(path)
 // 各路徑使用自己的分頁名稱，避免重載後把文章或找不到頁面誤認為註冊。
-document.title = { articles: '文章集｜文章列表', article: '文章集｜閱讀文章', 'article-new': '文章集｜發表文章', 'my-articles': '文章集｜我的文章', 'my-comments': '文章集｜我的留言', comment: '文章集｜留言詳情', 'article-edit': '文章集｜編輯文章', 'comment-edit': '文章集｜編輯留言', register: '文章集｜註冊會員', login: '文章集｜會員登入', missing: '文章集｜找不到頁面' }[page]
+document.title = {
+  articles: '文章集｜文章列表', article: '文章集｜閱讀文章',
+  'article-new': '文章集｜發表文章', 'my-articles': '文章集｜我的文章',
+  'my-comments': '文章集｜我的留言', comment: '文章集｜留言詳情',
+  'article-edit': '文章集｜編輯文章', 'comment-edit': '文章集｜編輯留言',
+  members: '文章集｜會員管理', member: '文章集｜會員詳情',
+  'managed-articles': '文章集｜文章管理', 'managed-comments': '文章集｜留言管理',
+  register: '文章集｜註冊會員', login: '文章集｜會員登入',
+  missing: '文章集｜找不到頁面',
+}[page]
 const registered = page === 'login' && new URLSearchParams(window.location.search).get('registered') === '1'
 // 成功提示只由已確認建立後的轉頁參數啟用，並限制在「我的文章」頁。
 const published = page === 'my-articles' && new URLSearchParams(window.location.search).get('published') === '1'
@@ -17,10 +27,25 @@ const returnTo = target && localPage(target) && target !== '/vue/login' && targe
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'
 const commentResource = page === 'comment' || page === 'comment-edit'
-const protectedPage = ['article-new', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit'].includes(page)
-const requestedId = articleResource || commentResource ? Number(path.split('/')[3]) : null
+const adminPage = ['members', 'member', 'managed-articles', 'managed-comments'].includes(page)
+const protectedPage = ['article-new', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit'].includes(page) || adminPage
+const requestedId = articleResource || commentResource
+  ? Number(path.split('/')[3])
+  : page === 'member' ? Number(path.split('/')[4]) : null
 const rawPage = new URLSearchParams(window.location.search).get('page')
-const listPage = page === 'articles' || page === 'my-articles' || page === 'my-comments' || page === 'article' ? rawPage && /^[1-9][0-9]*$/.test(rawPage) && Number.isSafeInteger(Number(rawPage)) ? Number(rawPage) : 1 : 1
+const listPage = ['articles', 'my-articles', 'my-comments', 'article', 'members', 'managed-articles', 'managed-comments'].includes(page)
+  ? rawPage && /^[1-9][0-9]*$/.test(rawPage) && Number.isSafeInteger(Number(rawPage)) ? Number(rawPage) : 1
+  : 1
+const initialKeyword = page === 'members' ? new URLSearchParams(window.location.search).get('keyword') || '' : ''
+const keyword = ref(initialKeyword)
+const searchedKeyword = initialKeyword.replace(/^ *| *$/g, '')
+const memberData = ref(null)
+const memberList = ref(null)
+const statusPending = ref(false)
+const statusUnknown = ref(false)
+const statusNeedsReadback = ref(false)
+const statusNotice = ref('')
+let statusOwner = null
 const email = ref('')
 const password = ref('')
 const nickname = ref('')
@@ -112,8 +137,8 @@ function editBodyInput(event) {
   else commentBody.value = event.target.value
 }
 
-const fieldOrder = ['email', 'password', 'nickname', 'title', 'body']
-const fieldNames = { email: 'Email', password: '密碼', nickname: '暱稱', title: '標題', body: '內文' }
+const fieldOrder = ['email', 'password', 'nickname', 'title', 'body', 'filters.keyword']
+const fieldNames = { email: 'Email', password: '密碼', nickname: '暱稱', title: '標題', body: '內文', 'filters.keyword': '搜尋關鍵字' }
 
 // 摘要只列出有訊息的欄位，避免空的後端陣列產生無作用連結。
 function hasFieldError(field) {
@@ -259,11 +284,17 @@ async function copyRelatedLogId() {
 
 // 列表與詳情沿同一讀取流程；驗證過的 JWT 才附上，失效不能悄悄改為訪客。
 async function loadContent() {
-  if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit'].includes(page) || contentLoading.value || contentPending.value || authChecking.value || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value || protectedPage && !account.value || credential.value && !account.value) return
+  if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments'].includes(page)
+    || contentLoading.value || contentPending.value || statusPending.value || authChecking.value
+    || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value
+    || protectedPage && !account.value || credential.value && !account.value
+    || adminPage && account.value?.role !== 'admin') return
   contentLoading.value = true
   contentReady.value = false
   articleData.value = null
   articleList.value = null
+  memberData.value = null
+  memberList.value = null
   commentData.value = null
   commentList.value = null
   parentArticle.value = null
@@ -273,20 +304,39 @@ async function loadContent() {
   summary.value = ''
   const request = startContentRequest()
   const token = credential.value?.accessToken
-  const endpoint = articleResource ? `/api/articles/${requestedId}` : commentResource ? `/api/comments/${requestedId}` : page === 'my-comments' ? '/api/me/comments' : page === 'my-articles' ? '/api/me/articles' : '/api/articles'
-  const query = articleResource || commentResource ? '' : `?page=${listPage}&per_page=20`
+  const endpoint = articleResource ? `/api/articles/${requestedId}`
+    : commentResource ? `/api/comments/${requestedId}`
+    : page === 'member' ? `/api/members/${requestedId}`
+    : page === 'members' ? '/api/members'
+    : page === 'managed-comments' ? '/api/comments'
+    : page === 'my-comments' ? '/api/me/comments'
+    : page === 'my-articles' ? '/api/me/articles' : '/api/articles'
+  const query = articleResource || commentResource || page === 'member' ? ''
+    : `?page=${listPage}&per_page=20${page === 'managed-articles' ? '&filters%5Bscope%5D=management'
+      : page === 'members' && searchedKeyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(searchedKeyword)}` : ''}`
   try {
     const response = await fetch(`${API_BASE}${endpoint}${query}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: request.controller.signal })
     const body = await response.json()
     if (!currentContentRequest(request, token)) return
     if (response.status === 200 && body?.success === true) {
-      const data = articleResource ? readArticle(response.status, body, requestedId) : commentResource ? readComment(response.status, body, requestedId) : page === 'my-comments' ? readCommentList(response.status, body, listPage) : readArticleList(response.status, body, listPage)
+      const data = articleResource ? readArticle(response.status, body, requestedId)
+        : commentResource ? readComment(response.status, body, requestedId)
+        : page === 'member' ? readMember(response.status, body, requestedId)
+        : page === 'members' ? readMemberList(response.status, body, listPage)
+        : page === 'my-comments' || page === 'managed-comments' ? readCommentList(response.status, body, listPage)
+        : readArticleList(response.status, body, listPage)
       if (!data) { await showError('伺服器回應不完整，請手動重新讀取。'); return }
       if (articleResource) articleData.value = data
       else if (commentResource) commentData.value = data
-      else if (page === 'my-comments') commentList.value = data
+      else if (page === 'member') memberData.value = data
+      else if (page === 'members') memberList.value = data
+      else if (page === 'my-comments' || page === 'managed-comments') commentList.value = data
       else articleList.value = data
       contentReady.value = true
+      if (page === 'member' && statusUnknown.value) {
+        statusNeedsReadback.value = false
+        statusNotice.value = `已重讀，目前伺服器狀態為${data.status === 'active' ? '啟用' : '停用'}。`
+      }
       // 初次載入才填入編輯草稿與版本；重讀只提供比較，不靜默覆蓋草稿或版本。
       if (editing && data.author.id === account.value.id) {
         if (!editLoaded.value) {
@@ -303,12 +353,25 @@ async function loadContent() {
       return
     }
     const result = articleFailure(body)
+    // 管理搜尋的巢狀欄位錯誤要連到輸入框；其他未對應錯誤仍由共用摘要顯示。
+    if (page === 'members' && response.status === 422 && result.code === 'E0001' && Array.isArray(body?.errors?.['filters.keyword'])) {
+      const messages = []
+      for (const message of body.errors['filters.keyword']) if (typeof message === 'string') messages.push(message)
+      result.errors['filters.keyword'] = messages
+    }
     if (response.status === 401 && result.code === 'E0002') {
       forgetCredential()
       reLogin.value = protectedPage || page === 'article' && hasDraft.value
     } else if (response.status === 403 && result.code === 'E0102') {
       forgetCredential()
       disabledAccount.value = true
+    } else if (adminPage && response.status === 403 && result.code === 'E0003' || page === 'member' && response.status === 404 && result.code === 'E0004') {
+      // 權限或目標已變更，保留錯誤入口，但不再顯示舊的管理資料。
+      memberData.value = null
+      memberList.value = null
+      articleList.value = null
+      commentList.value = null
+      contentReady.value = false
     }
     await showError(result.message, result.errors, result.logId, result.code)
   } catch {
@@ -319,6 +382,88 @@ async function loadContent() {
       finishContentRequest(request, token)
     } else if (alive && !contentController) contentLoading.value = false
   }
+}
+
+// 搜尋只提交字面字串，換頁回第一頁；搜尋條件不進入登入返回目標。
+function submitMemberSearch() {
+  const value = keyword.value.replace(/^ *| *$/g, '')
+  if ([...value].length > 254) {
+    showError('欄位資料不正確，請確認後再送出', { 'filters.keyword': ['搜尋關鍵字最多 254 個字。'] })
+    return
+  }
+  window.location.assign(`/vue/admin/members${value ? `?keyword=${encodeURIComponent(value)}` : ''}`)
+}
+
+// 會員分頁保留字面搜尋條件；其他管理列表只保留頁碼。
+function adminPageHref(nextPage) {
+  const query = new URLSearchParams()
+  if (page === 'members' && searchedKeyword) query.set('keyword', searchedKeyword)
+  query.set('page', String(nextPage))
+  return `${path}?${query.toString()}`
+}
+
+// 狀態寫入只送 approved status；不根據空成功回應推測新狀態，而是重讀同一會員。
+async function submitMemberStatus() {
+  if (page !== 'member' || !memberData.value || !contentReady.value
+    || contentLoading.value || statusPending.value || statusNeedsReadback.value
+    || authChecking.value || logoutPending.value || !credential.value
+    || account.value?.role !== 'admin') return
+  const nextStatus = memberData.value.status === 'active' ? 'disabled' : 'active'
+  statusOwner = account.value.id
+  statusPending.value = true
+  statusNotice.value = ''
+  const request = startContentRequest()
+  const token = credential.value.accessToken
+  try {
+    const response = await fetch(`${API_BASE}/api/members/${requestedId}/status`, {
+      method: 'PUT',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ status: nextStatus }),
+      signal: request.controller.signal,
+    })
+    const body = await response.json()
+    if (!currentContentRequest(request, token)) return
+    if (contentUpdated(response.status, body)) {
+      statusNotice.value = '更新已送達；正在重新讀取會員狀態。'
+    } else {
+      const result = articleFailure(body)
+      // 5xx 或不完整的 200 可能已提交；保留結果不明狀態，必須先讀回同一 ID。
+      const outcomeUnknown = response.status >= 500 || response.status === 200
+      if (outcomeUnknown) {
+        statusUnknown.value = true
+        statusNeedsReadback.value = true
+      }
+      if (response.status === 401 && result.code === 'E0002') {
+        forgetCredential()
+        reLogin.value = true
+      } else if (response.status === 403 && result.code === 'E0102') {
+        forgetCredential()
+        disabledAccount.value = true
+      } else if (response.status === 403 && result.code === 'E0003' || response.status === 404 && result.code === 'E0004') {
+        memberData.value = null
+        contentReady.value = false
+      }
+      await showError(outcomeUnknown ? `更新結果尚未確認；請先重讀同一會員查證。${result.message}` : result.message, {}, result.logId, result.code)
+      return
+    }
+  } catch {
+    if (currentContentRequest(request, token)) {
+      statusUnknown.value = true
+      statusNeedsReadback.value = true
+      await showError('更新結果尚未確認；請先重讀同一會員查證，再決定是否手動重試。')
+    }
+    return
+  } finally {
+    // 只清掉本次仍有效的等待狀態，避免舊請求完成後解開較新的操作。
+    if (currentContentRequest(request, token)) {
+      statusPending.value = false
+      finishContentRequest(request, token)
+    }
+  }
+  // 成功 envelope 不含新狀態；讀回同一 ID 才能顯示伺服器值，且不替先前結果不明的寫入下結論。
+  if (alive && credential.value?.accessToken === token) await loadContent()
+  if (contentReady.value && !statusUnknown.value) statusNotice.value = `已重讀會員，目前狀態為${memberData.value.status === 'active' ? '啟用' : '停用'}。`
+  else if (account.value?.role === 'admin' && !contentReady.value) statusNotice.value = '更新已送達，但尚未讀到最新會員狀態；請手動重新讀取。'
 }
 
 // 發文僅送 title/body；確認 201 空 data 後才帶提示回我的文章第一頁，失敗保留草稿。
@@ -664,7 +809,7 @@ function onEscape(event) {
 
 // 按下錯誤摘要項目時直接聚焦對應欄位，讓修正路徑清楚。
 function focusField(name) {
-  document.getElementById(name)?.focus()
+  document.getElementById(name === 'filters.keyword' ? 'member-keyword' : name)?.focus()
 }
 
 // 每次錯誤都先聚焦摘要，使螢幕閱讀器先聽到整體結果。
@@ -730,8 +875,12 @@ function forgetCredential() {
   stopContentRequest()
   contentLoading.value = false
   contentPending.value = false
+  statusPending.value = false
   articleData.value = null
   articleList.value = null
+  memberData.value = null
+  memberList.value = null
+  statusNotice.value = ''
   commentData.value = null
   commentList.value = null
   parentArticle.value = null
@@ -747,7 +896,7 @@ function forgetCredential() {
 // 重新整理只能從保存的 token 嘗試驗證，GET /api/me 成功前不顯示帳號權限。
 async function verifyAccount() {
   // 認證共用取消機制；重驗不得中斷登入或登出，否則舊操作的等待狀態無法正常結束。
-  if (!credential.value || authChecking.value || pending.value || logoutPending.value || contentPending.value) return
+  if (!credential.value || authChecking.value || pending.value || logoutPending.value || contentPending.value || statusPending.value) return
   const previousAccount = account.value
   if ((page === 'article-new' || page === 'article' || editing) && previousAccount && hasDraft.value) draftOwner = previousAccount.id
   // 重驗期間停止讀取並隱藏原授權資料，成功後再向後端重新取得。
@@ -757,6 +906,8 @@ async function verifyAccount() {
   contentReady.value = false
   articleData.value = null
   articleList.value = null
+  memberData.value = null
+  memberList.value = null
   commentData.value = null
   commentList.value = null
   parentArticle.value = null
@@ -780,7 +931,9 @@ async function verifyAccount() {
       }
       if (page === 'article-new' || page === 'article' || editing) draftOwner = result.account.id
       account.value = result.account
+      if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       if (page === 'login') window.location.assign(returnTo)
+      else if (adminPage && result.account.role !== 'admin') await showError('沒有權限使用此功能', {}, '', 'E0003')
     } else {
       if (response.status === 401 && result.code === 'E0002') {
         if ((page === 'article-new' || page === 'article' || editing) && previousAccount) draftOwner = previousAccount.id
@@ -798,7 +951,7 @@ async function verifyAccount() {
     if (currentAuthRequest(request)) {
       authChecking.value = false
       finishAuthRequest(request)
-      if (account.value && page !== 'login') loadContent()
+      if (account.value && page !== 'login' && (!adminPage || account.value.role === 'admin')) loadContent()
     }
   }
 }
@@ -839,10 +992,18 @@ async function submitLogin() {
       }
       credential.value = { backend: API_BASE, accessToken: result.accessToken, expiresAt: result.expiresAt }
       account.value = result.account
+      if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       clearLock()
       if (page === 'login') window.location.assign(returnTo)
       else {
         reLogin.value = false
+        if (adminPage && result.account.role !== 'admin') {
+          memberData.value = null
+          memberList.value = null
+          contentReady.value = false
+          await showError('沒有權限使用此功能', {}, '', 'E0003')
+          return
+        }
         if (draftOwner !== null && draftOwner !== result.account.id) {
           articleTitle.value = ''
           articleBody.value = ''
@@ -852,7 +1013,7 @@ async function submitLogin() {
           await showError('已登入不同帳號，原帳號草稿已清除；請重新輸入。')
         } else {
           summary.value = ''
-          if (['article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit'].includes(page)) loadContent()
+          if (['article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit'].includes(page) || adminPage) loadContent()
         }
         draftOwner = result.account.id
       }
@@ -876,7 +1037,7 @@ async function submitLogin() {
 
 // 伺服器確認撤銷前保留憑證；失敗時明示未登出並讓使用者手動重試。
 async function submitLogout() {
-  if (logoutPending.value || contentPending.value || !account.value || !credential.value) return
+  if (logoutPending.value || contentPending.value || statusPending.value || !account.value || !credential.value) return
   // 先讓使用者決定是否捨棄純記憶體草稿，取消時不能先撤銷伺服器憑證。
   if (hasDraft.value && !window.confirm('尚有未送出的內容，確定登出並捨棄嗎？')) return
   logoutPending.value = true
@@ -968,7 +1129,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1024,7 +1185,7 @@ onBeforeUnmount(() => {
           <div v-if="articleList && contentReady" class="article-results"><p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁<span v-if="articleList.pagination.total_pages">／共 {{ articleList.pagination.total_pages }} 頁</span></p><p v-if="!articleList.list.length" role="status">{{ articleList.pagination.total && listPage > articleList.pagination.total_pages ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。' }}</p><ol v-else class="article-list"><li v-for="item in articleList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><h2><a :href="`/vue/articles/${item.id}`">{{ item.title }}</a></h2><p class="article-excerpt">{{ item.body }}</p><a class="read-link" :href="`/vue/articles/${item.id}`">閱讀全文</a></li></ol><nav v-if="articleList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="文章分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < articleList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="articleList.pagination.total && listPage > articleList.pagination.total_pages" :href="path">回第一頁</a></nav></div>
           <button v-else-if="!contentLoading && !authChecking && !reLogin && !disabledAccount && summaryCode !== 'E0002' && (!protectedPage || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button>
         </template>
-        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p><a class="text-link" href="/vue/">返回文章列表</a></p></template>
+        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p class="detail-return-links"><a class="text-link" href="/vue/">返回文章列表</a><a v-if="account?.role === 'admin'" class="text-link" href="/vue/admin/articles">返回文章管理</a></p></template>
         <template v-else-if="page === 'my-comments'">
           <div v-if="commentList && contentReady" class="article-results">
             <p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p>
@@ -1038,7 +1199,7 @@ onBeforeUnmount(() => {
           <article v-if="commentData && contentReady && !editing" class="article-detail"><p class="article-meta">{{ commentData.author.nickname }} · {{ commentData.created_at }} · 建立於 {{ backendName(commentData.created_backend) }}<span v-if="commentData.visibility === 'hidden'"> · 已下架</span></p><div class="article-body">{{ commentData.body }}</div></article>
           <button v-if="!contentReady && !contentLoading && !authChecking && !reLogin && !disabledAccount && account" type="button" class="secondary-button" :disabled="contentPending" @click="loadContent">重新讀取留言</button>
           <section v-if="commentData && contentReady" class="related-content" aria-labelledby="parent-title"><h2 id="parent-title">所屬文章</h2><p v-if="relatedLoading" role="status">正在確認所屬文章的讀取權限…</p><template v-if="parentArticle"><p class="article-meta"><span v-if="parentArticle.visibility === 'hidden'">已下架 · </span>建立於 {{ backendName(parentArticle.created_backend) }}</p><h3><a :href="`/vue/articles/${parentArticle.id}`">{{ parentArticle.title }}</a></h3></template><section v-if="relatedError" ref="relatedSummary" class="error-summary" tabindex="-1" aria-labelledby="related-error-title"><h3 id="related-error-title">{{ relatedError }}</h3><div v-if="relatedLogId" class="trace"><span>追蹤編號：<span class="trace-id">{{ relatedLogId }}</span></span><button type="button" @click="copyRelatedLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section><button v-if="relatedError && !relatedLoading" class="secondary-button" type="button" :disabled="contentPending" @click="loadRelated">重新讀取所屬文章</button></section>
-          <p><a class="text-link" href="/vue/me/comments">返回我的留言</a></p>
+          <p class="detail-return-links"><a class="text-link" href="/vue/me/comments">返回我的留言</a><a v-if="account?.role === 'admin'" class="text-link" href="/vue/admin/comments">返回留言管理</a></p>
         </template>
         <template v-else-if="page === 'article-new'"><p class="intro">標題與內文會以純文字公開顯示。發表後可在我的文章查看。</p><form novalidate @submit.prevent="submitArticle"><div class="field"><label for="title">標題</label><input id="title" v-model="articleTitle" type="text" :disabled="contentPending || !account || disabledAccount" :aria-invalid="Boolean(errors.title)" :aria-describedby="errors.title ? 'title-error title-help' : 'title-help'" /><p id="title-help" class="field-help">1–200 個字，不可全為空白。</p><p v-if="errors.title" id="title-error" class="field-error">{{ errors.title.join('；') }}</p></div><div class="field"><label for="body">內文</label><textarea id="body" v-model="articleBody" :disabled="contentPending || !account || disabledAccount" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'body-error body-help' : 'body-help'"></textarea><p id="body-help" class="field-help">1–20,000 個字；原樣保留換行。</p><p v-if="errors.body" id="body-error" class="field-error">{{ errors.body.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="contentPending || !account || reLogin || disabledAccount">{{ contentPending ? '發表處理中…' : '發表文章' }}</button><p v-if="contentPending" class="pending-note" role="status">正在發表，請稍候；不要重複送出。</p></form><p v-if="writeUnknown" class="pending-note">發文結果尚未確認。<a class="text-link" href="/vue/me/articles">先到我的文章查證</a></p></template>
         <template v-if="editing">
@@ -1084,6 +1245,193 @@ onBeforeUnmount(() => {
         </section>
         <!-- 留言結果不明與資源更新、父文章可讀性獨立；其他操作不能清除查證入口。 -->
         <p v-if="page === 'article' && writeUnknown" class="pending-note">留言結果尚未確認；請先查證，避免重複留言。<button type="button" class="inline-button" :disabled="relatedLoading || contentPending || !canComment" @click="loadRelated">重新讀取留言查證</button><a class="text-link" href="/vue/me/comments">到我的留言查證</a></p>
+      </section>
+      <section v-else-if="adminPage" class="reading-page admin-page" aria-labelledby="page-title">
+        <div class="reading-heading">
+          <div>
+            <p class="eyebrow">文章集 / 管理</p>
+            <h1 id="page-title">{{ page === 'members' ? '會員管理' : page === 'member' ? '會員詳情' : page === 'managed-articles' ? '文章管理' : '留言管理' }}</h1>
+          </div>
+        </div>
+        <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="admin-error-title">
+          <h2 id="admin-error-title">{{ summary }}</h2>
+          <ul v-if="errorFields.length">
+            <li v-for="name in errorFields" :key="name">
+              <button type="button" @click="focusField(name)">{{ fieldNames[name] }}：{{ errors[name].join('；') }}</button>
+            </li>
+          </ul>
+          <div v-if="logId" class="trace">
+            <span>追蹤編號：<span class="trace-id">{{ logId }}</span>
+            </span>
+            <button type="button" @click="copyLogId">複製編號</button>
+            <span role="status">{{ copyState }}</span>
+          </div>
+        </section>
+        <p v-if="authChecking" role="status">正在確認登入狀態，請稍候…</p>
+        <p v-if="contentLoading" role="status">正在讀取管理資料，請稍候…</p>
+        <p v-if="credential && !account && !authChecking && !reLogin"
+          class="pending-note">目前無法確認登入狀態；憑證已保留。<button class="inline-button" type="button" @click="verifyAccount">重新驗證登入</button>
+        </p>
+        <p v-if="!credential && !reLogin && !disabledAccount && summaryCode === 'E0002'">請重新登入後手動讀取。<a class="text-link"
+          :href="`/vue/login?return_to=${encodeURIComponent(path)}`">前往登入</a>
+        </p>
+        <form v-if="reLogin && !disabledAccount" class="relogin-form" novalidate @submit.prevent="submitLogin">
+          <p>請重新登入後讀取原管理頁。</p>
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" v-model="email" type="email" autocomplete="email"
+              :disabled="pending || locked" :aria-invalid="Boolean(errors.email)"
+              :aria-describedby="errors.email ? 'email-error' : undefined" />
+            <p v-if="errors.email" id="email-error" class="field-error">{{ errors.email.join('；') }}</p>
+          </div>
+          <div class="field">
+            <label for="password">密碼</label>
+            <input id="password" v-model="password" type="password" autocomplete="current-password"
+              :disabled="pending || locked" :aria-invalid="Boolean(errors.password)"
+              :aria-describedby="errors.password ? 'password-error' : undefined" />
+            <p v-if="errors.password" id="password-error" class="field-error">{{ errors.password.join('；') }}</p>
+          </div>
+          <button class="primary-button" type="submit" :disabled="pending || locked">{{ pending ? '登入處理中…' : '重新登入' }}</button>
+          <p v-if="lockText" class="lock-note" aria-live="off">{{ lockText }}</p>
+        </form>
+        <template v-if="account && account.role !== 'admin' && !authChecking">
+          <p>此頁僅供管理員使用。</p>
+          <a class="text-link" href="/vue/">返回文章列表</a>
+        </template>
+        <template v-if="account?.role === 'admin' && !authChecking">
+          <form v-if="page === 'members'" class="admin-search" @submit.prevent="submitMemberSearch">
+            <label for="member-keyword">搜尋會員暱稱或 Email</label>
+            <div>
+              <input id="member-keyword" v-model="keyword" type="search"
+                :aria-invalid="Boolean(errors['filters.keyword']?.length)"
+                :aria-describedby="errors['filters.keyword']?.length ? 'member-keyword-error member-keyword-help' : 'member-keyword-help'" />
+              <button class="secondary-button" type="submit">搜尋</button>
+            </div>
+            <p id="member-keyword-help" class="field-help">以字面包含搜尋；不使用萬用字元。</p>
+            <p v-if="errors['filters.keyword']?.length" id="member-keyword-error" class="field-error">{{ errors['filters.keyword'].join('；') }}</p>
+          </form>
+          <p v-if="page === 'member' && statusNotice" class="success-note" role="status">{{ statusNotice }}</p>
+          <p v-if="page === 'member' && statusUnknown" class="pending-note" role="status">先前送出的操作是否完成仍無法判定。{{
+            statusNeedsReadback ? '請重新讀取同一會員，查證目前狀態後再決定是否操作。' : '目前狀態已重讀；再次操作仍需手動確認。'
+          }}</p>
+          <article v-if="page === 'member' && memberData && contentReady" class="admin-detail">
+            <dl>
+              <div>
+                <dt>會員 ID</dt>
+                <dd>{{ memberData.id }}</dd>
+              </div>
+              <div>
+                <dt>暱稱</dt>
+                <dd>{{ memberData.nickname }}</dd>
+              </div>
+              <div>
+                <dt>Email</dt>
+                <dd>{{ memberData.email }}</dd>
+              </div>
+              <div>
+                <dt>狀態</dt>
+                <dd>{{ memberData.status === 'active' ? '啟用' : '停用' }}</dd>
+              </div>
+              <div>
+                <dt>建立時間</dt>
+                <dd>{{ memberData.created_at }}</dd>
+              </div>
+            </dl>
+            <button class="secondary-button" type="button"
+              :disabled="statusPending || statusNeedsReadback || contentLoading || logoutPending"
+              @click="submitMemberStatus">{{ statusPending ? '更新處理中…' : memberData.status === 'active' ? '停用會員' : '恢復會員' }}</button>
+            <p v-if="statusPending" class="pending-note" role="status">正在更新會員；請勿重複送出。</p>
+          </article>
+          <div v-if="page === 'members' && memberList && contentReady">
+            <p class="result-count">共 {{ memberList.pagination.total }} 位 · 第 {{ memberList.pagination.page }} 頁<span
+              v-if="memberList.pagination.total_pages">／共 {{ memberList.pagination.total_pages }} 頁</span>
+            </p>
+            <p v-if="!memberList.list.length" role="status">{{
+              memberList.pagination.total && listPage > memberList.pagination.total_pages
+                ? '此頁沒有會員，總數仍保留。' : searchedKeyword ? '沒有符合搜尋的會員。' : '目前尚無會員。'
+            }}</p>
+            <ol v-else class="admin-list">
+              <li v-for="item in memberList.list" :key="item.id" class="admin-row">
+                <div>
+                  <span class="admin-label">暱稱</span>
+                  <strong>{{ item.nickname }}</strong>
+                </div>
+                <div>
+                  <span class="admin-label">Email</span>
+                  <span>{{ item.email }}</span>
+                </div>
+                <div>
+                  <span class="admin-label">狀態</span>
+                  <span>{{ item.status === 'active' ? '啟用' : '停用' }}</span>
+                </div>
+                <a class="read-link" :href="`/vue/admin/members/${item.id}`">查看會員</a>
+              </li>
+            </ol>
+          </div>
+          <div v-if="page === 'managed-articles' && articleList && contentReady">
+            <p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁</p>
+            <p v-if="!articleList.list.length" role="status">{{
+              articleList.pagination.total && listPage > articleList.pagination.total_pages
+                ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。'
+            }}</p>
+            <ol v-else class="admin-list">
+              <li v-for="item in articleList.list" :key="item.id" class="admin-row">
+                <div>
+                  <span class="admin-label">標題</span>
+                  <strong>{{ item.title }}</strong>
+                </div>
+                <div>
+                  <span class="admin-label">作者</span>
+                  <span>{{ item.author.nickname }}</span>
+                </div>
+                <div>
+                  <span class="admin-label">狀態</span>
+                  <span>{{ item.visibility === 'hidden' ? '已下架' : '公開' }}</span>
+                </div>
+                <a class="read-link" :href="`/vue/articles/${item.id}`">閱讀文章詳情</a>
+              </li>
+            </ol>
+          </div>
+          <div v-if="page === 'managed-comments' && commentList && contentReady">
+            <p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁</p>
+            <p v-if="!commentList.list.length" role="status">{{
+              commentList.pagination.total && listPage > commentList.pagination.total_pages
+                ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。'
+            }}</p>
+            <ol v-else class="admin-list">
+              <li v-for="item in commentList.list" :key="item.id" class="admin-row">
+                <div>
+                  <span class="admin-label">留言</span>
+                  <span class="admin-excerpt">{{ item.body }}</span>
+                </div>
+                <div>
+                  <span class="admin-label">作者</span>
+                  <span>{{ item.author.nickname }}</span>
+                </div>
+                <div>
+                  <span class="admin-label">狀態</span>
+                  <span>{{ item.visibility === 'hidden' ? '已下架' : '公開' }}</span>
+                </div>
+                <a class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a>
+              </li>
+            </ol>
+          </div>
+          <nav
+            v-if="(page === 'members' && memberList || page === 'managed-articles' && articleList || page === 'managed-comments' && commentList) && contentReady"
+            class="pagination" aria-label="管理列表分頁">
+            <a v-if="listPage > 1" :href="adminPageHref(listPage - 1)">上一頁</a>
+            <span>第 {{ listPage }} 頁</span>
+            <a v-if="listPage < (memberList || articleList || commentList).pagination.total_pages" :href="adminPageHref(listPage + 1)">下一頁</a>
+            <a v-if="(memberList || articleList || commentList).pagination.total && listPage > (memberList || articleList || commentList).pagination.total_pages"
+              :href="adminPageHref(1)">回第一頁</a>
+          </nav>
+          <button
+            v-if="!contentLoading && !statusPending && (!contentReady || page === 'member' && statusNeedsReadback) && !disabledAccount && summaryCode !== 'E0002'"
+            class="secondary-button" type="button" @click="loadContent">重新讀取{{ page === 'member' ? '同一會員' : '管理資料' }}</button>
+          <p v-if="page === 'member'">
+            <a class="text-link" href="/vue/admin/members">返回會員列表</a>
+          </p>
+        </template>
       </section>
       <section v-else-if="page === 'login'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">會員登入</h1>

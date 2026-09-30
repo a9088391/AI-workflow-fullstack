@@ -9,6 +9,7 @@ import * as auth from './auth.js'
 import * as registration from './registration.js'
 import * as articles from './articles.js'
 import * as comments from './comments.js'
+import * as admin from './admin.js'
 
 const sample = { id: 7, title: '標題', body: '第一行\r\n第二行', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
 const member = { id: 2, email: 'writer@example.test', nickname: '作者', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
@@ -48,7 +49,7 @@ function articleApp(path, savedToken = 'old-token', search = '') {
   }
   if (savedToken) auth.saveSession(sessionStorage, savedToken, '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration, ...articles, ...comments,
+    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
     AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage,
     document: {},
     window: {

@@ -3,6 +3,7 @@
 use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CommentController;
+use App\Http\Controllers\MemberController;
 use App\Http\Controllers\RegisterController;
 use Illuminate\Support\Facades\Route;
 
@@ -20,7 +21,11 @@ Route::get('/me/articles', [ArticleController::class, 'mine']);
 Route::get('/articles/{article_id}/comments', [CommentController::class, 'index']);
 Route::post('/articles/{article_id}/comments', [CommentController::class, 'store']);
 Route::get('/me/comments', [CommentController::class, 'mine']);
+Route::get('/comments', [CommentController::class, 'adminIndex']);
 Route::get('/comments/{comment_id}', [CommentController::class, 'show']);
+Route::get('/members', [MemberController::class, 'index']);
+Route::get('/members/{member_id}', [MemberController::class, 'show']);
+Route::put('/members/{member_id}/status', [MemberController::class, 'status']);
 
 Route::put('/articles/{article_id}', [ArticleController::class, 'update']);
 Route::put('/articles/{article_id}/visibility', [ArticleController::class, 'visibility']);

@@ -11,6 +11,7 @@ import * as auth from './auth.js'
 import * as registration from './registration.js'
 import * as articles from './articles.js'
 import * as comments from './comments.js'
+import * as admin from './admin.js'
 
 const member = { id: 2, email: 'reader@example.test', nickname: '讀者', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
 const comment = { id: 9, body: '<script>原文字</script>\r\n😀', article_id: 7, author: { id: 2, nickname: '讀者' }, version: 1, created_backend: 'gin', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'hidden', can_restore: true }
@@ -57,7 +58,7 @@ function app(path, token = 'saved-token', search = '') {
   }
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration, ...articles, ...comments,
+    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
     AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage, document: {},
     window: {
       // 記錄使用者確認；預設取消，避免測試意外捨棄既有草稿。

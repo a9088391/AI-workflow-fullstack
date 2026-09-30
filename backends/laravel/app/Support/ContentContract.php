@@ -13,7 +13,7 @@ use stdClass;
 trait ContentContract
 {
     /** 直接檢查原始 Query，以辨認重複參數與巢狀欄位，避免框架靜默取最後值。 */
-    private function query(Request $request, bool $pagination, bool $scope = true): array|JsonResponse
+    private function query(Request $request, bool $pagination, bool|string $scope = true): array|JsonResponse
     {
         // GET 不接受 Body，先拒絕以維持 Request Body 錯誤的驗證先後。
         if ($request->isMethod('GET') && $request->getContent() !== '') {
@@ -22,20 +22,24 @@ trait ContentContract
         $values = [];
         $errors = [];
         $raw = $request->server('QUERY_STRING', '');
+        $filter = $scope === true
+            ? 'filters[scope]'
+            : ($scope === 'keyword' ? 'filters[keyword]' : null);
+        $allowed = $pagination ? ['page', 'per_page', ...($filter === null ? [] : [$filter])] : [];
         // 原始參數逐一解碼以辨識重複與陣列；無效 UTF-8 名稱改用百分號編碼，讓錯誤鍵可輸出為 JSON。
         if ($raw !== '') {
             foreach (explode('&', $raw) as $pair) {
                 [$name, $value] = array_pad(explode('=', $pair, 2), 2, '');
                 $name = urldecode($name);
                 $name = mb_check_encoding($name, 'UTF-8') ? $name : rawurlencode($name);
-                $arrayValue = preg_match('/\A(page|per_page|filters\[scope\])\[/', $name, $parts) === 1;
+                $arrayValue = preg_match('/\A(page|per_page|filters\[(?:scope|keyword)\])\[/', $name, $parts) === 1;
                 $canonical = $arrayValue ? $parts[1] : $name;
                 $errorName = preg_replace('/\Afilters\[([^\]]+)\]\z/', 'filters.$1', $canonical);
                 if (array_key_exists($canonical, $values)) {
                     $errors[$errorName] = ['此參數不可重複'];
-                } elseif ($arrayValue && in_array($canonical, $pagination ? ($scope ? ['page', 'per_page', 'filters[scope]'] : ['page', 'per_page']) : [], true)) {
+                } elseif ($arrayValue && in_array($canonical, $allowed, true)) {
                     $errors[$errorName] = ['欄位型態不正確'];
-                } elseif (! in_array($canonical, $pagination ? ($scope ? ['page', 'per_page', 'filters[scope]'] : ['page', 'per_page']) : [], true)) {
+                } elseif (! in_array($canonical, $allowed, true)) {
                     $errors[$errorName] = ['不支援此欄位'];
                 }
                 $values[$canonical] = urldecode($value);
@@ -50,12 +54,33 @@ trait ContentContract
                     $errors[$name] = ['欄位格式或範圍不正確'];
                 }
             }
-            if ($scope && isset($values['filters[scope]']) && ! isset($errors['filters.scope']) && $values['filters[scope]'] !== 'management') {
+            if ($scope === true
+                && isset($values['filters[scope]'])
+                && ! isset($errors['filters.scope'])
+                && $values['filters[scope]'] !== 'management') {
                 $errors['filters.scope'] = ['欄位格式或範圍不正確'];
+            }
+            // 會員關鍵字只去除 U+0020；無效 UTF-8 與資料庫不能處理的 NUL 在查詢前拒絕。
+            if ($scope === 'keyword'
+                && isset($values['filters[keyword]'])
+                && ! isset($errors['filters.keyword'])) {
+                $keyword = trim($values['filters[keyword]'], ' ');
+                if (! mb_check_encoding($keyword, 'UTF-8')
+                    || str_contains($keyword, "\0")
+                    || mb_strlen($keyword, 'UTF-8') > 254) {
+                    $errors['filters.keyword'] = ['欄位格式或範圍不正確'];
+                }
             }
         }
 
-        return $errors === [] ? ['page' => $pagination ? (int) $values['page'] : 1, 'per_page' => $pagination ? (int) $values['per_page'] : 20, 'scope' => $values['filters[scope]'] ?? null] : $this->invalid($errors);
+        return $errors === []
+            ? [
+                'page' => $pagination ? (int) $values['page'] : 1,
+                'per_page' => $pagination ? (int) $values['per_page'] : 20,
+                'scope' => $values['filters[scope]'] ?? null,
+                'keyword' => isset($values['filters[keyword]']) ? trim($values['filters[keyword]'], ' ') : null,
+            ]
+            : $this->invalid($errors);
     }
 
     /** JSON 寫入必須是 object；保留原文，但拒絕 PostgreSQL text 無法儲存的 U+0000。 */
@@ -89,6 +114,11 @@ trait ContentContract
                 }
             } elseif ($limit === 'visibility') {
                 if (! in_array($body->$name, ['visible', 'hidden'], true)) {
+                    $errors[$name] = ['欄位格式或範圍不正確'];
+                }
+            } elseif ($limit === 'status') {
+                // 會員狀態只接受核准的兩個值；其他字串不可落入一般純文字驗證。
+                if (! in_array($body->$name, ['active', 'disabled'], true)) {
                     $errors[$name] = ['欄位格式或範圍不正確'];
                 }
             } elseif (str_contains($body->$name, "\0")

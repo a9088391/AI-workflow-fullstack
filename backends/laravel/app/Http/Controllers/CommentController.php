@@ -158,6 +158,24 @@ class CommentController extends Controller
         });
     }
 
+    /** 管理員可列出全部留言，包含個別下架及父文章下架的留言。 */
+    public function adminIndex(Request $request): JsonResponse
+    {
+        // 門禁通過後才共用既有留言查詢與分頁，包含所有下架狀態且不查父文章內文。
+        return DB::transaction(function () use ($request): JsonResponse {
+            $viewer = AuthenticatedAccount::resolve($request)[0];
+            if ($viewer->role !== 'admin') {
+                return $this->error(403, 'E0003', '沒有權限使用此功能');
+            }
+            $input = $this->query($request, true, false);
+            if ($input instanceof JsonResponse) {
+                return $input;
+            }
+
+            return $this->listing($this->comments(), $input, $viewer);
+        });
+    }
+
     /** 作者及管理員可獨立讀取留言；其他會員依可見性先回 404，再判定 403。 */
     public function show(Request $request, string $comment_id): JsonResponse
     {

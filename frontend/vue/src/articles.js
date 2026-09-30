@@ -1,6 +1,8 @@
 // 只接受本票已實作的本機頁面，防止登入返回目標成為任意網址。
 export function localPage(path) {
-  if (path === '/vue/' || path === '/vue/login' || path === '/vue/register' || path === '/vue/articles/new' || path === '/vue/me/articles' || path === '/vue/me/comments') return true
+  if (path === '/vue/' || path === '/vue/login' || path === '/vue/register' || path === '/vue/articles/new' || path === '/vue/me/articles' || path === '/vue/me/comments' || path === '/vue/admin/members' || path === '/vue/admin/articles' || path === '/vue/admin/comments') return true
+  const member = path.match(/^\/vue\/admin\/members\/([0-9]+)$/)
+  if (member) return Number.isSafeInteger(Number(member[1])) && Number(member[1]) > 0
   const match = path.match(/^\/vue\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
   return Boolean(match && Number.isSafeInteger(Number(match[1])) && Number(match[1]) > 0)
 }
@@ -13,6 +15,10 @@ export function articlePage(path) {
   if (path === '/vue/articles/new') return 'article-new'
   if (path === '/vue/me/articles') return 'my-articles'
   if (path === '/vue/me/comments') return 'my-comments'
+  if (path === '/vue/admin/members') return 'members'
+  if (path === '/vue/admin/articles') return 'managed-articles'
+  if (path === '/vue/admin/comments') return 'managed-comments'
+  if (/^\/vue\/admin\/members\/[0-9]+$/.test(path) && localPage(path)) return 'member'
   if (!localPage(path)) return 'missing'
   const resource = path.startsWith('/vue/comments/') ? 'comment' : 'article'
   return path.endsWith('/edit') ? `${resource}-edit` : resource
