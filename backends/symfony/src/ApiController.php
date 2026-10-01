@@ -11,7 +11,7 @@ use stdClass;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 
-/** 七個核准端點共用原始輸入驗證與目前身分查核，直接讀寫既有 PostgreSQL 結構。 */
+/** 共用核准 API 的原始輸入驗證與目前身分查核，直接讀寫既有 PostgreSQL 結構。 */
 class ApiController
 {
     /** 共用同一資料庫連線與交易包裝，避免各端點自行決定鎖順序。 */
@@ -216,6 +216,286 @@ class ApiController
 
             return $this->success(['list' => $list, 'pagination' => $this->pagination($input, $total)]);
         });
+    }
+
+    /** 以目前登入者建立公開文章；來源及時間由伺服器指定，不能由 Body 冒填。 */
+    public function createArticle(Request $request): JsonResponse
+    {
+        // 認證鎖保留到寫入提交，與停用及撤銷登入取得一致先後。
+        return $this->database->transaction(function (PDO $db) use ($request): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $this->noQuery($request);
+            $body = $this->contentBody($request, ['title' => 200, 'body' => 20000]);
+            $now = $this->sqlTime($this->now($db));
+            $insert = $db->prepare("INSERT INTO articles (author_id, title, body, visibility, restore_control, version, created_backend, created_at, updated_at) VALUES (:author, :title, :body, 'visible', NULL, 1, 'symfony', :created, :updated)");
+            $insert->execute(['author' => $viewer->id, 'title' => $body->title, 'body' => $body->body, 'created' => $now, 'updated' => $now]);
+
+            return $this->success([], 201);
+        });
+    }
+
+    /** 個人文章列表包含自己的下架內容，從登入帳號固定作者範圍。 */
+    public function myArticles(Request $request): JsonResponse
+    {
+        // 驗證 Query 後精確計數及穩定分頁，避免由用戶端指定他人作者。
+        return $this->database->transaction(function (PDO $db) use ($request): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $input = $this->listQuery($request, false);
+            $from = ' FROM articles JOIN accounts ON accounts.id = articles.author_id WHERE articles.author_id = :author';
+            $count = $db->prepare('SELECT count(*)'.$from);
+            $count->execute(['author' => $viewer->id]);
+            $total = (int) $count->fetchColumn();
+            $rows = $this->pageRows($db, 'SELECT articles.id, articles.author_id, articles.title, articles.body, articles.visibility, articles.restore_control, articles.version, articles.created_backend, articles.created_at, articles.updated_at, accounts.nickname'.$from.' ORDER BY articles.created_at DESC, articles.id DESC', $input, $total, ['author' => (int) $viewer->id]);
+            $list = [];
+            foreach ($rows as $row) {
+                $list[] = $this->articleResource($row, $viewer);
+            }
+
+            return $this->success(['list' => $list, 'pagination' => $this->pagination($input, $total)]);
+        });
+    }
+
+    /** 個人留言列表不依父文章可見性篩除自己的留言，也不回父文章內容。 */
+    public function myComments(Request $request): JsonResponse
+    {
+        // 查詢只依登入作者限制；個別下架與父文章下架仍能供作者查核。
+        return $this->database->transaction(function (PDO $db) use ($request): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $input = $this->listQuery($request, false);
+            $from = ' FROM comments JOIN accounts ON accounts.id = comments.author_id WHERE comments.author_id = :author';
+            $count = $db->prepare('SELECT count(*)'.$from);
+            $count->execute(['author' => $viewer->id]);
+            $total = (int) $count->fetchColumn();
+            $rows = $this->pageRows($db, 'SELECT comments.id, comments.author_id, comments.article_id, comments.body, comments.visibility, comments.restore_control, comments.version, comments.created_backend, comments.created_at, comments.updated_at, accounts.nickname'.$from.' ORDER BY comments.created_at DESC, comments.id DESC', $input, $total, ['author' => (int) $viewer->id]);
+            $list = [];
+            foreach ($rows as $row) {
+                $list[] = $this->commentResource($row, $viewer);
+            }
+
+            return $this->success(['list' => $list, 'pagination' => $this->pagination($input, $total)]);
+        });
+    }
+
+    /** 作者可編修自己的文章，包含下架內容，但編修不改恢復權。 */
+    public function updateArticle(Request $request, string $article_id): JsonResponse
+    {
+        return $this->mutateArticle($request, $article_id, false);
+    }
+
+    /** 作者或管理員可調整文章可見性，管理員接管他人恢復權需增加版本。 */
+    public function articleVisibility(Request $request, string $article_id): JsonResponse
+    {
+        return $this->mutateArticle($request, $article_id, true);
+    }
+
+    /** 在帳號、session、文章列鎖內依可讀性、權限、版本順序裁決文章寫入。 */
+    private function mutateArticle(Request $request, string $article_id, bool $visibility): JsonResponse
+    {
+        // 同值也先查版本；鎖到提交避免後續並行覆寫或撤銷登入競爭。
+        return $this->database->transaction(function (PDO $db) use ($request, $article_id, $visibility): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $this->noQuery($request);
+            $id = $this->id($article_id, 'article_id');
+            $body = $this->contentBody($request, $visibility ? ['visibility' => 'visibility', 'version' => 'version'] : ['title' => 200, 'body' => 20000, 'version' => 'version']);
+            $select = $db->prepare('SELECT * FROM articles WHERE id = :id FOR UPDATE');
+            $select->execute(['id' => $id]);
+            $content = $select->fetch();
+            if ($content === false || ($content->visibility === 'hidden' && $viewer->role !== 'admin' && (int) $viewer->id !== (int) $content->author_id)) {
+                throw new ApiFailure('E0004');
+            }
+            if ((int) $viewer->id !== (int) $content->author_id && (! $visibility || $viewer->role !== 'admin')) {
+                throw new ApiFailure('E0003');
+            }
+            $changes = $visibility ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['title' => $body->title, 'body' => $body->body];
+
+            return $this->saveChanges($db, 'articles', $content, $body->version, $changes);
+        });
+    }
+
+    /** 登入者只在目前公開的父文章發表留言；父列鎖防止與下架交錯。 */
+    public function createComment(Request $request, string $article_id): JsonResponse
+    {
+        // 認證與父文章在同一交易依固定順序鎖定，新增不能越過已提交下架。
+        return $this->database->transaction(function (PDO $db) use ($request, $article_id): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $this->noQuery($request);
+            $id = $this->id($article_id, 'article_id');
+            $body = $this->contentBody($request, ['body' => 2000]);
+            $select = $db->prepare('SELECT author_id, visibility FROM articles WHERE id = :id FOR UPDATE');
+            $select->execute(['id' => $id]);
+            $article = $select->fetch();
+            if ($article === false || ($article->visibility === 'hidden' && $viewer->role !== 'admin' && (int) $viewer->id !== (int) $article->author_id)) {
+                throw new ApiFailure('E0004');
+            }
+            if ($article->visibility === 'hidden') {
+                throw new ApiFailure('E0003');
+            }
+            $now = $this->sqlTime($this->now($db));
+            $insert = $db->prepare("INSERT INTO comments (article_id, author_id, body, visibility, restore_control, version, created_backend, created_at, updated_at) VALUES (:article, :author, :body, 'visible', NULL, 1, 'symfony', :created, :updated)");
+            $insert->execute(['article' => $id, 'author' => $viewer->id, 'body' => $body->body, 'created' => $now, 'updated' => $now]);
+
+            return $this->success([], 201);
+        });
+    }
+
+    /** 作者及管理員可獨立讀留言；其他會員先按個別與父文章可見性判 404。 */
+    public function comment(Request $request, string $comment_id): JsonResponse
+    {
+        // 只查父文章狀態，不讀其內文，避免作者專用詳情擴張父文章讀取權。
+        return $this->database->transaction(function (PDO $db) use ($request, $comment_id): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $this->noGetBody($request);
+            $this->noQuery($request);
+            $id = $this->id($comment_id, 'comment_id');
+            $select = $db->prepare('SELECT comments.id, comments.author_id, comments.article_id, comments.body, comments.visibility, comments.restore_control, comments.version, comments.created_backend, comments.created_at, comments.updated_at, accounts.nickname, articles.visibility AS article_visibility FROM comments JOIN accounts ON accounts.id = comments.author_id JOIN articles ON articles.id = comments.article_id WHERE comments.id = :id');
+            $select->execute(['id' => $id]);
+            $comment = $select->fetch();
+            if ($comment === false || ($viewer->role !== 'admin' && (int) $viewer->id !== (int) $comment->author_id && ($comment->visibility === 'hidden' || $comment->article_visibility === 'hidden'))) {
+                throw new ApiFailure('E0004');
+            }
+            if ($viewer->role !== 'admin' && (int) $viewer->id !== (int) $comment->author_id) {
+                throw new ApiFailure('E0003');
+            }
+
+            return $this->success($this->commentResource($comment, $viewer));
+        });
+    }
+
+    /** 作者可修改自己的留言，但父文章下架時任何作者都不得改內文。 */
+    public function updateComment(Request $request, string $comment_id): JsonResponse
+    {
+        return $this->mutateComment($request, $comment_id, false);
+    }
+
+    /** 作者或管理員可調整個別留言下架狀態，仍受恢復控制權約束。 */
+    public function commentVisibility(Request $request, string $comment_id): JsonResponse
+    {
+        return $this->mutateComment($request, $comment_id, true);
+    }
+
+    /** 先探父 ID，再依文章→留言鎖序重讀，原子判定可讀、權限及版本。 */
+    private function mutateComment(Request $request, string $comment_id, bool $visibility): JsonResponse
+    {
+        // 父列鎖同時序列化文章下架與留言寫入；探查結果不授權，鎖後必須重驗關聯。
+        return $this->database->transaction(function (PDO $db) use ($request, $comment_id, $visibility): JsonResponse {
+            [$viewer] = $this->authenticate($request, $db);
+            $this->noQuery($request);
+            $id = $this->id($comment_id, 'comment_id');
+            $body = $this->contentBody($request, $visibility ? ['visibility' => 'visibility', 'version' => 'version'] : ['body' => 2000, 'version' => 'version']);
+            $lookup = $db->prepare('SELECT article_id FROM comments WHERE id = :id');
+            $lookup->execute(['id' => $id]);
+            $parentId = $lookup->fetchColumn();
+            $article = false;
+            $content = false;
+            if ($parentId !== false) {
+                $parent = $db->prepare('SELECT id, visibility FROM articles WHERE id = :id FOR UPDATE');
+                $parent->execute(['id' => $parentId]);
+                $article = $parent->fetch();
+                if ($article !== false) {
+                    $select = $db->prepare('SELECT * FROM comments WHERE id = :id FOR UPDATE');
+                    $select->execute(['id' => $id]);
+                    $content = $select->fetch();
+                }
+            }
+            if ($content === false || (int) $content->article_id !== (int) $article->id
+                || ($viewer->role !== 'admin' && (int) $viewer->id !== (int) $content->author_id
+                    && ($content->visibility === 'hidden' || $article->visibility === 'hidden'))) {
+                throw new ApiFailure('E0004');
+            }
+            if (((int) $viewer->id !== (int) $content->author_id && (! $visibility || $viewer->role !== 'admin'))
+                || (! $visibility && $article->visibility !== 'visible')) {
+                throw new ApiFailure('E0003');
+            }
+            $changes = $visibility ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['body' => $body->body];
+
+            return $this->saveChanges($db, 'comments', $content, $body->version, $changes);
+        });
+    }
+
+    /** 共同 Body 驗證保留欄位順序及逐欄第一個錯誤，嚴格檢查版本整數。 */
+    private function contentBody(Request $request, array $fields): stdClass
+    {
+        $raw = $request->getContent();
+        if ($raw === '' || ! str_starts_with(strtolower($request->headers->get('Content-Type', '')), 'application/json')) {
+            throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
+        }
+        try {
+            $body = json_decode($raw, false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new ApiFailure('E0005');
+        }
+        if (! is_object($body)) {
+            throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
+        }
+        // 必填、null、型態、格式順序固定；未知與唯讀欄位最後加入明細。
+        $errors = [];
+        foreach ($fields as $name => $rule) {
+            if (! property_exists($body, $name)) {
+                $errors[$name] = ['此欄位為必填'];
+            } elseif ($body->$name === null) {
+                $errors[$name] = ['此欄位不可為 null'];
+            } elseif (($rule === 'version' && ! is_int($body->$name)) || ($rule !== 'version' && ! is_string($body->$name))) {
+                $errors[$name] = ['欄位型態不正確'];
+            } elseif (($rule === 'version' && ($body->$name < 1 || $body->$name > 9007199254740991))
+                || ($rule === 'visibility' && ! in_array($body->$name, ['visible', 'hidden'], true))
+                || (is_int($rule) && ! Rules::validContent($body->$name, $rule))) {
+                $errors[$name] = ['欄位格式或範圍不正確'];
+            }
+        }
+        foreach ($body as $name => $_) {
+            if (! array_key_exists($name, $fields)) {
+                $errors[$name] = ['不支援此欄位'];
+            }
+        }
+        $this->rejectErrors($errors);
+
+        return $body;
+    }
+
+    /** 恢復權由目前資料決定；管理員再次下架他人內容會接管控制權。 */
+    private function visibilityChanges(stdClass $content, stdClass $viewer, string $visibility): array
+    {
+        $own = (int) $viewer->id === (int) $content->author_id;
+        if ($visibility === 'visible' && $content->visibility === 'hidden' && $viewer->role !== 'admin' && $content->restore_control !== 'author') {
+            throw new ApiFailure('E0003');
+        }
+        // 作者重複下架不能移除管理員限制，管理員操作自己內容仍按作者規則。
+        $control = $visibility === 'visible' ? null : ($content->restore_control ?? 'author');
+        if ($visibility === 'hidden' && $viewer->role === 'admin' && ! $own) {
+            $control = 'admin';
+        }
+
+        return ['visibility' => $visibility, 'restore_control' => $control];
+    }
+
+    /** 列鎖中先驗版本，再以版本條件更新真正變動欄位；同值保持時間與版本。 */
+    private function saveChanges(PDO $db, string $table, stdClass $content, int $version, array $changes): JsonResponse
+    {
+        if ((int) $content->version !== $version) {
+            throw new ApiFailure('E0201');
+        }
+        $changed = false;
+        foreach ($changes as $name => $value) {
+            if ($content->$name !== $value) {
+                $changed = true;
+                break;
+            }
+        }
+        if ($changed) {
+            // table 與欄位只由本類別固定傳入；不可讓用戶端資料成為 SQL 識別字。
+            $assignments = [];
+            foreach ($changes as $name => $_) {
+                $assignments[] = $name.' = :'.$name;
+            }
+            $sql = 'UPDATE '.$table.' SET '.implode(', ', $assignments).', version = version + 1, updated_at = clock_timestamp() WHERE id = :id AND version = :version';
+            $update = $db->prepare($sql);
+            $update->execute([...$changes, 'id' => $content->id, 'version' => $version]);
+            if ($update->rowCount() !== 1) {
+                throw new ApiFailure('E0201');
+            }
+        }
+
+        return $this->success([]);
     }
 
     /** 從原始 Query 找明確管理範圍，讓角色門禁先於其他錯誤。 */
@@ -526,6 +806,7 @@ class ApiController
             'E0102' => [403, '此帳號已停用，請聯絡系統管理員'],
             'E0104' => [500, '後台認證設定異常，請聯絡系統管理員'],
             'E0105' => [429, '登入失敗次數過多，請稍後再試'],
+            'E0201' => [409, '內容已更新，請確認最新內容後再送出'],
             default => [500, '系統暫時無法處理，請稍後再試'],
         };
         if ($failure->codeName === 'E0005' && $failure->httpStatus !== null) {

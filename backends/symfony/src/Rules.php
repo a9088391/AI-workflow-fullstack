@@ -30,6 +30,13 @@ class Rules
             && preg_match('/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u', $value) === 1;
     }
 
+    /** 內容保留原文與換行，僅拒絕超長、全空白及 PostgreSQL 無法儲存的 NUL。 */
+    public static function validContent(string $value, int $limit): bool
+    {
+        return ! str_contains($value, "\0") && mb_strlen($value, 'UTF-8') >= 1 && mb_strlen($value, 'UTF-8') <= $limit
+            && preg_match('/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u', $value) === 1;
+    }
+
     /** 產生與 Laravel 和其他後端互通的固定成本 Argon2id PHC 字串。 */
     public static function hash(string $password): string
     {

@@ -32,7 +32,7 @@ $kernel = new Kernel(getenv('APP_ENV') ?: 'prod', false);
 try {
     if ($request->getMethod() === 'OPTIONS') {
         $response = new JsonResponse(null, 204);
-        $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
         $response->headers->set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
     } else {
         $response = $kernel->handle($request, 1, false);

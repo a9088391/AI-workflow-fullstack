@@ -18,11 +18,47 @@ articles:
     path: /api/articles
     controller: App\ApiController::articles
     methods: [GET]
+article_create:
+    path: /api/articles
+    controller: App\ApiController::createArticle
+    methods: [POST]
+my_articles:
+    path: /api/me/articles
+    controller: App\ApiController::myArticles
+    methods: [GET]
+my_comments:
+    path: /api/me/comments
+    controller: App\ApiController::myComments
+    methods: [GET]
 article:
     path: /api/articles/{article_id}
     controller: App\ApiController::article
     methods: [GET]
+article_update:
+    path: /api/articles/{article_id}
+    controller: App\ApiController::updateArticle
+    methods: [PUT]
+article_visibility:
+    path: /api/articles/{article_id}/visibility
+    controller: App\ApiController::articleVisibility
+    methods: [PUT]
 comments:
     path: /api/articles/{article_id}/comments
     controller: App\ApiController::comments
     methods: [GET]
+comment_create:
+    path: /api/articles/{article_id}/comments
+    controller: App\ApiController::createComment
+    methods: [POST]
+comment:
+    path: /api/comments/{comment_id}
+    controller: App\ApiController::comment
+    methods: [GET]
+comment_update:
+    path: /api/comments/{comment_id}
+    controller: App\ApiController::updateComment
+    methods: [PUT]
+comment_visibility:
+    path: /api/comments/{comment_id}/visibility
+    controller: App\ApiController::commentVisibility
+    methods: [PUT]

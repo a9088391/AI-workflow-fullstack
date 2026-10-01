@@ -1,0 +1,19 @@
+services:
+  laravel:
+    ports: !override
+      - "127.0.0.1:19081:8000"
+    volumes:
+      - ./.local/ticket09-backend/laravel-logs:/srv/laravel/storage/logs
+      - ./.local/keys/laravel.key:/run/secrets/laravel-jwt.key:ro
+  symfony:
+    ports: !override
+      - "127.0.0.1:19082:8000"
+    volumes:
+      - ./.local/ticket09-backend/symfony-logs:/srv/symfony/var/log
+      - ./.local/keys/symfony.key:/run/secrets/symfony-jwt.key:ro
+  sql:
+    volumes:
+      - ./.local/ticket09-backend/backups:/backups
+  nginx:
+    ports: !override
+      - "127.0.0.1:19080:80"
