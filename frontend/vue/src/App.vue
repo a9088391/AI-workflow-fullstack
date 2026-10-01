@@ -4,7 +4,7 @@ import { API_BASE, clearSession, formatCountdown, interpretLogin, interpretLogou
 import { interpretRegistrationResponse, validateRegistration } from './registration.js'
 import { readComment, readCommentList, validateComment } from './comments.js'
 import { articleCreated, contentUpdated, articleFailure, articlePage, backendName, localPage, readArticle, readArticleList, validateArticle } from './articles.js'
-import { readMember, readMemberList } from './admin.js'
+import { readLockoutSettings, readMember, readMemberList, validateLockoutSettings } from './admin.js'
 
 const path = window.location.pathname
 const page = articlePage(path)
@@ -16,6 +16,7 @@ document.title = {
   'article-edit': '文章集｜編輯文章', 'comment-edit': '文章集｜編輯留言',
   members: '文章集｜會員管理', member: '文章集｜會員詳情',
   'managed-articles': '文章集｜文章管理', 'managed-comments': '文章集｜留言管理',
+  'lockout-settings': '文章集｜登入鎖定設定',
   register: '文章集｜註冊會員', login: '文章集｜會員登入',
   missing: '文章集｜找不到頁面',
 }[page]
@@ -27,7 +28,7 @@ const returnTo = target && localPage(target) && target !== '/vue/login' && targe
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'
 const commentResource = page === 'comment' || page === 'comment-edit'
-const adminPage = ['members', 'member', 'managed-articles', 'managed-comments'].includes(page)
+const adminPage = ['members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
 const protectedPage = ['article-new', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit'].includes(page) || adminPage
 const requestedId = articleResource || commentResource
   ? Number(path.split('/')[3])
@@ -46,6 +47,14 @@ const statusUnknown = ref(false)
 const statusNeedsReadback = ref(false)
 const statusNotice = ref('')
 let statusOwner = null
+const lockoutData = ref(null)
+const lockoutDraft = ref(null)
+const lockoutPending = ref(false)
+const lockoutUnknown = ref(false)
+const lockoutNeedsReadback = ref(false)
+const lockoutNotice = ref('')
+let lockoutOwner = null
+let lockoutApplyReadback = false
 const email = ref('')
 const password = ref('')
 const nickname = ref('')
@@ -118,7 +127,16 @@ const locked = computed(() => lockedSeconds.value > 0)
 const lockText = computed(() => locked.value ? `登入暫時鎖定，約剩 ${formatCountdown(lockedSeconds.value)}` : lockNotice.value)
 
 // 草稿僅存在目前頁面記憶體；任何未送出內容都應觸發離頁確認。
-const hasDraft = computed(() => !submitted && (page === 'register' && Boolean(email.value || password.value || nickname.value) || page === 'article-new' && Boolean(articleTitle.value || articleBody.value) || page === 'article' && Boolean(commentBody.value) || editing && editLoaded.value && Boolean(articleResource ? articleTitle.value !== editOriginal.value?.title || articleBody.value !== editOriginal.value?.body : commentBody.value !== editOriginal.value?.body)))
+const hasDraft = computed(() => !submitted && (page === 'register' && Boolean(email.value || password.value || nickname.value) || page === 'article-new' && Boolean(articleTitle.value || articleBody.value) || page === 'article' && Boolean(commentBody.value) || editing && editLoaded.value && Boolean(articleResource ? articleTitle.value !== editOriginal.value?.title || articleBody.value !== editOriginal.value?.body : commentBody.value !== editOriginal.value?.body) || page === 'lockout-settings' && hasLockoutDraft()))
+
+// 只比較目前伺服器值與表單值，供離頁確認保護未儲存設定。
+function hasLockoutDraft() {
+  if (!lockoutDraft.value) return false
+  // 重讀或重新驗權時舊值暫時不可用，仍須保護記憶體草稿。
+  if (!lockoutData.value) return true
+  for (const name of Object.keys(lockoutData.value)) if (lockoutDraft.value[name] !== lockoutData.value[name]) return true
+  return false
+}
 // 父文章已確認公開且目前登入有效時才允許留言；後端仍會在交易中再次驗證。
 const canComment = computed(() => page === 'article' && contentReady.value && articleData.value?.visibility === 'visible' && Boolean(account.value && credential.value) && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value)
 // 詳情與編輯以後端最新讀取值判斷資格；管理員不能修改他人內文。
@@ -137,8 +155,8 @@ function editBodyInput(event) {
   else commentBody.value = event.target.value
 }
 
-const fieldOrder = ['email', 'password', 'nickname', 'title', 'body', 'filters.keyword']
-const fieldNames = { email: 'Email', password: '密碼', nickname: '暱稱', title: '標題', body: '內文', 'filters.keyword': '搜尋關鍵字' }
+const fieldOrder = ['email', 'password', 'nickname', 'title', 'body', 'filters.keyword', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds']
+const fieldNames = { email: 'Email', password: '密碼', nickname: '暱稱', title: '標題', body: '內文', 'filters.keyword': '搜尋關鍵字', enabled: '鎖定功能', window_minutes: '累計期間', failure_threshold: '失敗門檻', lock_seconds: '鎖定時間' }
 
 // 摘要只列出有訊息的欄位，避免空的後端陣列產生無作用連結。
 function hasFieldError(field) {
@@ -163,7 +181,7 @@ function stopRequest() {
   requestController = null
 }
 
-// 切頁、登出或換帳號後取消文章請求；epoch 阻擋不遵守 abort 的舊回應。
+// 切頁、登出或換帳號後取消內容與設定請求；epoch 阻擋不遵守 abort 的舊回應。
 function stopContentRequest() {
   contentEpoch += 1
   if (contentTimeout) clearTimeout(contentTimeout)
@@ -172,7 +190,7 @@ function stopContentRequest() {
   contentController = null
 }
 
-// 每次文章讀寫只保留目前請求，逾時後仍讓使用者自行查證寫入結果。
+// 內容與設定讀寫只保留目前請求；逾時寫入可能已完成，須由使用者自行查證。
 function startContentRequest() {
   stopContentRequest()
   contentController = new AbortController()
@@ -282,10 +300,10 @@ async function copyRelatedLogId() {
   }
 }
 
-// 列表與詳情沿同一讀取流程；驗證過的 JWT 才附上，失效不能悄悄改為訪客。
+// 內容列表、詳情與管理設定沿同一讀取流程；JWT 失效不能悄悄改為訪客。
 async function loadContent() {
-  if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments'].includes(page)
-    || contentLoading.value || contentPending.value || statusPending.value || authChecking.value
+  if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
+    || contentLoading.value || contentPending.value || statusPending.value || lockoutPending.value || authChecking.value
     || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value
     || protectedPage && !account.value || credential.value && !account.value
     || adminPage && account.value?.role !== 'admin') return
@@ -308,10 +326,11 @@ async function loadContent() {
     : commentResource ? `/api/comments/${requestedId}`
     : page === 'member' ? `/api/members/${requestedId}`
     : page === 'members' ? '/api/members'
+    : page === 'lockout-settings' ? '/api/settings/login-lockout'
     : page === 'managed-comments' ? '/api/comments'
     : page === 'my-comments' ? '/api/me/comments'
     : page === 'my-articles' ? '/api/me/articles' : '/api/articles'
-  const query = articleResource || commentResource || page === 'member' ? ''
+  const query = articleResource || commentResource || page === 'member' || page === 'lockout-settings' ? ''
     : `?page=${listPage}&per_page=20${page === 'managed-articles' ? '&filters%5Bscope%5D=management'
       : page === 'members' && searchedKeyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(searchedKeyword)}` : ''}`
   try {
@@ -323,6 +342,7 @@ async function loadContent() {
         : commentResource ? readComment(response.status, body, requestedId)
         : page === 'member' ? readMember(response.status, body, requestedId)
         : page === 'members' ? readMemberList(response.status, body, listPage)
+        : page === 'lockout-settings' ? readLockoutSettings(response.status, body)
         : page === 'my-comments' || page === 'managed-comments' ? readCommentList(response.status, body, listPage)
         : readArticleList(response.status, body, listPage)
       if (!data) { await showError('伺服器回應不完整，請手動重新讀取。'); return }
@@ -330,6 +350,17 @@ async function loadContent() {
       else if (commentResource) commentData.value = data
       else if (page === 'member') memberData.value = data
       else if (page === 'members') memberList.value = data
+      else if (page === 'lockout-settings') {
+        lockoutData.value = data
+        lockoutOwner = account.value.id
+        // 初次載入或已確認成功的寫入才同步草稿；結果不明時的原輸入留給管理員比較。
+        if (!lockoutDraft.value || lockoutApplyReadback) lockoutDraft.value = { ...data }
+        lockoutApplyReadback = false
+        if (lockoutUnknown.value) {
+          lockoutNeedsReadback.value = false
+          lockoutNotice.value = '已重讀目前伺服器設定；先前結果仍無法單憑目前值判定，請確認後再操作。'
+        }
+      }
       else if (page === 'my-comments' || page === 'managed-comments') commentList.value = data
       else articleList.value = data
       contentReady.value = true
@@ -369,6 +400,7 @@ async function loadContent() {
       // 權限或目標已變更，保留錯誤入口，但不再顯示舊的管理資料。
       memberData.value = null
       memberList.value = null
+      lockoutData.value = null
       articleList.value = null
       commentList.value = null
       contentReady.value = false
@@ -400,6 +432,78 @@ function adminPageHref(nextPage) {
   if (page === 'members' && searchedKeyword) query.set('keyword', searchedKeyword)
   query.set('page', String(nextPage))
   return `${path}?${query.toString()}`
+}
+
+// 管理員提交完整四欄設定；未知結果需先手動重讀，避免重送可能已提交的 PUT。
+async function submitLockoutSettings() {
+  if (page !== 'lockout-settings' || !lockoutData.value || !lockoutDraft.value || !contentReady.value
+    || contentLoading.value || lockoutPending.value || lockoutNeedsReadback.value
+    || authChecking.value || logoutPending.value || !credential.value || account.value?.role !== 'admin') return
+  const checked = validateLockoutSettings(lockoutDraft.value)
+  if (Object.keys(checked).length) { await showError('欄位資料不正確，請確認後再送出', checked); return }
+  const payload = { enabled: lockoutDraft.value.enabled, window_minutes: lockoutDraft.value.window_minutes, failure_threshold: lockoutDraft.value.failure_threshold, lock_seconds: lockoutDraft.value.lock_seconds }
+  lockoutOwner = account.value.id
+  lockoutPending.value = true
+  lockoutNotice.value = ''
+  summary.value = ''
+  const request = startContentRequest()
+  const token = credential.value.accessToken
+  let confirmed = false
+  try {
+    const response = await fetch(`${API_BASE}/api/settings/login-lockout`, {
+      method: 'PUT',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+      signal: request.controller.signal,
+    })
+    const body = await response.json()
+    if (!currentContentRequest(request, token)) return
+    if (contentUpdated(response.status, body)) {
+      // 完整成功回應已確認欄位通過驗證，移除先前 422 的摘要、欄旁錯誤與追蹤資訊。
+      summaryCode.value = ''
+      errors.value = {}
+      logId.value = ''
+      confirmed = true
+      lockoutNotice.value = '更新已送達；正在重新讀取伺服器設定。'
+    } else {
+      const result = articleFailure(body)
+      const uncertain = response.status >= 500 || response.status === 200
+      // 5xx 與不完整成功回應可能已寫入；保留草稿並要求手動查證。
+      if (uncertain) { lockoutUnknown.value = true; lockoutNeedsReadback.value = true }
+      const fieldErrors = {}
+      if (response.status === 422 && result.code === 'E0001' && body?.errors && typeof body.errors === 'object' && !Array.isArray(body.errors)) {
+        for (const name of ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds']) {
+          if (Array.isArray(body.errors[name])) {
+            fieldErrors[name] = []
+            for (const message of body.errors[name]) if (typeof message === 'string') fieldErrors[name].push(message)
+          }
+        }
+      }
+      if (response.status === 401 && result.code === 'E0002') { forgetCredential(); reLogin.value = true }
+      else if (response.status === 403 && result.code === 'E0102') { forgetCredential(); disabledAccount.value = true }
+      else if (response.status === 403 && result.code === 'E0003') { lockoutData.value = null; contentReady.value = false }
+      await showError(uncertain ? `更新結果尚未確認；請手動重讀設定查證。${result.message}` : result.message, fieldErrors, result.logId, result.code)
+    }
+  } catch {
+    if (currentContentRequest(request, token)) {
+      lockoutUnknown.value = true
+      lockoutNeedsReadback.value = true
+      await showError('更新結果尚未確認；請手動重讀設定查證，再決定是否重新送出。')
+    }
+  } finally {
+    // 只結束本次有效寫入，不能讓舊回應解除後續操作的等待狀態。
+    if (currentContentRequest(request, token)) {
+      lockoutPending.value = false
+      finishContentRequest(request, token)
+    }
+  }
+  if (!confirmed || !alive || credential.value?.accessToken !== token) return
+  // 成功 envelope 沒有設定值，重讀後才同步顯示；先前未知寫入仍保留獨立警示。
+  lockoutApplyReadback = true
+  await loadContent()
+  lockoutApplyReadback = false
+  if (lockoutData.value && contentReady.value && !lockoutUnknown.value) lockoutNotice.value = '已重新讀取並顯示目前伺服器設定。'
+  else if (!lockoutData.value && account.value?.role === 'admin') lockoutNotice.value = '更新已送達，但尚未讀到伺服器設定；請手動重新讀取。'
 }
 
 // 狀態寫入只送 approved status；不根據空成功回應推測新狀態，而是重讀同一會員。
@@ -876,6 +980,8 @@ function forgetCredential() {
   contentLoading.value = false
   contentPending.value = false
   statusPending.value = false
+  lockoutPending.value = false
+  lockoutData.value = null
   articleData.value = null
   articleList.value = null
   memberData.value = null
@@ -893,10 +999,20 @@ function forgetCredential() {
   try { clearSession(sessionStorage) } catch { /* 儲存不可用時，仍先撤銷畫面授權。 */ }
 }
 
+// 換帳號後清除前一位管理員的設定草稿與查證狀態，避免新帳號讀取時沿用舊輸入。
+function clearLockoutForDifferentAccount(nextAccountId) {
+  if (lockoutOwner === null || lockoutOwner === nextAccountId) return
+  lockoutDraft.value = null
+  lockoutUnknown.value = false
+  lockoutNeedsReadback.value = false
+  lockoutNotice.value = ''
+  lockoutOwner = null
+}
+
 // 重新整理只能從保存的 token 嘗試驗證，GET /api/me 成功前不顯示帳號權限。
 async function verifyAccount() {
   // 認證共用取消機制；重驗不得中斷登入或登出，否則舊操作的等待狀態無法正常結束。
-  if (!credential.value || authChecking.value || pending.value || logoutPending.value || contentPending.value || statusPending.value) return
+  if (!credential.value || authChecking.value || pending.value || logoutPending.value || contentPending.value || statusPending.value || lockoutPending.value) return
   const previousAccount = account.value
   if ((page === 'article-new' || page === 'article' || editing) && previousAccount && hasDraft.value) draftOwner = previousAccount.id
   // 重驗期間停止讀取並隱藏原授權資料，成功後再向後端重新取得。
@@ -908,6 +1024,7 @@ async function verifyAccount() {
   articleList.value = null
   memberData.value = null
   memberList.value = null
+  lockoutData.value = null
   commentData.value = null
   commentList.value = null
   parentArticle.value = null
@@ -930,6 +1047,7 @@ async function verifyAccount() {
         await showError('目前登入帳號已變更，原帳號草稿已清除；請重新輸入。')
       }
       if (page === 'article-new' || page === 'article' || editing) draftOwner = result.account.id
+      clearLockoutForDifferentAccount(result.account.id)
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       if (page === 'login') window.location.assign(returnTo)
@@ -991,6 +1109,7 @@ async function submitLogin() {
         return
       }
       credential.value = { backend: API_BASE, accessToken: result.accessToken, expiresAt: result.expiresAt }
+      clearLockoutForDifferentAccount(result.account.id)
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       clearLock()
@@ -1037,7 +1156,7 @@ async function submitLogin() {
 
 // 伺服器確認撤銷前保留憑證；失敗時明示未登出並讓使用者手動重試。
 async function submitLogout() {
-  if (logoutPending.value || contentPending.value || statusPending.value || !account.value || !credential.value) return
+  if (logoutPending.value || contentPending.value || statusPending.value || lockoutPending.value || !account.value || !credential.value) return
   // 先讓使用者決定是否捨棄純記憶體草稿，取消時不能先撤銷伺服器憑證。
   if (hasDraft.value && !window.confirm('尚有未送出的內容，確定登出並捨棄嗎？')) return
   logoutPending.value = true
@@ -1129,7 +1248,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1250,7 +1369,7 @@ onBeforeUnmount(() => {
         <div class="reading-heading">
           <div>
             <p class="eyebrow">文章集 / 管理</p>
-            <h1 id="page-title">{{ page === 'members' ? '會員管理' : page === 'member' ? '會員詳情' : page === 'managed-articles' ? '文章管理' : '留言管理' }}</h1>
+            <h1 id="page-title">{{ page === 'members' ? '會員管理' : page === 'member' ? '會員詳情' : page === 'managed-articles' ? '文章管理' : page === 'managed-comments' ? '留言管理' : '登入鎖定設定' }}</h1>
           </div>
         </div>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="admin-error-title">
@@ -1299,6 +1418,42 @@ onBeforeUnmount(() => {
           <a class="text-link" href="/vue/">返回文章列表</a>
         </template>
         <template v-if="account?.role === 'admin' && !authChecking">
+          <div v-if="page === 'lockout-settings'" class="lockout-settings">
+            <p class="intro">設定會員登入連續失敗時的鎖定規則。關閉鎖定會清除會員的既有鎖定與失敗計數；再次啟用時從零開始計算。</p>
+            <p v-if="lockoutNotice" class="success-note" role="status">{{ lockoutNotice }}</p>
+            <p v-if="lockoutUnknown" class="pending-note" role="status">先前 PUT 結果尚未確認。{{ lockoutNeedsReadback ? '請先手動重新讀取目前伺服器設定；不會自動重送。' : '目前值已重讀，但可能已有其他管理員更新，無法藉此判定先前 PUT 是否成功。' }}</p>
+            <p v-if="lockoutPending" class="pending-note" role="status">正在儲存完整設定，請勿重複送出。</p>
+            <button v-if="!contentLoading && !lockoutPending && !disabledAccount && summaryCode !== 'E0002'" class="secondary-button" type="button" @click="loadContent">重新讀取目前設定{{ lockoutNeedsReadback ? '並查證' : '' }}</button>
+            <p v-if="lockoutData && contentReady" class="field-help">目前伺服器值：{{ lockoutData.enabled ? '啟用' : '關閉' }}；{{ lockoutData.window_minutes }} 分鐘內失敗 {{ lockoutData.failure_threshold }} 次，鎖定 {{ lockoutData.lock_seconds }} 秒。</p>
+            <form v-if="lockoutDraft && lockoutData && contentReady" class="lockout-form" novalidate @submit.prevent="submitLockoutSettings">
+              <div class="field">
+                <label for="enabled">鎖定功能</label>
+                <select id="enabled" v-model="lockoutDraft.enabled" :disabled="lockoutPending" :aria-invalid="Boolean(errors.enabled?.length)" :aria-describedby="errors.enabled?.length ? 'enabled-error enabled-help' : 'enabled-help'"><option :value="true">啟用</option><option :value="false">關閉</option></select>
+                <p id="enabled-help" class="field-help">關閉後仍保存並驗證以下三個數值；重新啟用時沿用。</p>
+                <p v-if="errors.enabled?.length" id="enabled-error" class="field-error">{{ errors.enabled.join('；') }}</p>
+              </div>
+              <div class="field">
+                <label for="window_minutes">累計期間（分鐘）</label>
+                <input id="window_minutes" v-model.number="lockoutDraft.window_minutes" type="number" min="1" max="60" step="1" inputmode="numeric" :disabled="lockoutPending" :aria-invalid="Boolean(errors.window_minutes?.length)" :aria-describedby="errors.window_minutes?.length ? 'window_minutes-error window_minutes-help' : 'window_minutes-help'" />
+                <p id="window_minutes-help" class="field-help">可設定 1–60 分鐘；範圍調大時，仍在新範圍內的既有失敗事件可能計入。</p>
+                <p v-if="errors.window_minutes?.length" id="window_minutes-error" class="field-error">{{ errors.window_minutes.join('；') }}</p>
+              </div>
+              <div class="field">
+                <label for="failure_threshold">失敗門檻（次）</label>
+                <input id="failure_threshold" v-model.number="lockoutDraft.failure_threshold" type="number" min="1" max="100" step="1" inputmode="numeric" :disabled="lockoutPending" :aria-invalid="Boolean(errors.failure_threshold?.length)" :aria-describedby="errors.failure_threshold?.length ? 'failure_threshold-error failure_threshold-help' : 'failure_threshold-help'" />
+                <p id="failure_threshold-help" class="field-help">可設定 1–100 次；達到門檻的當次登入即開始鎖定。</p>
+                <p v-if="errors.failure_threshold?.length" id="failure_threshold-error" class="field-error">{{ errors.failure_threshold.join('；') }}</p>
+              </div>
+              <div class="field">
+                <label for="lock_seconds">鎖定時間（秒）</label>
+                <input id="lock_seconds" v-model.number="lockoutDraft.lock_seconds" type="number" min="1" max="86400" step="1" inputmode="numeric" :disabled="lockoutPending" :aria-invalid="Boolean(errors.lock_seconds?.length)" :aria-describedby="errors.lock_seconds?.length ? 'lock_seconds-error lock_seconds-help' : 'lock_seconds-help'" />
+                <p id="lock_seconds-help" class="field-help">可設定 1–86,400 秒；調整不延長已存在鎖定的到期時間。</p>
+                <p v-if="errors.lock_seconds?.length" id="lock_seconds-error" class="field-error">{{ errors.lock_seconds.join('；') }}</p>
+              </div>
+              <div class="lockout-preview" aria-live="polite"><strong>設定預覽</strong><p>{{ lockoutDraft.enabled ? `啟用：${lockoutDraft.window_minutes} 分鐘內失敗 ${lockoutDraft.failure_threshold} 次，鎖定 ${lockoutDraft.lock_seconds} 秒。` : '關閉：會員登入失敗不會觸發暫時鎖定。' }}</p></div>
+              <button class="primary-button" type="submit" :disabled="lockoutPending || lockoutNeedsReadback || contentLoading || logoutPending">{{ lockoutPending ? '儲存中…' : '儲存完整設定' }}</button>
+            </form>
+          </div>
           <form v-if="page === 'members'" class="admin-search" @submit.prevent="submitMemberSearch">
             <label for="member-keyword">搜尋會員暱稱或 Email</label>
             <div>
@@ -1426,7 +1581,7 @@ onBeforeUnmount(() => {
               :href="adminPageHref(1)">回第一頁</a>
           </nav>
           <button
-            v-if="!contentLoading && !statusPending && (!contentReady || page === 'member' && statusNeedsReadback) && !disabledAccount && summaryCode !== 'E0002'"
+            v-if="page !== 'lockout-settings' && !contentLoading && !statusPending && (!contentReady || page === 'member' && statusNeedsReadback) && !disabledAccount && summaryCode !== 'E0002'"
             class="secondary-button" type="button" @click="loadContent">重新讀取{{ page === 'member' ? '同一會員' : '管理資料' }}</button>
           <p v-if="page === 'member'">
             <a class="text-link" href="/vue/admin/members">返回會員列表</a>

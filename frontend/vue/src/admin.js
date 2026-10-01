@@ -23,3 +23,30 @@ export function readMember(status, body, requestedId) {
   return status === 200 && body?.success === true && body.message === 'OK'
     && isMember(body.data) && body.data.id === requestedId ? body.data : null
 }
+
+const settingLimits = { window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 }
+
+// 設定只接受四個已核准欄位與整數範圍，避免把不完整回應顯示成可儲存值。
+export function validLockoutSettings(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 4 || typeof value.enabled !== 'boolean') return false
+  for (const [name, maximum] of Object.entries(settingLimits)) {
+    if (!Number.isInteger(value[name]) || value[name] < 1 || value[name] > maximum) return false
+  }
+  return true
+}
+
+// 讀取成功仍須檢查完整 envelope；畫面只根據伺服器確認的值呈現設定。
+export function readLockoutSettings(status, body) {
+  return status === 200 && body?.success === true && body.message === 'OK' && validLockoutSettings(body.data) ? body.data : null
+}
+
+// 表單的 number input 可能暫時是空字串；先驗證再建立完整 PUT payload。
+export function validateLockoutSettings(value) {
+  const errors = {}
+  if (typeof value.enabled !== 'boolean') errors.enabled = ['請選擇是否啟用。']
+  for (const [name, maximum] of Object.entries(settingLimits)) {
+    if (!Number.isInteger(value[name]) || value[name] < 1 || value[name] > maximum) errors[name] = [`請輸入 1 到 ${maximum} 的整數。`]
+  }
+  return errors
+}

@@ -15,6 +15,7 @@ import * as admin from './admin.js'
 
 const administrator = { id: 1, email: 'admin@example.test', nickname: '管理員', role: 'admin', status: 'active', created_at: '2026-09-24 09:00:00' }
 const member = { id: 2, email: 'member@example.test', nickname: '阿明', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
+const lockout = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 }
 // 集中組出契約回應，讓各測試只改本次關注的狀態和資料。
 const success = (data) => ({ success: true, message: 'OK', data })
 // 分頁總數由測試明確提供，模擬後端合法超頁。
@@ -97,11 +98,216 @@ test('admin routes and member envelope keep safe IDs and overpage totals', () =>
   assert.equal(articles.articlePage('/vue/admin/members/2'), 'member')
   assert.equal(articles.articlePage('/vue/admin/members/007'), 'member')
   assert.equal(articles.localPage('/vue/admin/members/007'), true)
-  for (const path of ['/vue/admin/members/0', '/vue/admin/members/9007199254740992', '/vue/admin/settings/login-lockout', '//evil.test']) assert.equal(articles.localPage(path), false)
+  for (const path of ['/vue/admin/members/0', '/vue/admin/members/9007199254740992', '//evil.test']) assert.equal(articles.localPage(path), false)
+  assert.equal(articles.localPage('/vue/admin/settings/login-lockout'), true)
+  assert.equal(articles.articlePage('/vue/admin/settings/login-lockout'), 'lockout-settings')
   assert.equal(admin.readMember(200, success(member), 2)?.email, member.email)
   assert.equal(admin.readMember(200, success(member), 3), null)
   assert.equal(admin.readMemberList(200, list([], 9, 41), 9)?.pagination.total, 41)
   assert.equal(admin.readMemberList(200, list([administrator]), 1), null)
+})
+
+// 設定 envelope 僅接受四欄完整型態與邊界；空字串不可從 number input 混成零。
+test('lockout settings contract rejects malformed values and validates form bounds', () => {
+  assert.deepEqual(admin.readLockoutSettings(200, success(lockout)), lockout)
+  assert.equal(admin.readLockoutSettings(200, success({ ...lockout, lock_seconds: '300' })), null)
+  assert.equal(admin.readLockoutSettings(200, success({ ...lockout, extra: 1 })), null)
+  assert.equal(admin.readLockoutSettings(200, success({ ...lockout, window_minutes: 61 })), null)
+  assert.equal(admin.readLockoutSettings(200, { success: true, message: 'wrong', data: lockout }), null)
+  assert.deepEqual(Object.keys(admin.validateLockoutSettings({ ...lockout, failure_threshold: '', lock_seconds: 86401 })), ['failure_threshold', 'lock_seconds'])
+})
+
+// 非管理員直達設定頁不得讀取 API 或看到管理導覽；管理員經 /me 驗證後才載入。
+test('lockout route is protected and renders the admin form only after authorization', async (t) => {
+  const denied = app('/vue/admin/settings/login-lockout')
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success({ ...administrator, role: 'member' }))
+  assert.equal(denied.requests.length, 1)
+  assert.doesNotMatch(await rendered(denied.page), /儲存完整設定/)
+  assert.doesNotMatch(await rendered(denied.page), /href="\/vue\/admin\/settings\/login-lockout"/)
+
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  assert.match(instance.requests[1].url, /\/api\/settings\/login-lockout$/)
+  await respond(instance.requests[1], 200, success(lockout))
+  const html = await rendered(instance.page)
+  assert.match(html, /累計期間（分鐘）/)
+  assert.match(html, /設定預覽/)
+  assert.match(html, /href="\/vue\/admin\/settings\/login-lockout"/)
+  assert.match(html, /目前伺服器值/)
+})
+
+// 422 保留輸入並顯示欄位錯誤；成功只在重新 GET 後更新伺服器顯示值。
+test('lockout validation, 422 and success readback preserve the right draft', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.window_minutes = 0
+  await instance.page.submitLockoutSettings()
+  assert.equal(instance.requests.length, 2)
+  assert.match(await rendered(instance.page), /請輸入 1 到 60 的整數/)
+  instance.page.lockoutDraft.value.window_minutes = 10
+  const invalid = instance.page.submitLockoutSettings()
+  assert.deepEqual(JSON.parse(instance.requests[2].body), { ...lockout, window_minutes: 10 })
+  await respond(instance.requests[2], 422, { success: false, error_code: 'E0001', errors: { window_minutes: ['後端欄位錯誤'] } })
+  await invalid
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 10)
+  assert.match(await rendered(instance.page), /後端欄位錯誤/)
+  const write = instance.page.submitLockoutSettings()
+  await respond(instance.requests[3], 200, success({}))
+  assert.match(instance.requests[4].url, /\/api\/settings\/login-lockout$/)
+  await respond(instance.requests[4], 200, success({ ...lockout, window_minutes: 12 }))
+  await write
+  assert.equal(instance.page.lockoutData.value.window_minutes, 12)
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 12)
+  const html = await rendered(instance.page)
+  assert.match(html, /已重新讀取並顯示目前伺服器設定/)
+  assert.doesNotMatch(html, /後端欄位錯誤|請輸入 1 到 60 的整數/)
+  assert.doesNotMatch(html, /id="window_minutes"[^>]*aria-invalid="true"/)
+})
+
+// 未知 PUT 不重送；手動重讀僅確認目前值，後續成功也不能證明先前寫入結果。
+test('lockout unknown outcome needs readback and remains distinct from later success', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.enabled = false
+  const first = instance.page.submitLockoutSettings()
+  await respond(instance.requests[2], 500, { success: false, error_code: 'E9999' })
+  await first
+  await instance.page.submitLockoutSettings()
+  assert.equal(instance.requests.length, 3)
+  assert.equal(instance.page.lockoutDraft.value.enabled, false)
+  assert.match(await rendered(instance.page), /請先手動重新讀取目前伺服器設定/)
+  const readback = instance.page.loadContent()
+  await respond(instance.requests[3], 200, success(lockout))
+  await readback
+  assert.equal(instance.page.lockoutDraft.value.enabled, false)
+  assert.match(await rendered(instance.page), /可能已有其他管理員更新/)
+  const second = instance.page.submitLockoutSettings()
+  await respond(instance.requests[4], 200, success({}))
+  await respond(instance.requests[5], 200, success({ ...lockout, enabled: false }))
+  await second
+  assert.equal(instance.page.lockoutUnknown.value, true)
+  assert.match(await rendered(instance.page), /無法藉此判定先前 PUT 是否成功/)
+})
+
+// 待寫入時登出與重讀不應交錯；401 要撤銷已授權畫面並保留手動重新登入入口。
+test('lockout pending write blocks logout and 401 removes protected settings', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  const write = instance.page.submitLockoutSettings()
+  await instance.page.submitLogout()
+  await instance.page.loadContent()
+  assert.equal(instance.requests.length, 3)
+  await respond(instance.requests[2], 401, { success: false, error_code: 'E0002' })
+  await write
+  assert.equal(instance.page.lockoutData.value, null)
+  assert.match(await rendered(instance.page), /請重新登入後讀取原管理頁/)
+})
+
+// 登出先開始時不能送設定 PUT；伺服器取消管理權後不能再顯示可操作表單。
+test('lockout write is blocked by logout and 403 removes controls', async (t) => {
+  const logoutFirst = app('/vue/admin/settings/login-lockout')
+  t.after(logoutFirst.close)
+  await respond(logoutFirst.requests[0], 200, success(administrator))
+  await respond(logoutFirst.requests[1], 200, success(lockout))
+  const logout = logoutFirst.page.submitLogout()
+  await logoutFirst.page.submitLockoutSettings()
+  assert.equal(logoutFirst.requests.length, 3)
+  assert.match(logoutFirst.requests[2].url, /\/api\/auth\/logout$/)
+  await respond(logoutFirst.requests[2], 200, success({}))
+  await logout
+
+  const forbidden = app('/vue/admin/settings/login-lockout')
+  t.after(forbidden.close)
+  await respond(forbidden.requests[0], 200, success(administrator))
+  await respond(forbidden.requests[1], 403, { success: false, error_code: 'E0003' })
+  assert.doesNotMatch(await rendered(forbidden.page), /儲存完整設定/)
+  assert.match(await rendered(forbidden.page), /沒有權限使用此功能/)
+})
+
+// 200 非法 envelope 屬寫入結果不明；換帳號驗證後不能帶入前一人的草稿。
+test('malformed write and account switch keep uncertainty isolated', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.failure_threshold = 8
+  const write = instance.page.submitLockoutSettings()
+  await respond(instance.requests[2], 200, success({ saved: true }))
+  await write
+  assert.equal(instance.page.lockoutNeedsReadback.value, true)
+  assert.equal(instance.page.lockoutDraft.value.failure_threshold, 8)
+  const verify = instance.page.verifyAccount()
+  await respond(instance.requests[3], 200, success({ ...administrator, id: 9 }))
+  await verify
+  await respond(instance.requests[4], 200, success(lockout))
+  assert.equal(instance.page.lockoutDraft.value.failure_threshold, 5)
+  assert.equal(instance.page.lockoutUnknown.value, false)
+})
+
+// 設定 PUT 401 後換另一位管理員登入，必須在新 GET 前清掉前一人的草稿與查證狀態。
+test('lockout 401 then different admin login cannot reuse prior draft', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.window_minutes = 9
+  const write = instance.page.submitLockoutSettings()
+  await respond(instance.requests[2], 401, { success: false, error_code: 'E0002' })
+  await write
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+  instance.page.lockoutUnknown.value = true
+  instance.page.lockoutNeedsReadback.value = true
+  instance.page.lockoutNotice.value = '先前結果不明'
+  instance.page.email.value = 'admin2@example.test'
+  instance.page.password.value = 'abc123'
+  await vue.nextTick()
+  const login = instance.page.submitLogin()
+  assert.match(instance.requests[3].url, /\/api\/auth\/login$/)
+  await respond(instance.requests[3], 200, success({ access_token: 'other-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: { ...administrator, id: 9, email: 'admin2@example.test' } }))
+  await login
+  assert.equal(instance.page.account.value?.id, 9, instance.page.summary.value)
+  await respond(instance.requests[4], 200, success(lockout))
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 5)
+  assert.equal(instance.page.lockoutUnknown.value, false)
+  assert.equal(instance.page.lockoutNeedsReadback.value, false)
+  assert.equal(instance.page.lockoutNotice.value, '')
+  assert.doesNotMatch(await rendered(instance.page), /先前結果不明/)
+})
+
+// 同一管理員重新登入仍保留記憶體草稿，GET 只供比較，不替使用者覆蓋未提交內容。
+test('lockout 401 then same admin login retains draft for manual save', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.window_minutes = 9
+  const write = instance.page.submitLockoutSettings()
+  await respond(instance.requests[2], 401, { success: false, error_code: 'E0002' })
+  await write
+  instance.page.lockoutUnknown.value = true
+  instance.page.lockoutNeedsReadback.value = true
+  instance.page.email.value = administrator.email
+  instance.page.password.value = 'abc123'
+  await vue.nextTick()
+  const login = instance.page.submitLogin()
+  assert.match(instance.requests[3].url, /\/api\/auth\/login$/)
+  await respond(instance.requests[3], 200, success({ access_token: 'same-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: administrator }))
+  await login
+  assert.equal(instance.page.account.value?.id, administrator.id, instance.page.summary.value)
+  await respond(instance.requests[4], 200, success(lockout))
+  assert.equal(instance.page.lockoutData.value.window_minutes, 5)
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+  assert.equal(instance.page.lockoutUnknown.value, true)
+  assert.equal(instance.page.lockoutNeedsReadback.value, false)
+  assert.match(await rendered(instance.page), /啟用：9 分鐘內失敗/)
 })
 
 // 一般會員即使直達管理網址，也不能觸發管理 API 或看到管理導覽。

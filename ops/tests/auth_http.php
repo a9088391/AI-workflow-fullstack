@@ -64,6 +64,26 @@ function authCompose(array $arguments, string $input = '', bool $expectSuccess =
     return [$status, $output, $error];
 }
 
+/** 寫入隔離金鑰後確認容器已讀到完整內容，避免把 bind mount 同步延遲誤判為 API 恢復失敗。 */
+function authSetTestKey(string $path, string $contents): void
+{
+    if (file_put_contents($path, $contents) !== strlen($contents)) {
+        throw new RuntimeException('隔離測試金鑰寫入失敗');
+    }
+
+    // 金鑰由唯讀 bind mount 供應；只比對雜湊，不將原文送到容器命令或測試輸出。
+    $expected = hash('sha256', $contents);
+    for ($attempt = 0; $attempt < 20; $attempt++) {
+        $actual = trim(authCompose(['exec', '-T', 'laravel', 'php', '-r', 'echo hash_file("sha256", "/run/secrets/laravel-jwt.key");'])[1]);
+        if (hash_equals($expected, $actual)) {
+            return;
+        }
+        usleep(50_000);
+    }
+
+    throw new RuntimeException('隔離容器未讀到已寫入的測試金鑰');
+}
+
 /** 僅供缺少管理端點與時間旅行的 fixture；行為斷言仍由公開 HTTP 驗證。 */
 function authSql(string $sql): string
 {
@@ -364,11 +384,11 @@ $keyPath = getenv('AUTH_TEST_KEY');
 assert(str_contains($keyPath, '.local/ticket02-backend/'));
 $key = file_get_contents($keyPath);
 try {
-    file_put_contents($keyPath, "broken\n");
+    authSetTestKey($keyPath, "broken\n");
     authCheck(authRequest('GET', '/api/me', '', $fourth), 500, 'E0104');
     authCheck(authLogin($email), 500, 'E0104');
 } finally {
-    file_put_contents($keyPath, $key);
+    authSetTestKey($keyPath, $key);
 }
 authCheck(authRequest('GET', '/api/me', '', $fourth), 200);
 echo "PASS database outage, failed logout, invalid key and recovery\n";

@@ -14,6 +14,8 @@ Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；NGI
 
 Vue 登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為 API 基底位址 `http://localhost:8081`，`expiresAt` 是原登入到期時間。未保存密碼或帳號資料；重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分，確認失敗時可手動重試。登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。
 
+管理員可在 `/vue/admin/settings/login-lockout` 讀取與儲存會員登入錯誤鎖定設定；對應端點為 `GET/PUT /api/settings/login-lockout`。設定包含啟用狀態、錯誤次數上限（1–100）、計算視窗（1–60 分鐘）及鎖定時間（1–86400 秒）；儲存時四欄須一起送出。停用鎖定會立即解除既有會員鎖定，但不影響停用帳號的狀態。集中 SQL `0008_login_lockout_settings.sql` 提供設定更新權限，既有資料庫會在下次 `ops/start.sh` 時依前述備份與版本流程套用。寫入結果不明時，頁面保留輸入並提示管理員手動重讀確認，不會自動重送。
+
 文章頁路徑為 `/vue/`、`/vue/articles/{article_id}`、`/vue/articles/new`、`/vue/articles/{article_id}/edit`、`/vue/me/articles`。發文遇登入失效時，文字只保留在原頁記憶體；同帳號重登後可手動送出，換帳號則清除原草稿。重新整理或關頁不保留草稿；寫入結果不明時須先到我的文章查證，不自動重送。
 
 文章契約測試只在 `ticket03_`、`ticket04_` 開頭或 `ticket05_test`的隔離 Compose 專案執行：`COMPOSE_PROJECT_NAME=ticket03_test API_BASE=http://localhost:8081 php -d zend.assertions=1 ops/tests/article_http.php`。測試會建立帳號及文章，並透過隔離資料庫 fixture 驗證下架可讀性、管理範圍、來源／作者欄位、純文字、排序分頁與錯誤回應；不對正式展示資料執行。
