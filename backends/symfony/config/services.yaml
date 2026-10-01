@@ -1,0 +1,5 @@
+services:
+    App\Database: ~
+    App\ApiController:
+        public: true
+        autowire: true

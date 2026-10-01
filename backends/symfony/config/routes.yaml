@@ -1,0 +1,28 @@
+register:
+    path: /api/auth/register
+    controller: App\ApiController::register
+    methods: [POST]
+login:
+    path: /api/auth/login
+    controller: App\ApiController::login
+    methods: [POST]
+logout:
+    path: /api/auth/logout
+    controller: App\ApiController::logout
+    methods: [POST]
+me:
+    path: /api/me
+    controller: App\ApiController::me
+    methods: [GET]
+articles:
+    path: /api/articles
+    controller: App\ApiController::articles
+    methods: [GET]
+article:
+    path: /api/articles/{article_id}
+    controller: App\ApiController::article
+    methods: [GET]
+comments:
+    path: /api/articles/{article_id}/comments
+    controller: App\ApiController::comments
+    methods: [GET]

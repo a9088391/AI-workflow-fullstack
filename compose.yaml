@@ -71,6 +71,32 @@ services:
       timeout: 3s
       retries: 20
 
+  symfony:
+    build:
+      context: .
+      dockerfile: backends/symfony/Dockerfile
+    environment:
+      APP_ENV: prod
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
+      PHP_CLI_SERVER_WORKERS: "4"
+    volumes:
+      - ./.local/symfony-logs:/srv/symfony/var/log
+      - ./.local/keys/symfony.key:/run/secrets/symfony-jwt.key:ro
+    ports:
+      - "127.0.0.1:8082:8000"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8000/up') === false ? 1 : 0);"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   frontend-vue:
     build:
       context: ./frontend/vue

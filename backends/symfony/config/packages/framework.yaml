@@ -1,0 +1,4 @@
+framework:
+    secret: 'unused-local-api'
+    router:
+        utf8: true

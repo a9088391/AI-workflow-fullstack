@@ -14,14 +14,14 @@ if [ ! -f ".local/setup-complete-$project_name" ] && [ "${SETUP_IN_PROGRESS:-0}"
 fi
 
 # 既有資料若有待套用 SQL，先停所有本專案寫入，讓備份代表一致的更新前狀態。
-docker compose stop laravel frontend-vue nginx >/dev/null
+docker compose stop laravel symfony frontend-vue nginx >/dev/null
 docker compose up -d --wait db
 PROJECT_WRITERS_STOPPED=1 docker compose up --build --exit-code-from sql sql
 
 if [ "${1:-}" = '--backend-only' ]; then
-    docker compose up -d --build --wait laravel
-    echo 'Laravel 後端已就緒；前端尚未啟動'
+    docker compose up -d --build --wait laravel symfony
+    echo 'Laravel／Symfony 後端已就緒；前端尚未啟動'
 else
-    docker compose up -d --build --wait laravel frontend-vue nginx
-    echo 'Vue／Laravel 展示已就緒：http://localhost:8080/vue/'
+    docker compose up -d --build --wait laravel symfony frontend-vue nginx
+    echo 'Vue／Laravel 展示已就緒：http://localhost:8080/vue/；Symfony API：http://localhost:8082'
 fi
