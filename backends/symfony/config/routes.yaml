@@ -62,3 +62,27 @@ comment_visibility:
     path: /api/comments/{comment_id}/visibility
     controller: App\ApiController::commentVisibility
     methods: [PUT]
+members:
+    path: /api/members
+    controller: App\ApiController::members
+    methods: [GET]
+member:
+    path: /api/members/{member_id}
+    controller: App\ApiController::member
+    methods: [GET]
+member_status:
+    path: /api/members/{member_id}/status
+    controller: App\ApiController::memberStatus
+    methods: [PUT]
+admin_comments:
+    path: /api/comments
+    controller: App\ApiController::adminComments
+    methods: [GET]
+login_lockout_settings:
+    path: /api/settings/login-lockout
+    controller: App\ApiController::loginLockoutSettings
+    methods: [GET]
+login_lockout_settings_update:
+    path: /api/settings/login-lockout
+    controller: App\ApiController::updateLoginLockoutSettings
+    methods: [PUT]
