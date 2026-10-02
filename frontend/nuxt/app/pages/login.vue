@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { apiFailure, apiRequest, formatCountdown, loginData, remainingSeconds, retryAfterSeconds, validReturn, validateCredentials } from '../utils/contracts.js'
 
 useHead({ title: '會員登入｜文章集' })
@@ -29,7 +29,19 @@ let controller = null
 // 離開登入頁時取消請求與計時器，舊帳號的回應不進入下一個表單。
 onBeforeUnmount(
   // 清理本頁持有的兩種非同步工作。
-  () => { controller?.abort(); if (timer) clearInterval(timer) },
+  () => { controller?.abort(); if (timer) clearInterval(timer); site.dirty.value = false },
+)
+
+// 登入文字只屬目前頁面，供切換選單確認是否捨棄。
+watch([email, password],
+  // 帳密任一欄有文字時保護離頁。
+  () => { site.dirty.value = Boolean(email.value || password.value) },
+)
+// 後端或前端一旦切換，同步取消舊 POST；不等待元件銷毀才作廢。
+watch([site.backend, site.leaving],
+  // 同步 abort 讓同一事件循環中完成的舊回應也無法登入。
+  () => controller?.abort(),
+  { flush: 'sync' },
 )
 
 // 鎖定顯示使用實際時鐘，歸零只恢復編輯而不自動送出帳密。
@@ -72,7 +84,7 @@ function clearRetryReady() { retryReady.value = false }
 
 // 登入前先確認格式；鎖定中含 Enter 都不可送出，成功僅保存原到期時間。
 async function submit() {
-  if (pending.value || secondsLeft.value > 0 || site.checking.value) return
+  if (pending.value || secondsLeft.value > 0 || site.checking.value || site.leaving.value) return
   const checked = validateCredentials({ email: email.value, password: password.value })
   if (Object.keys(checked.errors).length) { await showError('欄位資料不正確，請確認後再送出', checked.errors); return }
   pending.value = true
@@ -82,12 +94,14 @@ async function submit() {
   logId.value = ''
   controller = new AbortController()
   const request = controller
+  const sentBackend = site.backend.value
   try {
     const response = await apiRequest('/api/auth/login', { method: 'POST', body: { email: checked.email, password: password.value }, signal: request.signal })
-    if (request.signal.aborted) return
+    if (request.signal.aborted || sentBackend !== site.backend.value || site.leaving.value) return
     const data = loginData(response.status, response.body)
     if (data) {
-      site.acceptLogin(data)
+      if (!site.acceptLogin(data)) return
+      site.dirty.value = false
       window.location.assign(returnTo)
       return
     }
@@ -102,7 +116,7 @@ async function submit() {
     if (secondsLeft.value > 0) await showError('登入暫時鎖定', {}, failure.logId)
     else if (!(response.status === 429 && failure.code === 'E0105' && retryAfterSeconds(response.retryAfter) === null)) await showError(failure.message, failure.errors, failure.logId)
   } catch {
-    if (!request.signal.aborted) await showError('無法確認登入結果；請手動重新驗證後再試。')
+    if (!request.signal.aborted && !site.leaving.value) await showError('無法確認登入結果；請手動重新驗證後再試。')
   } finally {
     if (controller === request) { pending.value = false; controller = null }
   }

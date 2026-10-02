@@ -1,0 +1,12 @@
+services:
+  laravel:
+    volumes:
+      - ./.local/ticket12-backend/laravel-logs:/srv/laravel/storage/logs
+      - ./.local/ticket12-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+  symfony:
+    volumes:
+      - ./.local/ticket12-backend/symfony-logs:/srv/symfony/var/log
+      - ./.local/ticket12-backend/symfony.key:/run/secrets/symfony-jwt.key:ro
+  sql:
+    volumes:
+      - ./.local/ticket12-backend/backups:/backups

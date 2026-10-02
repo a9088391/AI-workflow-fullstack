@@ -20,8 +20,8 @@ body { margin: 0; }
 ::selection { color: var(--paper); background: var(--red); }
 a { color: inherit; text-underline-offset: .22em; }
 a:hover { color: var(--red); }
-a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--red); outline-offset: 3px; }
-button, input { font: inherit; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--red); outline-offset: 3px; }
+button, input, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 .shell { width: min(100% - 64px, 1300px); margin-inline: auto; }
@@ -32,6 +32,13 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .edition { color: var(--muted); font-size: .84rem; letter-spacing: .12em; margin: 0 0 5px; text-align: center; }
 .environment { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; color: var(--muted); font-size: .78rem; letter-spacing: .04em; line-height: 1.5; }
 .environment strong { color: var(--ink); font-weight: 600; }
+.version-controls { border-bottom: 1px solid var(--rule); }
+.version-controls summary { display: inline-flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--red); font-size: .85rem; }
+.version-fields { display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: end; padding: 8px 0 20px; }
+.version-fields > div { min-width: min(100%, 240px); }
+.version-fields label { display: block; font-size: .8rem; font-weight: 600; }
+.version-fields select { width: 100%; min-height: 44px; padding: 7px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); }
+.version-fields p { margin: 0; color: var(--muted); font-size: .8rem; }
 .masthead-rule { border-top: 3px double var(--ink); margin-top: 20px; }
 .main-nav { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: center; padding: 10px 0 12px; border-bottom: 1px solid var(--ink); font-size: .84rem; letter-spacing: .06em; }
 .main-nav a { text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }

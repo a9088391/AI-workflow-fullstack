@@ -1,6 +1,8 @@
 import { normalizeEmail, validEmail } from './registration.js'
 
 export const API_BASE = 'http://localhost:8081'
+export const BACKEND_KEY = 'article-collection.backend.v1'
+export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082' }
 // 六版前端共用此 key／schema：只存目前後端、JWT 與原到期時間，絕不快取帳號資料。
 export const SESSION_KEY = 'article-collection.auth.v1'
 
@@ -46,13 +48,32 @@ export function isAccount(value) {
     && typeof value.created_at === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value.created_at)
 }
 
+// 無憑證時仍保留同分頁選擇；未知或損壞值一律回首次預設 Laravel。
+export function readBackend(storage) {
+  try {
+    const value = storage.getItem(BACKEND_KEY)
+    return Object.values(BACKENDS).includes(value) ? value : API_BASE
+  } catch { return API_BASE }
+}
+
+// 先清除舊憑證再保存新選擇；清除失敗時不能留下新後端配舊 JWT。
+export function selectBackend(storage, backend) {
+  if (!Object.values(BACKENDS).includes(backend)) return false
+  storage.removeItem(SESSION_KEY)
+  storage.setItem(BACKEND_KEY, backend)
+  return true
+}
+
 // 儲存格式損壞或後端不符時拒絕沿用，重新整理仍需 GET /api/me 驗證身分。
 export function readSession(storage) {
   try {
     const raw = storage.getItem(SESSION_KEY)
     if (!raw) return null
     const value = JSON.parse(raw)
-    if (value?.backend === API_BASE && Object.keys(value).length === 3 && typeof value.accessToken === 'string' && value.accessToken.length > 0 && typeof value.expiresAt === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value.expiresAt)) return value
+    const selected = storage.getItem(BACKEND_KEY)
+    // 選擇 key 若遭破壞，不以 Laravel 預設值重新授權另一筆舊 JWT。
+    if (selected !== null && !Object.values(BACKENDS).includes(selected)) { storage.removeItem(SESSION_KEY); return null }
+    if (value?.backend === readBackend(storage) && Object.keys(value).length === 3 && typeof value.accessToken === 'string' && value.accessToken.length > 0 && typeof value.expiresAt === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value.expiresAt)) return value
     storage.removeItem(SESSION_KEY)
   } catch {
     // 儲存不可用時只能視為訪客；不把損壞資料當成有效憑證。
@@ -63,7 +84,10 @@ export function readSession(storage) {
 
 // 只保存跨同分頁前端所需的原始憑證與到期時間；密碼及 Account 留在記憶體。
 export function saveSession(storage, accessToken, expiresAt) {
-  storage.setItem(SESSION_KEY, JSON.stringify({ backend: API_BASE, accessToken, expiresAt }))
+  const backend = readBackend(storage)
+  // 登入成功時修復壞的選擇 key，避免本頁已登入卻在下一次刷新被拒絕。
+  storage.setItem(BACKEND_KEY, backend)
+  storage.setItem(SESSION_KEY, JSON.stringify({ backend, accessToken, expiresAt }))
 }
 
 // 已確認失效或伺服器撤銷成功才清除保存的憑證。

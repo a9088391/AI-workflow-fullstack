@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { apiFailure, apiRequest, emptySuccess, validateCredentials } from '../utils/contracts.js'
 
 useHead({ title: '註冊會員｜文章集' })
@@ -17,11 +17,24 @@ const emailElement = ref(null)
 const passwordElement = ref(null)
 const nicknameElement = ref(null)
 let controller = null
+const site = useSite()
 
 // 離開表單時取消尚未完成的請求，避免舊回應更新已離開的畫面。
 onBeforeUnmount(
   // 取消本頁唯一在途註冊請求。
-  () => { controller?.abort() },
+  () => { controller?.abort(); site.dirty.value = false },
+)
+
+// 註冊草稿留在本頁記憶體，讓使用者先決定是否捨棄。
+watch([email, password, nickname],
+  // 確認建立前任一欄有文字即保護離頁。
+  () => { site.dirty.value = !created.value && Boolean(email.value || password.value || nickname.value) },
+)
+// 換前端或後端同步取消舊 POST，可能已送達的結果不由新頁重送。
+watch([site.backend, site.leaving],
+  // 回應即使忽略 abort 仍由提交函式的離頁條件擋住。
+  () => controller?.abort(),
+  { flush: 'sync' },
 )
 
 // 錯誤摘要移到鍵盤焦點，欄位明細同時靠近欄位顯示。
@@ -42,7 +55,7 @@ function focusFirstError() {
 
 // 註冊只送三個核准欄位；成功後轉登入，寫入結果不明時不自動重送。
 async function submit() {
-  if (pending.value || created.value) return
+  if (pending.value || created.value || site.leaving.value) return
   const checked = validateCredentials({ email: email.value, password: password.value, nickname: nickname.value }, true)
   if (Object.keys(checked.errors).length) { await showError('欄位資料不正確，請確認後再送出', checked.errors); return }
   pending.value = true
@@ -50,11 +63,15 @@ async function submit() {
   errors.value = {}
   logId.value = ''
   controller = new AbortController()
+  const request = controller
+  const sentBackend = site.backend.value
   try {
-    const response = await apiRequest('/api/auth/register', { method: 'POST', body: { email: checked.email, password: password.value, nickname: nickname.value }, signal: controller.signal })
+    const response = await apiRequest('/api/auth/register', { method: 'POST', body: { email: checked.email, password: password.value, nickname: nickname.value }, signal: request.signal })
+    if (request.signal.aborted || sentBackend !== site.backend.value || site.leaving.value) return
     if (emptySuccess(response.status, response.body, 201)) {
       // 確認建立後先鎖住表單並清除密碼；導頁未完成或返回時仍可手動前往登入。
       created.value = true
+      site.dirty.value = false
       password.value = ''
       await nextTick()
       successElement.value?.focus()
@@ -66,7 +83,7 @@ async function submit() {
     await showError(response.status >= 500 || response.status === 201 ? `無法確認註冊結果；請先確認帳號狀態，再決定是否重試。${failure.message}` : failure.message, failure.errors, failure.logId)
   } catch {
     // 已確認 201 後若導頁失敗，保留成功回退畫面，不誤報為寫入結果不明。
-    if (!created.value && !controller.signal.aborted) await showError('無法確認註冊結果；請先確認帳號狀態，再決定是否重試。')
+    if (!created.value && !request.signal.aborted && sentBackend === site.backend.value && !site.leaving.value) await showError('無法確認註冊結果；請先確認帳號狀態，再決定是否重試。')
   } finally { pending.value = false; controller = null }
 }
 </script>

@@ -1,4 +1,6 @@
 export const API_BASE = 'http://localhost:8081'
+export const BACKEND_KEY = 'article-collection.backend.v1'
+export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082' }
 export const SESSION_KEY = 'article-collection.auth.v1'
 const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
 const backends = { laravel: 'Laravel', symfony: 'Symfony', 'aspnet-core': 'ASP.NET Core', django: 'Django', flask: 'Flask', fastapi: 'FastAPI', gin: 'Gin', echo: 'Echo', fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS' }
@@ -31,13 +33,38 @@ export function loginHref(routePath) {
   return `/nuxt/login?return_to=${encodeURIComponent(target)}`
 }
 
+// 只把兩版都已完成的頁面映成同一語意路徑，保留網址中的原始文章 ID。
+export function vueFrontendTarget(path) {
+  if (path === '/nuxt/' || path === '/nuxt/login' || path === '/nuxt/register' || validReturn(path)) return path.replace(/^\/nuxt/, '/vue')
+  return null
+}
+
+// 同源分頁在沒有 JWT 時仍須記得目前後端；壞資料只回首次預設。
+export function readBackend(storage) {
+  try {
+    const value = storage.getItem(BACKEND_KEY)
+    return Object.values(BACKENDS).includes(value) ? value : API_BASE
+  } catch { return API_BASE }
+}
+
+// 先清除舊 JWT 再固定新來源；清除失敗時不能把舊 JWT 留給新後端。
+export function selectBackend(storage, backend) {
+  if (!Object.values(BACKENDS).includes(backend)) return false
+  storage.removeItem(SESSION_KEY)
+  storage.setItem(BACKEND_KEY, backend)
+  return true
+}
+
 // 與 Vue 使用同一 sessionStorage 格式，損壞或錯誤後端資料不能用來授權。
 export function readSession(storage) {
   try {
     const raw = storage.getItem(SESSION_KEY)
     if (!raw) return null
     const value = JSON.parse(raw)
-    if (value && Object.keys(value).length === 3 && value.backend === API_BASE && typeof value.accessToken === 'string' && value.accessToken.length > 0 && typeof value.expiresAt === 'string' && timestamp.test(value.expiresAt)) return value
+    const selected = storage.getItem(BACKEND_KEY)
+    // 損壞的後端選擇不可退回 Laravel 後順勢授權舊憑證。
+    if (selected !== null && !Object.values(BACKENDS).includes(selected)) { storage.removeItem(SESSION_KEY); return null }
+    if (value && Object.keys(value).length === 3 && value.backend === readBackend(storage) && typeof value.accessToken === 'string' && value.accessToken.length > 0 && typeof value.expiresAt === 'string' && timestamp.test(value.expiresAt)) return value
     storage.removeItem(SESSION_KEY)
   } catch {
     // 儲存權限遭拒時保守視為訪客，清理失敗也不可放行。
@@ -48,7 +75,10 @@ export function readSession(storage) {
 
 // 原到期時間直接保存，不因跨前端重驗而重新簽發或延長。
 export function saveSession(storage, token, expiresAt) {
-  storage.setItem(SESSION_KEY, JSON.stringify({ backend: API_BASE, accessToken: token, expiresAt }))
+  const backend = readBackend(storage)
+  // 完整登入成功才修復選擇 key，避免重整後把新 JWT 當成錯後端憑證。
+  storage.setItem(BACKEND_KEY, backend)
+  storage.setItem(SESSION_KEY, JSON.stringify({ backend, accessToken: token, expiresAt }))
 }
 
 // 只在憑證失效、停用或登出成功等已知結果下清除共用憑證。
@@ -188,12 +218,15 @@ export function readList(status, body, page, kind = 'article', articleId = null)
 // 單篇文章必須和網址 ID 相符，避免快取或錯誤回應顯示其他資源。
 export function readArticle(status, body, id) { return status === 200 && body?.success === true && body.message === 'OK' && isArticle(body.data) && body.data.id === id ? body.data : null }
 
-// 業務 API 直接呼叫目前 Laravel 基底，Nuxt 伺服器僅提供頁面外殼。
+// 業務 API 直接呼叫同分頁目前後端，Nuxt 伺服器僅提供頁面外殼。
 export async function apiRequest(path, { method = 'GET', body, token, signal } = {}) {
   const headers = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = `Bearer ${token}`
-  const response = await fetch(`${API_BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal })
+  // 瀏覽器可能連 sessionStorage 屬性都拒絕讀取；公開請求仍可退回首次預設。
+  let backend = API_BASE
+  try { backend = readBackend(globalThis.sessionStorage) } catch { /* 無法取得同源選擇時使用 Laravel。 */ }
+  const response = await fetch(`${backend}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal })
   let data
   try { data = await response.json() } catch { data = null }
   return { status: response.status, body: data, retryAfter: response.headers.get('Retry-After') }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { API_BASE, SESSION_KEY, apiFailure, apiRequest, emptySuccess, formatCountdown, isAccount, loginData, loginHref, positiveUrlInteger, readArticle, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, validReturn, validateCredentials } from './contracts.js'
+import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, apiFailure, apiRequest, emptySuccess, formatCountdown, isAccount, loginData, loginHref, positiveUrlInteger, readArticle, readBackend, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateCredentials, vueFrontendTarget } from './contracts.js'
 
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 const article = { id: 101, title: '一篇文章', body: '第一行\n第二行', author: { id: 1, nickname: '林' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
@@ -29,6 +29,42 @@ test('session format matches Vue and rejects damaged data', () => {
   assert.equal(s.getItem(SESSION_KEY), null)
 })
 
+// Nuxt 讀取 Vue 留下的 Symfony 選擇與原到期時間，反向切回時拒絕舊 token。
+test('shared backend selection and token remain bound in both directions', () => {
+  const s = storage()
+  selectBackend(s, BACKENDS.symfony)
+  saveSession(s, 'same-jwt', '2026-09-24 18:00:00')
+  assert.equal(readBackend(s), BACKENDS.symfony)
+  assert.deepEqual(readSession(s), { backend: BACKENDS.symfony, accessToken: 'same-jwt', expiresAt: '2026-09-24 18:00:00' })
+  selectBackend(s, BACKENDS.laravel)
+  assert.equal(readSession(s), null)
+  assert.equal(readBackend(s), BACKENDS.laravel)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.symfony, accessToken: 'old', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  s.setItem(BACKEND_KEY, 'broken')
+  assert.equal(readSession(s), null)
+  saveSession(s, 'new-login', '2026-09-24 18:00:00')
+  assert.equal(readSession(s).accessToken, 'new-login')
+})
+
+// 清除 JWT 若遭瀏覽器拒絕，新後端選擇不能已寫入儲存。
+test('backend switch keeps original pairing when storage removal fails', () => {
+  const s = storage()
+  saveSession(s, 'old-token', '2026-09-24 18:00:00')
+  const denied = {
+    // 仍可讀出目前配對以觀察失敗後狀態。
+    getItem(key) { return s.getItem(key) },
+    // 若程式先寫後清，此函式會暴露錯誤順序。
+    setItem(key, value) { s.setItem(key, value) },
+    // 刻意拒絕清除 token。
+    removeItem() { throw new Error('storage denied') },
+  }
+  assert.throws(() => selectBackend(denied, BACKENDS.symfony), /storage denied/)
+  assert.equal(readBackend(s), API_BASE)
+  assert.equal(readSession(s).accessToken, 'old-token')
+})
+
 // 返回目標只能是已實作的 Nuxt 頁面；輸入仍遵守共同驗證規則。
 test('route and credential boundaries', () => {
   assert.equal(validReturn('/nuxt/'), true)
@@ -45,6 +81,9 @@ test('route and credential boundaries', () => {
   assert.equal(articleReturn, '/nuxt/articles/001')
   assert.equal(validReturn(articleReturn), true)
   assert.equal(new URL(loginHref('/unknown'), 'http://localhost:8080').searchParams.get('return_to'), '/nuxt/')
+  assert.equal(vueFrontendTarget('/nuxt/articles/001'), '/vue/articles/001')
+  assert.equal(vueFrontendTarget('/nuxt/register'), '/vue/register')
+  for (const path of ['/nuxt/articles/new', '/nuxt/admin/members', '/nuxt/articles/0', '//evil.test']) assert.equal(vueFrontendTarget(path), null)
   assert.deepEqual(validateCredentials({ email: ' Reader@Example.Test ', password: 'abcd' }), { email: 'reader@example.test', errors: {} })
   assert.ok(validateCredentials({ email: 'bad', password: 'a', nickname: '　' }, true).errors.nickname)
 })
@@ -77,6 +116,8 @@ test('API response parsing distinguishes success, validation, and hidden content
 // 請求必須直連業務後端，且只有已驗證狀態才由呼叫端傳 JWT。
 test('API request keeps base path and headers', async (t) => {
   const original = globalThis.fetch
+  const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  const selected = storage()
   let request
   // 攔截單次網路請求，以檢查固定基底位址與驗證標頭。
   globalThis.fetch = async (url, options) => {
@@ -85,10 +126,22 @@ test('API request keeps base path and headers', async (t) => {
   }
   t.after(
     // 測試結束恢復全域 fetch，避免污染其他案例。
-    () => { globalThis.fetch = original },
+    () => {
+      globalThis.fetch = original
+      if (originalStorage) Object.defineProperty(globalThis, 'sessionStorage', originalStorage)
+      else delete globalThis.sessionStorage
+    },
   )
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: selected })
   const response = await apiRequest('/api/me', { token: 'jwt' })
   assert.equal(request.url, `${API_BASE}/api/me`)
   assert.equal(request.options.headers.Authorization, 'Bearer jwt')
   assert.equal(response.retryAfter, '5')
+  // 切換後公開註冊與登入也須直連 Symfony，不能沿用 Laravel 固定網址。
+  selectBackend(selected, BACKENDS.symfony)
+  await apiRequest('/api/auth/register', { method: 'POST', body: { email: 'x@example.test' } })
+  assert.equal(request.url, `${BACKENDS.symfony}/api/auth/register`)
+  assert.equal(request.options.headers.Authorization, undefined)
+  await apiRequest('/api/auth/login', { method: 'POST', body: { email: 'x@example.test' } })
+  assert.equal(request.url, `${BACKENDS.symfony}/api/auth/login`)
 })

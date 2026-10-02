@@ -1,6 +1,6 @@
-# 會員文章展示：Vue／Laravel 與 Symfony 公開 API
+# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony
 
-目前提供 Vue 註冊／登入／登出、公開文章列表／閱讀、發文與我的文章、公開留言、我的留言與作者留言詳情，以及對應 Laravel API 和共用 PostgreSQL。Symfony API 目前提供註冊、登入、登出、目前帳號、公開文章列表／詳情及文章留言列表；其他 Symfony 端點留待後續項目。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 已加入文章／留言編修及詳情下架／恢復介面；前端測試、build、隔離環境的生命週期真實 HTTP 測試及主要瀏覽器流程已通過。Laravel 已加入 `POST /api/articles/{article_id}/comments`，Vue 可在公開文章發表留言，成功後留在原文章重讀留言第一頁；送出失效時保留同帳號的頁面記憶體草稿，重新登入後須手動送出。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
+目前 Vue 提供註冊、登入、文章／留言閱讀與會員及管理頁；Nuxt 提供註冊、登入、公開文章列表與詳情。共同頁面可在同一分頁切換 Vue／Nuxt；Laravel／Symfony 使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 可發表、編修、下架與恢復文章／留言；送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
@@ -10,11 +10,11 @@
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；NGINX 只轉送前端，瀏覽器直接向 `http://localhost:8081/api/...` 呼叫 Laravel。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫 `http://localhost:8081/api/...` 或 `http://localhost:8082/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
-Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。現有 Vue 的 API 基底位址仍固定為 Laravel，尚無正式切換後端選單。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
+Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。切換後端會清除原登入並轉到登入頁，重新登入後返回合法的本機頁面；不會把舊 JWT 送給新後端。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
 
-Vue 登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為 API 基底位址 `http://localhost:8081`，`expiresAt` 是原登入到期時間。未保存密碼或帳號資料；重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分，確認失敗時可手動重試。登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。
+登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Nuxt 尚無作者及管理頁，這些頁面不能切到 Nuxt；其他四版前端尚未提供。
 
 管理員可在 `/vue/admin/settings/login-lockout` 讀取與儲存會員登入錯誤鎖定設定；對應端點為 `GET/PUT /api/settings/login-lockout`。設定包含啟用狀態、錯誤次數上限（1–100）、計算視窗（1–60 分鐘）及鎖定時間（1–86400 秒）；儲存時四欄須一起送出。停用鎖定會立即解除既有會員鎖定，但不影響停用帳號的狀態。集中 SQL `0008_login_lockout_settings.sql` 提供設定更新權限，既有資料庫會在下次 `ops/start.sh` 時依前述備份與版本流程套用。寫入結果不明時，頁面保留輸入並提示管理員手動重讀確認，不會自動重送。
 

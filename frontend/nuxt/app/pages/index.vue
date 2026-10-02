@@ -28,7 +28,7 @@ function noCleanup() {}
 
 // 驗證完成或頁碼改變後讀取公開文章；取消舊請求防止舊頁覆蓋新頁。
 async function load(_values, _previous, onCleanup = noCleanup) {
-  if (!site.ready.value) return
+  if (!site.ready.value || site.leaving.value) return
   controller?.abort()
   const request = new AbortController()
   controller = request
@@ -62,9 +62,16 @@ async function load(_values, _previous, onCleanup = noCleanup) {
 function routePage() { return route.query.page }
 
 watch(
-  [routePage, site.ready, site.token],
+  [routePage, site.ready, site.token, site.backend],
   load,
   { immediate: true },
+)
+
+// 同一分頁離開時立即作廢公開 GET，token 未變也不能讓舊文章列表回寫。
+watch(site.leaving,
+  // 離頁與完成回應若同時發生，先取消本頁控制器。
+  () => controller?.abort(),
+  { flush: 'sync' },
 )
 
 // 離開頁面時取消未完成的讀取。

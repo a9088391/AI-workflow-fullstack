@@ -33,12 +33,13 @@ test('article contract keeps original text and validates routes and envelopes', 
 })
 
 // 真正執行 App script；HTTP 與頁面導向改為可控制的記憶體邊界。
-function articleApp(path, savedToken = 'old-token', search = '') {
+function articleApp(path, savedToken = 'old-token', search = '', confirmResult = false, selectedBackend = auth.API_BASE, simulateBeforeUnload = false) {
   const requests = []
   const redirects = []
   const confirmations = []
   const values = new Map()
   const lifecycle = {}
+  const listeners = {}
   const sessionStorage = {
     // 維持 Storage 缺值語意，讓正式 session 函式運作。
     getItem(key) { return values.get(key) ?? null },
@@ -47,6 +48,7 @@ function articleApp(path, savedToken = 'old-token', search = '') {
     // 失效憑證應由正式流程刪除。
     removeItem(key) { values.delete(key) },
   }
+  if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (savedToken) auth.saveSession(sessionStorage, savedToken, '2026-09-24 18:00:00')
   const context = {
     ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
@@ -55,15 +57,25 @@ function articleApp(path, savedToken = 'old-token', search = '') {
     window: {
       sessionStorage,
       // 測試取消捨棄草稿時登出不能發出 API 請求。
-      confirm(message) { confirmations.push(message); return false },
+      confirm(message) { confirmations.push(message); return confirmResult },
       location: { pathname: path, search,
-        // 記錄導向，確認發文成功沒有猜測 ID。
-        assign(next) { redirects.push(next) },
+        // 模擬瀏覽器離頁提示；使用者取消時，已確認的 POST 不能被當成可重送。
+        assign(next) {
+          if (simulateBeforeUnload) {
+            const event = { defaultPrevented: false,
+              // 記錄瀏覽器會阻止導頁的原生提示。
+              preventDefault() { this.defaultPrevented = true },
+            }
+            listeners.beforeunload?.(event)
+            if (event.defaultPrevented) return
+          }
+          redirects.push(next)
+        },
       },
-      // 無 DOM；生命週期仍走實際掛載與離頁清理。
-      addEventListener() {},
-      // 移除測試中的空事件監聽器。
-      removeEventListener() {},
+      // 保存真正的離頁處理器，以測試成功後的瀏覽器提示。
+      addEventListener(name, callback) { listeners[name] = callback },
+      // 測試結束移除監聽，不留舊頁事件。
+      removeEventListener(name) { delete listeners[name] },
     },
     // 由測試手動啟動元件掛載。
     onMounted(callback) { lifecycle.mount = callback },
@@ -75,7 +87,7 @@ function articleApp(path, savedToken = 'old-token', search = '') {
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, email, password })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -185,6 +197,119 @@ test('cancelled logout preserves article draft and session', async (t) => {
   assert.equal(app.confirmations.length, 1)
   assert.equal(app.page.articleBody.value, '未送草稿')
   assert.equal(auth.readSession(app.sessionStorage).accessToken, 'old-token')
+})
+
+// 同一篇文章換前端保留網址原始 ID、目前後端與原 JWT 到期時間；舊 /me 不可回寫。
+test('frontend switch keeps article ID and exact shared session', async (t) => {
+  const app = articleApp('/vue/articles/001', 'same-token', '', false, auth.BACKENDS.symfony)
+  t.after(app.close)
+  app.page.chooseFrontend({ target: { value: 'nuxt' } })
+  assert.deepEqual(app.redirects, ['/nuxt/articles/001'])
+  assert.equal(auth.readBackend(app.sessionStorage), auth.BACKENDS.symfony)
+  assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  await respond(app.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(app.page.account.value, null)
+})
+
+// 取消保留文字與憑證；確認後清除憑證並帶合法頁面返回登入，不重送草稿。
+test('backend switch cancels or discards draft without retrying and isolates old responses', async (t) => {
+  const cancelled = articleApp('/vue/articles/new')
+  t.after(cancelled.close)
+  await respond(cancelled.requests[0], 200, { success: true, message: 'OK', data: member })
+  cancelled.page.articleBody.value = '未儲存文字'
+  const cancelledSelect = { target: { value: auth.BACKENDS.symfony } }
+  await cancelled.page.chooseBackend(cancelledSelect)
+  assert.equal(cancelledSelect.target.value, auth.BACKENDS.laravel)
+  assert.equal(cancelled.page.articleBody.value, '未儲存文字')
+  assert.equal(auth.readSession(cancelled.sessionStorage).accessToken, 'old-token')
+  assert.deepEqual(cancelled.redirects, [])
+
+  const discarded = articleApp('/vue/articles/new', 'old-token', '', true)
+  t.after(discarded.close)
+  await respond(discarded.requests[0], 200, { success: true, message: 'OK', data: member })
+  discarded.page.articleBody.value = '捨棄文字'
+  await discarded.page.chooseBackend({ target: { value: auth.BACKENDS.symfony } })
+  assert.equal(auth.readBackend(discarded.sessionStorage), auth.BACKENDS.symfony)
+  assert.equal(auth.readSession(discarded.sessionStorage), null)
+  assert.deepEqual(discarded.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2Fnew'])
+  assert.equal(discarded.requests.length, 1)
+})
+
+// 取消切換後仍可發文；201 導頁不可被殘留草稿提示擋住，等待中第二次送出也不得新增請求。
+test('cancelled backend switch then confirmed publish leaves only one POST', async (t) => {
+  const app = articleApp('/vue/articles/new', 'symfony-token', '', false, auth.BACKENDS.symfony, true)
+  t.after(app.close)
+  await respond(app.requests[0], 200, { success: true, message: 'OK', data: member })
+  app.page.articleTitle.value = '已確認標題'
+  app.page.articleBody.value = '已確認內文'
+  await app.page.chooseBackend({ target: { value: auth.BACKENDS.laravel } })
+  assert.equal(app.page.backend.value, auth.BACKENDS.symfony)
+  assert.equal(app.page.articleBody.value, '已確認內文')
+  const publish = app.page.submitArticle()
+  assert.equal(app.requests[1].url, `${auth.BACKENDS.symfony}/api/articles`)
+  assert.equal(app.page.contentPending.value, true)
+  await app.page.submitArticle()
+  assert.equal(app.requests.length, 2, 'pending POST must prevent duplicate submission')
+  await respond(app.requests[1], 201, { success: true, message: 'OK', data: {} })
+  await publish
+  assert.equal(app.page.hasDraft.value, false)
+  assert.deepEqual(app.redirects, ['/vue/me/articles?published=1'])
+  assert.equal(app.requests.length, 2)
+})
+
+// 逆向切換保留文章 ID；公開註冊／登入皆使用目前 Symfony API，不沿用 Laravel。
+test('Symfony switches back to Laravel and public forms use the selected API', async (t) => {
+  const reverse = articleApp('/vue/articles/001', 'symfony-token', '', false, auth.BACKENDS.symfony)
+  t.after(reverse.close)
+  assert.equal(reverse.requests[0].url, `${auth.BACKENDS.symfony}/api/me`)
+  await reverse.page.chooseBackend({ target: { value: auth.BACKENDS.laravel } })
+  assert.equal(auth.readSession(reverse.sessionStorage), null)
+  assert.deepEqual(reverse.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.symfony)
+  t.after(registration.close)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const post = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.symfony}/api/auth/register`)
+  await respond(registration.requests[0], 422, { success: false, error_code: 'E0001', errors: { email: ['此 Email 已註冊'] } })
+  await post
+
+  const login = articleApp('/vue/login', null, '', false, auth.BACKENDS.symfony)
+  t.after(login.close)
+  login.page.email.value = 'new@example.test'
+  login.page.password.value = 'abcd'
+  const signIn = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.symfony}/api/auth/login`)
+  await respond(login.requests[0], 401, { success: false, error_code: 'E0101' })
+  await signIn
+})
+
+// 已送出的舊後端寫入即使晚到成功回應，也不可觸發發文完成導頁或重送。
+test('old write response after backend switch cannot publish on the new selection', async (t) => {
+  const app = articleApp('/vue/articles/new', 'old-token', '', true)
+  t.after(app.close)
+  await respond(app.requests[0], 200, { success: true, message: 'OK', data: member })
+  app.page.articleTitle.value = '切換前標題'
+  app.page.articleBody.value = '切換前內文'
+  const write = app.page.submitArticle()
+  assert.equal(app.requests[1].url, `${auth.API_BASE}/api/articles`)
+  await app.page.chooseBackend({ target: { value: auth.BACKENDS.symfony } })
+  await respond(app.requests[1], 201, { success: true, message: 'OK', data: {} })
+  await write
+  assert.equal(app.requests.length, 2)
+  assert.deepEqual(app.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2Fnew'])
+  assert.equal(auth.readBackend(app.sessionStorage), auth.BACKENDS.symfony)
+  assert.equal(auth.readSession(app.sessionStorage), null)
+})
+
+// 未知直連路徑只能返回文章列表，不能把任意 path 當登入後導向目標。
+test('backend switch from unknown route uses a safe local return target', async (t) => {
+  const app = articleApp('/vue/unknown', null)
+  t.after(app.close)
+  await app.page.chooseBackend({ target: { value: auth.BACKENDS.symfony } })
+  assert.deepEqual(app.redirects, ['/vue/login?return_to=%2Fvue%2F'])
 })
 
 // 公開列表無 JWT 可讀；離頁後延遲回應不能恢復舊資料。

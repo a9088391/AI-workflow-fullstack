@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { API_BASE, clearSession, formatCountdown, interpretLogin, interpretLogout, interpretMe, readSession, remainingSeconds, saveSession, validateLogin } from './auth.js'
+import { API_BASE, BACKENDS, clearSession, formatCountdown, interpretLogin, interpretLogout, interpretMe, readBackend, readSession, remainingSeconds, saveSession, selectBackend, validateLogin } from './auth.js'
 import { interpretRegistrationResponse, validateRegistration } from './registration.js'
 import { readComment, readCommentList, validateComment } from './comments.js'
 import { articleCreated, contentUpdated, articleFailure, articlePage, backendName, localPage, readArticle, readArticleList, validateArticle } from './articles.js'
@@ -25,6 +25,8 @@ const registered = page === 'login' && new URLSearchParams(window.location.searc
 const published = page === 'my-articles' && new URLSearchParams(window.location.search).get('published') === '1'
 const target = new URLSearchParams(window.location.search).get('return_to')
 const returnTo = target && localPage(target) && target !== '/vue/login' && target !== '/vue/register' ? target : '/vue/'
+// Nuxt 尚未實作作者與管理頁；登入返回這些頁面時不提供誤導的前端切換。
+const canSwitchNuxt = ['articles', 'login', 'register', 'article'].includes(page) && (page !== 'login' || !target || returnTo === '/vue/' || /^\/vue\/articles\/[0-9]+$/.test(returnTo))
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'
 const commentResource = page === 'comment' || page === 'comment-edit'
@@ -93,6 +95,7 @@ const logId = ref('')
 const copyState = ref('')
 const pending = ref(false)
 const credential = ref(null)
+const backend = ref(API_BASE)
 const account = ref(null)
 const authChecking = ref(false)
 const logoutPending = ref(false)
@@ -106,7 +109,8 @@ const versionsToggle = ref(null)
 const errorSummary = ref(null)
 let requestController = null
 let timeout = null
-let submitted = false
+// 已確認完成或使用者已確認捨棄時，需立即更新離頁提示的 computed 狀態。
+const submitted = ref(false)
 let authController = null
 let authTimeout = null
 let authEpoch = 0
@@ -127,7 +131,7 @@ const locked = computed(() => lockedSeconds.value > 0)
 const lockText = computed(() => locked.value ? `登入暫時鎖定，約剩 ${formatCountdown(lockedSeconds.value)}` : lockNotice.value)
 
 // 草稿僅存在目前頁面記憶體；任何未送出內容都應觸發離頁確認。
-const hasDraft = computed(() => !submitted && (page === 'register' && Boolean(email.value || password.value || nickname.value) || page === 'article-new' && Boolean(articleTitle.value || articleBody.value) || page === 'article' && Boolean(commentBody.value) || editing && editLoaded.value && Boolean(articleResource ? articleTitle.value !== editOriginal.value?.title || articleBody.value !== editOriginal.value?.body : commentBody.value !== editOriginal.value?.body) || page === 'lockout-settings' && hasLockoutDraft()))
+const hasDraft = computed(() => !submitted.value && (page === 'register' && Boolean(email.value || password.value || nickname.value) || page === 'login' && Boolean(email.value || password.value) || page === 'article-new' && Boolean(articleTitle.value || articleBody.value) || page === 'article' && Boolean(commentBody.value) || editing && editLoaded.value && Boolean(articleResource ? articleTitle.value !== editOriginal.value?.title || articleBody.value !== editOriginal.value?.body : commentBody.value !== editOriginal.value?.body) || page === 'lockout-settings' && hasLockoutDraft()))
 
 // 只比較目前伺服器值與表單值，供離頁確認保護未儲存設定。
 function hasLockoutDraft() {
@@ -248,7 +252,7 @@ async function loadRelated() {
   // 逾時只停止這次讀取；原留言仍保留，交由使用者手動重試。
   relatedTimeout = setTimeout(() => request.controller.abort(), 20000)
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: request.controller.signal })
+    const response = await fetch(`${backend.value}${endpoint}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: request.controller.signal })
     const body = await response.json()
     if (!currentRelatedRequest(request, token)) return
     const data = commentResource ? readArticle(response.status, body, parentId) : readCommentList(response.status, body, commentPage.value, parentId)
@@ -334,7 +338,7 @@ async function loadContent() {
     : `?page=${listPage}&per_page=20${page === 'managed-articles' ? '&filters%5Bscope%5D=management'
       : page === 'members' && searchedKeyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(searchedKeyword)}` : ''}`
   try {
-    const response = await fetch(`${API_BASE}${endpoint}${query}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: request.controller.signal })
+    const response = await fetch(`${backend.value}${endpoint}${query}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: request.controller.signal })
     const body = await response.json()
     if (!currentContentRequest(request, token)) return
     if (response.status === 200 && body?.success === true) {
@@ -450,7 +454,7 @@ async function submitLockoutSettings() {
   const token = credential.value.accessToken
   let confirmed = false
   try {
-    const response = await fetch(`${API_BASE}/api/settings/login-lockout`, {
+    const response = await fetch(`${backend.value}/api/settings/login-lockout`, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(payload),
@@ -519,7 +523,7 @@ async function submitMemberStatus() {
   const request = startContentRequest()
   const token = credential.value.accessToken
   try {
-    const response = await fetch(`${API_BASE}/api/members/${requestedId}/status`, {
+    const response = await fetch(`${backend.value}/api/members/${requestedId}/status`, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ status: nextStatus }),
@@ -584,11 +588,11 @@ async function submitArticle() {
   const request = startContentRequest()
   const token = credential.value.accessToken
   try {
-    const response = await fetch(`${API_BASE}/api/articles`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ title: articleTitle.value, body: articleBody.value }), signal: request.controller.signal })
+    const response = await fetch(`${backend.value}/api/articles`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ title: articleTitle.value, body: articleBody.value }), signal: request.controller.signal })
     const body = await response.json()
     if (!currentContentRequest(request, token)) return
     if (articleCreated(response.status, body)) {
-      submitted = true
+      submitted.value = true
       window.location.assign('/vue/me/articles?published=1')
       return
     }
@@ -635,7 +639,7 @@ async function submitComment() {
   const request = startContentRequest()
   const token = credential.value.accessToken
   try {
-    const response = await fetch(`${API_BASE}/api/articles/${requestedId}/comments`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ body: commentBody.value }), signal: request.controller.signal })
+    const response = await fetch(`${backend.value}/api/articles/${requestedId}/comments`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ body: commentBody.value }), signal: request.controller.signal })
     const body = await response.json()
     if (!currentContentRequest(request, token)) return
     if (articleCreated(response.status, body)) {
@@ -739,7 +743,7 @@ async function updateContent(payload, visibility = false) {
   const token = credential.value.accessToken
   const endpoint = `/api/${articleResource ? 'articles' : 'comments'}/${requestedId}${visibility ? '/visibility' : ''}`
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: request.controller.signal })
+    const response = await fetch(`${backend.value}${endpoint}`, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal: request.controller.signal })
     const body = await response.json()
     if (!currentContentRequest(request, token)) return
     // 成功不樂觀改寫資源；重新讀取同 ID，才把編輯基準切到伺服器確認值。
@@ -904,6 +908,41 @@ function toggleVersions() {
   if (versionsOpen.value) navOpen.value = false
 }
 
+// 只在 Nuxt 已有同類頁面時保留語意路徑與原始 ID；其他頁先保持目前頁面。
+function chooseFrontend(event) {
+  if (event.target.value === 'vue') return
+  if (!canSwitchNuxt) { event.target.value = 'vue'; return }
+  if (hasDraft.value && !window.confirm('尚有未儲存文字，確定捨棄並切換前端嗎？')) { event.target.value = 'vue'; return }
+  // 使用者確認捨棄後停止本頁等待；既送出的寫入結果仍須在原後端查證。
+  submitted.value = true
+  onPageHide()
+  const destination = path.replace(/^\/vue/, '/nuxt')
+  const nextReturn = page === 'login' && target && returnTo !== '/vue/' ? `?return_to=${encodeURIComponent(returnTo.replace(/^\/vue/, '/nuxt'))}` : ''
+  window.location.assign(`${destination}${nextReturn}`)
+}
+
+// 換後端只更換 API 基底並撤銷舊 JWT，登入後再返回合法的本機語意頁。
+async function chooseBackend(event) {
+  const next = event.target.value
+  if (next === backend.value) return
+  if (hasDraft.value && !window.confirm('尚有未儲存文字，確定捨棄並切換後端嗎？')) { event.target.value = backend.value; return }
+  try {
+    if (!selectBackend(sessionStorage, next)) { event.target.value = backend.value; return }
+  } catch {
+    event.target.value = backend.value
+    await showError('無法保存後端選擇；目前仍使用原後端。')
+    return
+  }
+  // 先作廢所有舊回應，再導航至登入；不自動重送可能已到達舊後端的寫入。
+  submitted.value = true
+  onPageHide()
+  credential.value = null
+  account.value = null
+  backend.value = next
+  const destination = page === 'login' ? returnTo : page === 'register' ? '/vue/' : localPage(path) ? path : '/vue/'
+  window.location.assign(`/vue/login?return_to=${encodeURIComponent(destination)}`)
+}
+
 // Escape 可關閉目前面板，供鍵盤使用者快速回到導覽起點。
 function onEscape(event) {
   if (event.key !== 'Escape') return
@@ -927,7 +966,7 @@ async function showError(message, nextErrors = {}, trace = '', code = '') {
   errorSummary.value?.focus()
 }
 
-// 實際 POST 到目前 Laravel API；只有確認 201 成功 envelope 才宣告註冊完成。
+// 實際 POST 到目前選擇的 API；只有確認 201 成功 envelope 才宣告註冊完成。
 async function submitRegistration() {
   // 同時阻擋 Enter 與按鈕重複送出；先回饋格式錯誤，保留三欄原輸入。
   if (pending.value) return
@@ -947,7 +986,7 @@ async function submitRegistration() {
   timeout = setTimeout(() => requestController?.abort(), 20000)
   try {
     // 只送 API 契約欄位；後端仍是唯一性及實際建立結果的權威。
-    const response = await fetch('http://localhost:8081/api/auth/register', {
+    const response = await fetch(`${backend.value}/api/auth/register`, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: checked.email, password: password.value, nickname: nickname.value }),
@@ -958,7 +997,7 @@ async function submitRegistration() {
     const result = interpretRegistrationResponse(response.status, body)
     // 只有完整成功回應才能轉頁；失敗時保留欄位與 log_id 供修正或查證。
     if (result.ok) {
-      submitted = true
+      submitted.value = true
       password.value = ''
       window.location.assign('/vue/login?registered=1')
       return
@@ -1034,7 +1073,7 @@ async function verifyAccount() {
   const request = startAuthRequest()
   const token = credential.value.accessToken
   try {
-    const response = await fetch(`${API_BASE}/api/me`, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, signal: request.controller.signal })
+    const response = await fetch(`${backend.value}/api/me`, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, signal: request.controller.signal })
     const body = await response.json()
     if (!currentAuthRequest(request) || credential.value?.accessToken !== token) return
     const result = interpretMe(response.status, body)
@@ -1050,7 +1089,7 @@ async function verifyAccount() {
       clearLockoutForDifferentAccount(result.account.id)
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
-      if (page === 'login') window.location.assign(returnTo)
+      if (page === 'login') { submitted.value = true; window.location.assign(returnTo) }
       else if (adminPage && result.account.role !== 'admin') await showError('沒有權限使用此功能', {}, '', 'E0003')
     } else {
       if (response.status === 401 && result.code === 'E0002') {
@@ -1092,7 +1131,7 @@ async function submitLogin() {
   const submittedPassword = password.value
   try {
     // 登入不攜帶舊 JWT；此請求只代表目前表單中的帳號與密碼。
-    const response = await fetch(`${API_BASE}/api/auth/login`, {
+    const response = await fetch(`${backend.value}/api/auth/login`, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: checked.email, password: submittedPassword }),
@@ -1108,12 +1147,12 @@ async function submitLogin() {
         await showError('無法保存登入狀態，請檢查瀏覽器儲存空間後手動重試。')
         return
       }
-      credential.value = { backend: API_BASE, accessToken: result.accessToken, expiresAt: result.expiresAt }
+      credential.value = { backend: backend.value, accessToken: result.accessToken, expiresAt: result.expiresAt }
       clearLockoutForDifferentAccount(result.account.id)
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       clearLock()
-      if (page === 'login') window.location.assign(returnTo)
+      if (page === 'login') { submitted.value = true; window.location.assign(returnTo) }
       else {
         reLogin.value = false
         if (adminPage && result.account.role !== 'admin') {
@@ -1164,13 +1203,13 @@ async function submitLogout() {
   const request = startAuthRequest()
   const token = credential.value.accessToken
   try {
-    const response = await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, signal: request.controller.signal })
+    const response = await fetch(`${backend.value}/api/auth/logout`, { method: 'POST', headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, signal: request.controller.signal })
     const body = await response.json()
     if (!currentAuthRequest(request) || credential.value?.accessToken !== token) return
     const result = interpretLogout(response.status, body)
     if (result.ok) {
       forgetCredential()
-      submitted = true
+      submitted.value = true
       window.location.assign('/vue/login')
       return
     }
@@ -1208,7 +1247,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', warnOnLeave)
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('pageshow', onPageShow)
-  try { credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
+  try { backend.value = readBackend(window.sessionStorage); credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
   if (credential.value) verifyAccount()
   else if (protectedPage) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
   else loadContent()
@@ -1254,14 +1293,14 @@ onBeforeUnmount(() => {
           </nav>
         </div>
         <div class="version-area">
-          <div class="current-versions"><span>目前前端 <strong>Vue 3＋Vite</strong></span><span>目前後端 <strong>Laravel</strong></span></div>
+          <div class="current-versions"><span>目前前端 <strong>Vue 3＋Vite</strong></span><span>目前後端 <strong>{{ backend === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</strong></span></div>
           <button ref="versionsToggle" class="version-toggle" type="button" :aria-expanded="versionsOpen" aria-controls="version-panel" @click="toggleVersions">切換版本</button>
         </div>
       </div>
       <div v-if="versionsOpen" id="version-panel" class="version-panel">
         <div class="version-panel-inner">
-          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help"><option>Vue 3＋Vite（目前使用）</option><option disabled>Nuxt（尚未提供）</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">目前只有 Vue 版本可使用。</p></div>
-          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help"><option>Laravel（目前使用）</option><option disabled>其他後端（尚未提供）</option></select><p id="backend-help" class="muted">切換後端需重新登入；其他版本尚未提供。</p></div>
+          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : '（此頁尚未提供）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">Nuxt 目前可切換文章列表、文章詳情、登入與註冊；未完成頁面請留在 Vue。</p></div>
+          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
           <button class="panel-close" type="button" @click="closePanel('versions')">關閉</button>
         </div>
       </div>
@@ -1613,6 +1652,6 @@ onBeforeUnmount(() => {
       </section>
       <section v-else class="message-page" aria-labelledby="page-title"><h1 id="page-title">找不到頁面</h1><p>這個路徑沒有對應頁面。</p><a class="text-link" href="/vue/">返回文章入口</a></section>
     </main>
-    <footer class="site-footer"><span>文章集</span><span>Vue 3＋Vite × Laravel</span></footer>
+    <footer class="site-footer"><span>文章集</span><span>Vue 3＋Vite × {{ backend === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</span></footer>
   </div>
 </template>

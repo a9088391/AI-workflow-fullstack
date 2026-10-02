@@ -34,7 +34,7 @@ function noCleanup() {}
 
 // 文章先確認可讀才查留言；舊身分、ID 或頁碼的回應不得覆蓋新畫面。
 async function load(_values, _previous, onCleanup = noCleanup) {
-  if (!site.ready.value) return
+  if (!site.ready.value || site.leaving.value) return
   controller?.abort()
   const request = new AbortController()
   controller = request
@@ -94,9 +94,16 @@ function routeId() { return route.params.id }
 function routePage() { return route.query.page }
 
 watch(
-  [routeId, routePage, site.ready, site.token],
+  [routeId, routePage, site.ready, site.token, site.backend],
   load,
   { immediate: true },
+)
+
+// 離頁時同步取消詳情與留言 GET，原 token 不變也不能覆蓋新前端畫面。
+watch(site.leaving,
+  // 取消目前頁面持有的同一個讀取控制器。
+  () => controller?.abort(),
+  { flush: 'sync' },
 )
 
 // 深層頁離開時不讓在途回應回寫已銷毀畫面。

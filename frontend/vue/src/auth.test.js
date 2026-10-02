@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { API_BASE, SESSION_KEY, clearSession, formatCountdown, interpretLogin, interpretLogout, interpretMe, readSession, remainingSeconds, retryAfterSeconds, saveSession, validateLogin } from './auth.js'
+import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, clearSession, formatCountdown, interpretLogin, interpretLogout, interpretMe, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validateLogin } from './auth.js'
 
 const account = { id: 1, email: 'demo@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 const login = { success: true, message: 'OK', data: { access_token: 'token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: account } }
@@ -34,6 +34,46 @@ test('session schema and corruption', () => {
   assert.equal(readSession(s), null)
   assert.equal(s.values.has(SESSION_KEY), false)
   clearSession(s)
+})
+
+// 無 JWT 的後端選擇跨刷新保留；逆向切換須拒絕舊 Symfony JWT。
+test('backend selection persists without token and rejects previous backend credential', () => {
+  const s = storage()
+  assert.equal(readBackend(s), API_BASE)
+  assert.equal(selectBackend(s, BACKENDS.symfony), true)
+  assert.equal(readBackend(s), BACKENDS.symfony)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'symfony-jwt', '2026-09-24 18:00:00')
+  assert.equal(readSession(s).backend, BACKENDS.symfony)
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readBackend(s), BACKENDS.laravel)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.symfony, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+  assert.equal(selectBackend(s, 'https://evil.test'), false)
+  assert.equal(readBackend(s), API_BASE)
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  s.setItem(BACKEND_KEY, 'broken')
+  assert.equal(readSession(s), null)
+  saveSession(s, 'new-login', '2026-09-24 18:00:00')
+  assert.equal(readSession(s).accessToken, 'new-login')
+})
+
+// 瀏覽器拒絕清除 JWT 時，失敗切換不可把舊 JWT 配給新後端。
+test('backend selection fails closed when token removal throws', () => {
+  const s = storage()
+  saveSession(s, 'still-old', '2026-09-24 18:00:00')
+  const throwing = {
+    // 讀取既有選擇及憑證供失敗後確認。
+    getItem(key) { return s.getItem(key) },
+    // 若錯誤排序先寫入新選擇，此案例會立即留下錯誤配對。
+    setItem(key, value) { s.setItem(key, value) },
+    // 模擬瀏覽器拒絕清除 JWT；切換必須在寫選擇前失敗。
+    removeItem() { throw new Error('storage denied') },
+  }
+  assert.throws(() => selectBackend(throwing, BACKENDS.symfony), /storage denied/)
+  assert.equal(readBackend(s), API_BASE)
+  assert.equal(readSession(s).accessToken, 'still-old')
 })
 
 // Email 僅折 ASCII／U+0020；密碼不裁切，格式錯誤不應送進鎖定計數。
