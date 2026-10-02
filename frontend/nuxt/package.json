@@ -1,0 +1,15 @@
+{
+  "name": "article-collection-nuxt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0",
+    "build": "nuxt build",
+    "typecheck": "nuxt typecheck",
+    "test": "node --test"
+  },
+  "dependencies": { "nuxt": "4.5.2" },
+  "devDependencies": { "typescript": "5.9.3", "vue-tsc": "3.1.2" }
+}

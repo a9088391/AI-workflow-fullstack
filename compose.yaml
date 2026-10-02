@@ -106,6 +106,15 @@ services:
       timeout: 3s
       retries: 20
 
+  frontend-nuxt:
+    build:
+      context: ./frontend/nuxt
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/nuxt/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   nginx:
     image: nginx:1.30.5-alpine3.24@sha256:bf3201ab56f23e5954646379c775d511fc466e9f11376d9725361064ad07ed35
     volumes:
@@ -114,6 +123,8 @@ services:
       - "127.0.0.1:8080:80"
     depends_on:
       frontend-vue:
+        condition: service_healthy
+      frontend-nuxt:
         condition: service_healthy
       laravel:
         condition: service_healthy

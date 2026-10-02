@@ -1,0 +1,131 @@
+<script setup>
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { apiFailure, apiRequest, formatCountdown, loginData, remainingSeconds, retryAfterSeconds, validReturn, validateCredentials } from '../utils/contracts.js'
+
+useHead({ title: '會員登入｜文章集' })
+const route = useRoute()
+const site = useSite()
+const email = ref('')
+const password = ref('')
+const errors = ref({})
+const summary = ref('')
+const logId = ref('')
+const pending = ref(false)
+const secondsLeft = ref(0)
+const retryReady = ref(false)
+const summaryElement = ref(null)
+const emailElement = ref(null)
+const passwordElement = ref(null)
+const registered = route.query.registered === '1'
+const returnTo = validReturn(route.query.return_to) ? route.query.return_to : '/nuxt/'
+const countdown = computed(
+  // 倒數文字由剩餘秒數推導，並不修改後端鎖定期限。
+  () => formatCountdown(secondsLeft.value),
+)
+let deadline = 0
+let timer = null
+let controller = null
+
+// 離開登入頁時取消請求與計時器，舊帳號的回應不進入下一個表單。
+onBeforeUnmount(
+  // 清理本頁持有的兩種非同步工作。
+  () => { controller?.abort(); if (timer) clearInterval(timer) },
+)
+
+// 鎖定顯示使用實際時鐘，歸零只恢復編輯而不自動送出帳密。
+function tick() {
+  secondsLeft.value = remainingSeconds(deadline)
+  if (secondsLeft.value === 0) {
+    clearInterval(timer)
+    timer = null
+    retryReady.value = true
+    summary.value = ''
+  }
+}
+
+// 新的有效 Retry-After 取代舊倒數；不接受日期或缺少秒數時自行猜測。
+function startCountdown(seconds) {
+  if (timer) clearInterval(timer)
+  deadline = Date.now() + seconds * 1000
+  retryReady.value = false
+  tick()
+  if (secondsLeft.value > 0) timer = setInterval(tick, 250)
+}
+
+// 表單錯誤移到焦點供鍵盤使用者閱讀，欄位錯誤留在各欄附近。
+async function showError(message, details = {}, id = '') {
+  summary.value = message
+  errors.value = details
+  logId.value = id
+  await nextTick()
+  summaryElement.value?.focus()
+}
+
+// 摘要先取得焦點；使用者點擊導引時再移到表單順序中的第一個錯誤欄位。
+function focusFirstError() {
+  if (errors.value.email?.length) emailElement.value?.focus()
+  else if (errors.value.password?.length) passwordElement.value?.focus()
+}
+
+// 倒數結束後改用另一個 Email 時，舊帳號的「可再次嘗試」提示不再適用。
+function clearRetryReady() { retryReady.value = false }
+
+// 登入前先確認格式；鎖定中含 Enter 都不可送出，成功僅保存原到期時間。
+async function submit() {
+  if (pending.value || secondsLeft.value > 0 || site.checking.value) return
+  const checked = validateCredentials({ email: email.value, password: password.value })
+  if (Object.keys(checked.errors).length) { await showError('欄位資料不正確，請確認後再送出', checked.errors); return }
+  pending.value = true
+  retryReady.value = false
+  summary.value = ''
+  errors.value = {}
+  logId.value = ''
+  controller = new AbortController()
+  const request = controller
+  try {
+    const response = await apiRequest('/api/auth/login', { method: 'POST', body: { email: checked.email, password: password.value }, signal: request.signal })
+    if (request.signal.aborted) return
+    const data = loginData(response.status, response.body)
+    if (data) {
+      site.acceptLogin(data)
+      window.location.assign(returnTo)
+      return
+    }
+    const failure = apiFailure(response.status, response.body, ['email', 'password'])
+    if (response.status === 429 && failure.code === 'E0105') {
+      const seconds = retryAfterSeconds(response.retryAfter)
+      if (seconds !== null) startCountdown(seconds)
+      else await showError(`${failure.message}。無法取得有效倒數秒數，請稍後再試。`, {}, failure.logId)
+    } else if (response.status === 403 && failure.code === 'E0102') {
+      site.forget(failure.message)
+    }
+    if (secondsLeft.value > 0) await showError('登入暫時鎖定', {}, failure.logId)
+    else if (!(response.status === 429 && failure.code === 'E0105' && retryAfterSeconds(response.retryAfter) === null)) await showError(failure.message, failure.errors, failure.logId)
+  } catch {
+    if (!request.signal.aborted) await showError('無法確認登入結果；請手動重新驗證後再試。')
+  } finally {
+    if (controller === request) { pending.value = false; controller = null }
+  }
+}
+</script>
+
+<template>
+  <main class="form-page">
+    <div class="form-intro"><p class="section-label">回到文章集</p><h1>下一頁，<br>由你接續。</h1><p>登入後仍使用同一次登入的原到期時間。</p></div>
+    <form class="auth-form" novalidate @submit.prevent="submit">
+      <h2>會員登入</h2>
+      <p v-if="registered" class="form-success" role="status">註冊成功，請登入。</p>
+      <p v-if="summary" ref="summaryElement" class="form-error" tabindex="-1" role="alert">{{ summary }} <small v-if="logId">log_id：{{ logId }}</small><button v-if="errors.email?.length || errors.password?.length" type="button" class="inline-button" @click="focusFirstError">前往第一個錯誤欄位</button></p>
+      <p v-if="secondsLeft > 0" class="lock-message">登入暫時鎖定，約剩 <strong>{{ countdown }}</strong></p>
+      <p v-if="retryReady" class="form-success" role="status">可再次嘗試登入。</p>
+      <label for="login-email">Email</label>
+      <input id="login-email" ref="emailElement" v-model="email" autocomplete="email" inputmode="email" :aria-invalid="Boolean(errors.email)" :aria-describedby="errors.email ? 'login-email-error' : undefined" :disabled="pending || secondsLeft > 0 || site.checking.value" @input="clearRetryReady">
+      <small v-if="errors.email" id="login-email-error" class="field-error">{{ errors.email.join('；') }}</small>
+      <label for="login-password">密碼</label>
+      <input id="login-password" ref="passwordElement" v-model="password" type="password" autocomplete="current-password" :aria-invalid="Boolean(errors.password)" :aria-describedby="errors.password ? 'login-password-error' : undefined" :disabled="pending || secondsLeft > 0 || site.checking.value">
+      <small v-if="errors.password" id="login-password-error" class="field-error">{{ errors.password.join('；') }}</small>
+      <button class="primary-button" :disabled="pending || secondsLeft > 0 || site.checking.value" type="submit">{{ pending ? '登入中…' : '登入' }}</button>
+      <p class="form-foot">尚未加入？ <a href="/nuxt/register">註冊會員</a></p>
+    </form>
+  </main>
+</template>

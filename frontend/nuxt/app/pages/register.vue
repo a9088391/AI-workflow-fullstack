@@ -1,0 +1,100 @@
+<script setup>
+import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { apiFailure, apiRequest, emptySuccess, validateCredentials } from '../utils/contracts.js'
+
+useHead({ title: '註冊會員｜文章集' })
+const email = ref('')
+const password = ref('')
+const nickname = ref('')
+const errors = ref({})
+const summary = ref('')
+const logId = ref('')
+const pending = ref(false)
+const created = ref(false)
+const summaryElement = ref(null)
+const successElement = ref(null)
+const emailElement = ref(null)
+const passwordElement = ref(null)
+const nicknameElement = ref(null)
+let controller = null
+
+// 離開表單時取消尚未完成的請求，避免舊回應更新已離開的畫面。
+onBeforeUnmount(
+  // 取消本頁唯一在途註冊請求。
+  () => { controller?.abort() },
+)
+
+// 錯誤摘要移到鍵盤焦點，欄位明細同時靠近欄位顯示。
+async function showError(message, details = {}, id = '') {
+  summary.value = message
+  errors.value = details
+  logId.value = id
+  await nextTick()
+  summaryElement.value?.focus()
+}
+
+// 摘要先取得焦點；使用者點擊導引時再移到表單順序中的第一個錯誤欄位。
+function focusFirstError() {
+  if (errors.value.email?.length) emailElement.value?.focus()
+  else if (errors.value.password?.length) passwordElement.value?.focus()
+  else if (errors.value.nickname?.length) nicknameElement.value?.focus()
+}
+
+// 註冊只送三個核准欄位；成功後轉登入，寫入結果不明時不自動重送。
+async function submit() {
+  if (pending.value || created.value) return
+  const checked = validateCredentials({ email: email.value, password: password.value, nickname: nickname.value }, true)
+  if (Object.keys(checked.errors).length) { await showError('欄位資料不正確，請確認後再送出', checked.errors); return }
+  pending.value = true
+  summary.value = ''
+  errors.value = {}
+  logId.value = ''
+  controller = new AbortController()
+  try {
+    const response = await apiRequest('/api/auth/register', { method: 'POST', body: { email: checked.email, password: password.value, nickname: nickname.value }, signal: controller.signal })
+    if (emptySuccess(response.status, response.body, 201)) {
+      // 確認建立後先鎖住表單並清除密碼；導頁未完成或返回時仍可手動前往登入。
+      created.value = true
+      password.value = ''
+      await nextTick()
+      successElement.value?.focus()
+      // 以 replace 避免已成功的註冊頁留在上一頁歷史紀錄。
+      window.location.replace('/nuxt/login?registered=1')
+      return
+    }
+    const failure = apiFailure(response.status, response.body, ['email', 'password', 'nickname'])
+    await showError(response.status >= 500 || response.status === 201 ? `無法確認註冊結果；請先確認帳號狀態，再決定是否重試。${failure.message}` : failure.message, failure.errors, failure.logId)
+  } catch {
+    // 已確認 201 後若導頁失敗，保留成功回退畫面，不誤報為寫入結果不明。
+    if (!created.value && !controller.signal.aborted) await showError('無法確認註冊結果；請先確認帳號狀態，再決定是否重試。')
+  } finally { pending.value = false; controller = null }
+}
+</script>
+
+<template>
+  <main class="form-page">
+    <div class="form-intro"><p class="section-label">加入讀者</p><h1>讓文字有一個<br>署名。</h1><p>建立帳號後，請再登入以使用會員功能。</p></div>
+    <form class="auth-form" novalidate @submit.prevent="submit">
+      <h2>註冊會員</h2>
+      <template v-if="created">
+        <p ref="successElement" class="form-success" tabindex="-1" role="status">註冊成功，請登入。若未自動轉頁，請使用下方連結。</p>
+        <p class="form-foot"><a href="/nuxt/login?registered=1">前往登入</a></p>
+      </template>
+      <template v-else>
+        <p v-if="summary" ref="summaryElement" class="form-error" tabindex="-1" role="alert">{{ summary }} <small v-if="logId">log_id：{{ logId }}</small><button v-if="errors.email?.length || errors.password?.length || errors.nickname?.length" type="button" class="inline-button" @click="focusFirstError">前往第一個錯誤欄位</button></p>
+        <label for="register-email">Email</label>
+        <input id="register-email" ref="emailElement" v-model="email" autocomplete="email" inputmode="email" :aria-invalid="Boolean(errors.email)" :aria-describedby="errors.email ? 'register-email-error' : undefined" :disabled="pending">
+        <small v-if="errors.email" id="register-email-error" class="field-error">{{ errors.email.join('；') }}</small>
+        <label for="register-password">密碼</label>
+        <input id="register-password" ref="passwordElement" v-model="password" type="password" autocomplete="new-password" :aria-invalid="Boolean(errors.password)" :aria-describedby="errors.password ? 'register-password-error' : undefined" :disabled="pending">
+        <small v-if="errors.password" id="register-password-error" class="field-error">{{ errors.password.join('；') }}</small>
+        <p class="field-hint">4–16 碼英文字母或數字</p>
+        <label for="register-nickname">暱稱</label>
+        <input id="register-nickname" ref="nicknameElement" v-model="nickname" autocomplete="nickname" :aria-invalid="Boolean(errors.nickname)" :aria-describedby="errors.nickname ? 'register-nickname-error' : undefined" :disabled="pending">
+        <small v-if="errors.nickname" id="register-nickname-error" class="field-error">{{ errors.nickname.join('；') }}</small>
+        <button class="primary-button" :disabled="pending" type="submit">{{ pending ? '建立中…' : '建立帳號' }}</button>
+        <p class="form-foot">已經有帳號？ <a href="/nuxt/login">前往登入</a></p>
+      </template>
+    </form>
+  </main>
+</template>
