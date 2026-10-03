@@ -14,6 +14,28 @@ Check(Rules.NormalizeEmail(" A+Tag@EXAMPLE.TEST ") == "a+tag@example.test"
     && !Rules.ValidEmail(Rules.NormalizeEmail("\u212Aprobe13@example.test")), "ASCII-only email case conversion");
 Check(Rules.ValidNickname("作者\n") && !Rules.ValidNickname("\u3000\t") && !Rules.ValidNickname("名稱\0"), "nickname codepoints");
 Check(Rules.TryId("00042", out var id) && id == 42 && !Rules.TryId("+42", out _) && !Rules.TryId("9007199254740992", out _), "URL integer precision");
+// 內容保留混合換行及補充平面字元；全空白、NUL、過長與非整數版本必須拒絕。
+Check(Rules.ValidContent("😀\r\n文", 4) && !Rules.ValidContent("😀\r\n文", 3)
+    && !Rules.ValidContent("\u3000\t", 200) && !Rules.ValidContent("a\0", 200), "content codepoints and whitespace");
+Check(Rules.TryJsonVersion("9007199254740991", out var maxVersion) && maxVersion == 9007199254740991
+    && !Rules.TryJsonVersion("0", out _) && !Rules.TryJsonVersion("1.0", out _)
+    && !Rules.TryJsonVersion("1e0", out _) && !Rules.TryJsonVersion("9007199254740992", out _), "JSON version integer precision");
+// 從真正的 HTTP Body 解析，確認原文及 version 型態沒有被 model binding 寬鬆轉換。
+var content = await ParseContentAsync("{\"title\":\"😀\\r\\n文\",\"body\":\"原文\",\"version\":1}", ["title", "body", "version"]);
+Check(content.Text["title"] == "😀\r\n文" && content.Version == 1, "content JSON preservation");
+await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":\"1\"}", ["body", "version"], "version", "欄位型態不正確");
+await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":1.0}", ["body", "version"], "version", "欄位型態不正確");
+await ExpectContentFailureAsync("{\"body\":null,\"version\":1}", ["body", "version"], "body", "此欄位不可為 null");
+// JSON object 的重複名稱由最後一筆決定；最後一筆仍須完整通過文字或版本驗證。
+var lastBody = await ParseContentAsync("{\"body\":null,\"body\":\"最後\"}", ["body"]);
+Check(lastBody.Text["body"] == "最後", "duplicate content uses final value");
+await ExpectContentFailureAsync("{\"body\":\"先前\",\"body\":null}", ["body"], "body", "此欄位不可為 null");
+var lastVersion = await ParseContentAsync("{\"body\":\"留言\",\"version\":0,\"version\":2}", ["body", "version"]);
+Check(lastVersion.Version == 2, "duplicate version uses final value");
+await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":2,\"version\":\"2\"}", ["body", "version"], "version", "欄位型態不正確");
+await ExpectContentFailureAsync("{\"body\":\"a\",\"unexpected\":1}", ["body"], "unexpected", "不支援此欄位");
+await ExpectContentFailureAsync("{\"body\":\"a\",\"unexpected\":1,\"unexpected\":2}", ["body"], "unexpected", "不支援此欄位");
+await ExpectContentFailureAsync("{}", ["body"], "body", "此欄位為必填");
 
 // 驗證有效 JWT 的固定八小時、跨後端金鑰隔離與到期邊界。
 var keyFile = Path.GetTempFileName();
@@ -71,4 +93,21 @@ static string SignedToken(string header, string payload, byte[] key)
 {
     var input = JwtToken.Encode(System.Text.Encoding.UTF8.GetBytes(header)) + "." + JwtToken.Encode(System.Text.Encoding.UTF8.GetBytes(payload));
     return input + "." + JwtToken.Encode(System.Security.Cryptography.HMACSHA256.HashData(key, System.Text.Encoding.ASCII.GetBytes(input)));
+}
+
+/// <summary>以最小真實 HttpRequest 測試內容解析，不依賴資料庫或 MVC model binding。</summary>
+static Task<(Dictionary<string, string> Text, long Version)> ParseContentAsync(string json, string[] fields)
+{
+    var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+    context.Request.ContentType = "application/json";
+    context.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+    return ApiInput.ContentBodyAsync(context.Request, fields, CancellationToken.None);
+}
+
+/// <summary>逐字比對固定驗證明細，避免錯誤欄位或文案在跨後端漂移。</summary>
+static async Task ExpectContentFailureAsync(string json, string[] fields, string field, string message)
+{
+    try { await ParseContentAsync(json, fields); }
+    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return; }
+    throw new Exception("Expected content error " + field + ": " + message);
 }

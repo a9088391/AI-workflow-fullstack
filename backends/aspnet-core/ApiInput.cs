@@ -50,6 +50,63 @@ internal static class ApiInput
         }
     }
 
+    /// <summary>內容欄位保留原文，version 僅接受 JSON 安全正整數；不改動帳密端點既有解析規則。</summary>
+    internal static async Task<(Dictionary<string, string> Text, long Version)> ContentBodyAsync(HttpRequest request, string[] fields, CancellationToken cancellationToken)
+    {
+        await using var stream = new MemoryStream();
+        await request.Body.CopyToAsync(stream, cancellationToken);
+        if (stream.Length == 0 || !string.Equals(request.ContentType?.Split(';', 2)[0].Trim(), "application/json", StringComparison.OrdinalIgnoreCase))
+            throw Invalid("_body", "Request Body 必須為 JSON object");
+        JsonDocument document;
+        try { document = JsonDocument.Parse(stream.ToArray()); }
+        catch (JsonException) { throw new ApiFailure("E0005"); }
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object) throw Invalid("_body", "Request Body 必須為 JSON object");
+            var properties = document.RootElement.EnumerateObject().ToArray();
+            var text = new Dictionary<string, string>(StringComparer.Ordinal);
+            var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            long version = 0;
+            foreach (var field in fields)
+            {
+                // JSON object 重複名稱沿用最後一筆，並只對該值查核型態與範圍。
+                var found = false;
+                JsonElement value = default;
+                foreach (var property in properties)
+                {
+                    if (property.Name != field) continue;
+                    found = true;
+                    value = property.Value;
+                }
+                if (!found) errors[field] = ["此欄位為必填"];
+                else if (value.ValueKind == JsonValueKind.Null) errors[field] = ["此欄位不可為 null"];
+                else if (field == "version")
+                {
+                    if (value.ValueKind != JsonValueKind.Number) errors[field] = ["欄位型態不正確"];
+                    else if (!value.TryGetInt64(out _)) errors[field] = ["欄位型態不正確"];
+                    else if (!Rules.TryJsonVersion(value.GetRawText(), out version)) errors[field] = ["欄位格式或範圍不正確"];
+                }
+                else if (value.ValueKind != JsonValueKind.String) errors[field] = ["欄位型態不正確"];
+                else
+                {
+                    var raw = value.GetString() ?? "";
+                    text[field] = raw;
+                    var maximum = field == "title" ? 200 : fields.Contains("title", StringComparer.Ordinal) ? 20000 : 2000;
+                    if (field is "title" or "body" && !Rules.ValidContent(raw, maximum)) errors[field] = ["欄位格式或範圍不正確"];
+                    if (field == "visibility" && raw is not ("visible" or "hidden")) errors[field] = ["欄位格式或範圍不正確"];
+                }
+            }
+            // 未知名稱即使重複仍是未支援欄位，不把 JSON Body 當作 Query 重複參數。
+            foreach (var property in properties)
+            {
+                if (fields.Contains(property.Name, StringComparer.Ordinal)) continue;
+                errors[property.Name] = ["不支援此欄位"];
+            }
+            if (errors.Count > 0) throw new ApiFailure("E0001", errors);
+            return (text, version);
+        }
+    }
+
     /// <summary>GET 不接受非空 Body，即使 Content-Length 未提供也實際讀取檢查。</summary>
     internal static async Task NoGetBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {

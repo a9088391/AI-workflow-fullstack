@@ -1,0 +1,24 @@
+services:
+  laravel:
+    ports: !override
+      - "127.0.0.1:18081:8000"
+    volumes:
+      - ./.local/ticket14-backend/laravel-logs:/srv/laravel/storage/logs
+      - ./.local/ticket14-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+  symfony:
+    ports: !override
+      - "127.0.0.1:18082:8000"
+    volumes:
+      - ./.local/ticket14-backend/symfony-logs:/srv/symfony/var/log
+      - ./.local/ticket14-backend/symfony.key:/run/secrets/symfony-jwt.key:ro
+  aspnet-core:
+    ports: !override
+      - "127.0.0.1:18083:8080"
+    volumes:
+      - ./.local/ticket14-backend/aspnet-core.key:/run/secrets/aspnet-core-jwt.key:ro
+  sql:
+    volumes:
+      - ./.local/ticket14-backend/backups:/backups
+  nginx:
+    ports: !override
+      - "127.0.0.1:18080:80"

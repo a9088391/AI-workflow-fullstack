@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace AspNetCore;
 
-/// <summary>七個 API 共用身分鎖序、公開欄位與時間格式，避免端點之間偏離核准契約。</summary>
+/// <summary>共用身分鎖序、資源輸出與時間格式，避免各端點偏離核准契約。</summary>
 public abstract class ApiControllerBase(JwtToken jwt) : ControllerBase
 {
     protected JwtToken Jwt { get; } = jwt;

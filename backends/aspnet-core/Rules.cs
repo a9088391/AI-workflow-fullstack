@@ -40,6 +40,20 @@ internal static partial class Rules
         return count > 0 && hasText;
     }
 
+    /// <summary>內容依 Unicode 碼點及固定空白集合驗證，保留原文並在進入 PostgreSQL 前拒絕 NUL。</summary>
+    internal static bool ValidContent(string value, int maximum)
+    {
+        var count = 0;
+        var hasText = false;
+        foreach (var rune in value.EnumerateRunes())
+        {
+            count++;
+            if (rune.Value == 0 || count > maximum) return false;
+            if (!IsContractWhitespace(rune.Value)) hasText = true;
+        }
+        return count > 0 && hasText;
+    }
+
     /// <summary>只接受安全整數範圍的 ASCII 十進位路徑或分頁值，允許前導零。</summary>
     internal static bool TryUrlInteger(string? value, long maximum, out long result)
     {
@@ -55,6 +69,13 @@ internal static partial class Rules
 
     /// <summary>將 API 資源 ID 限於 JavaScript 可精確表示的正整數。</summary>
     internal static bool TryId(string? value, out long result) => TryUrlInteger(value, MaxId, out result);
+
+    /// <summary>JSON version 不允許小數與指數表示法；上限避免前端數字失去精度。</summary>
+    internal static bool TryJsonVersion(string raw, out long result)
+    {
+        result = 0;
+        return raw.Length > 0 && raw[0] is >= '1' and <= '9' && TryUrlInteger(raw, MaxId, out result);
+    }
 
     /// <summary>固定空白表必須跨語言一致，不能依賴各 runtime 的 Trim 判定。</summary>
     private static bool IsContractWhitespace(int c) => c is >= 0x9 and <= 0xD or 0x20 or 0x85 or 0xA0 or 0x1680 or >= 0x2000 and <= 0x200A or 0x2028 or 0x2029 or 0x202F or 0x205F or 0x3000;
