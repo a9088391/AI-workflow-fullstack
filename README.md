@@ -1,18 +1,27 @@
-# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony
+# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core
 
 目前 Vue 提供註冊、登入、文章／留言閱讀與會員及管理頁；Nuxt 提供註冊、登入、公開文章列表與詳情。共同頁面可在同一分頁切換 Vue／Nuxt；Laravel／Symfony 使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 可發表、編修、下架與恢復文章／留言；送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
-需求：Docker Compose、OpenSSL；固定入口使用 `localhost:8080`（前端）、`localhost:8081`（Laravel API）及 `localhost:8082`（Symfony API）。PostgreSQL 不對宿主機公開埠。
+需求：Docker Compose、OpenSSL；固定入口使用 `localhost:8080`（前端）、`localhost:8081`（Laravel API）、`localhost:8082`（Symfony API）及 `localhost:8083`（ASP.NET Core API）。PostgreSQL 不對宿主機公開埠。
 
 首次執行 `ops/setup.sh`，依提示輸入管理員 Email、暱稱及密碼。密碼為 4–16 碼 ASCII 英數，輸入不回顯，也不經命令列參數。設定會產生未納入 Git 的 `.env`、`.local/keys/` 十二份獨立金鑰、備份目錄與持久化 PostgreSQL volume。重跑只接受原管理員，保留其密碼；若同 Email 是會員則停止，不會升級角色。既有金鑰缺漏或損壞時也會停止，不會重生。
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫 `http://localhost:8081/api/...` 或 `http://localhost:8082/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫 `http://localhost:8081/api/...`、`http://localhost:8082/api/...` 或 `http://localhost:8083/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
 Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。切換後端會清除原登入並轉到登入頁，重新登入後返回合法的本機頁面；不會把舊 JWT 送給新後端。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
+
+ASP.NET Core Controllers 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8083/up` 也會確認共用表可讀。目前提供註冊、登入／登出、本人與公開文章／留言閱讀；寫入文章或留言仍須選擇已提供該端點的後端。
+
+Ticket 13 的真實 HTTP 驗證只在 `ticket13_` 開頭的隔離 Compose 專案執行；它會建立測試帳號／內容並透過 Laravel 管理 API 測試停用。先準備 `.local/ticket13-backend/` 下對應的三份測試金鑰、`laravel-logs/`、`symfony-logs/` 與 `backups/`，再執行：
+
+```bash
+COMPOSE_PROJECT_NAME=ticket13_test COMPOSE_FILE=compose.yaml:ops/tests/aspnet_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
+COMPOSE_PROJECT_NAME=ticket13_test COMPOSE_FILE=compose.yaml:ops/tests/aspnet_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/aspnet_http.php
+```
 
 登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Nuxt 尚無作者及管理頁，這些頁面不能切到 Nuxt；其他四版前端尚未提供。
 

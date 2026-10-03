@@ -48,6 +48,15 @@ test('shared backend selection and token remain bound in both directions', () =>
   assert.equal(readSession(s).accessToken, 'new-login')
 })
 
+// Nuxt 主動改選 ASP.NET Core 時仍先撤銷舊 JWT，下一次讀取應使用新固定 API 位址。
+test('ASP.NET Core backend selection clears the previous session', () => {
+  const s = storage()
+  saveSession(s, 'old-token', '2026-09-24 18:00:00')
+  assert.equal(selectBackend(s, BACKENDS.aspnet), true)
+  assert.equal(s.getItem(SESSION_KEY), null)
+  assert.equal(readBackend(s), 'http://localhost:8083')
+})
+
 // 清除 JWT 若遭瀏覽器拒絕，新後端選擇不能已寫入儲存。
 test('backend switch keeps original pairing when storage removal fails', () => {
   const s = storage()

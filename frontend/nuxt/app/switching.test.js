@@ -6,13 +6,13 @@ import { runInNewContext } from 'node:vm'
 import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as contracts from './utils/contracts.js'
-import { BACKENDS, SESSION_KEY, readSession, saveSession, selectBackend } from './utils/contracts.js'
+import { BACKEND_KEY, BACKENDS, SESSION_KEY, readSession } from './utils/contracts.js'
 import { useSite } from './composables/useSite.js'
 
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 
 // 執行真實 Nuxt app 與表單 script；只替換瀏覽器、Nuxt 注入及延遲 HTTP 邊界。
-function switchingPage(page, withSession = false) {
+function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony) {
   const original = { useState: globalThis.useState, computed: globalThis.computed, fetch: globalThis.fetch, storage: Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage') }
   const states = new Map()
   const values = new Map()
@@ -29,8 +29,9 @@ function switchingPage(page, withSession = false) {
     // 後端切換或失效時依正式流程撤銷憑證。
     removeItem(key) { values.delete(key) },
   }
-  selectBackend(storage, BACKENDS.symfony)
-  if (withSession) saveSession(storage, 'same-token', '2026-09-24 18:00:00')
+  // 直接放入 Vue 留下的原始儲存資料，避免透過 Nuxt 寫入函式掩蓋跨前端不相容。
+  storage.setItem(BACKEND_KEY, selectedBackend)
+  if (withSession) storage.setItem(SESSION_KEY, JSON.stringify({ backend: selectedBackend, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' }))
   // 每個 Nuxt 狀態 key 只建立一次 ref，讓 app 與頁面共用離頁旗標。
   globalThis.useState = (key, initial) => {
     if (!states.has(key)) states.set(key, vue.ref(initial()))
@@ -154,6 +155,23 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.equal(app.app.site.account.value, null)
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.deepEqual(app.redirects, ['/vue/'])
+})
+
+// Vue 選用 ASP.NET Core 後切到 Nuxt 必須沿用原 JWT，切回 Vue 也不能延長到期時間。
+test('ASP.NET Core Vue session survives Nuxt verification and reverse frontend switch', async (t) => {
+  const backend = 'http://localhost:8083'
+  const app = switchingPage('index', true, backend)
+  t.after(app.close)
+  assert.equal(app.app.site.backend.value, backend)
+  assert.equal(app.requests[0].url, `${backend}/api/me`)
+  assert.equal(app.requests[0].options.headers.Authorization, 'Bearer same-token')
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+  await setImmediate()
+  assert.equal(app.app.site.account.value?.id, account.id)
+  app.app.chooseFrontend({ target: { value: 'vue' } })
+  assert.deepEqual(app.redirects, ['/vue/'])
+  assert.deepEqual(JSON.parse(app.storage.getItem(SESSION_KEY)), { backend, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(app.storage.getItem(BACKEND_KEY), backend)
 })
 
 // 後端改選仍走原本的清除憑證流程；舊登入與註冊成功不能把狀態寫回新後端。

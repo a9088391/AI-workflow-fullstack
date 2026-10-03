@@ -87,7 +87,8 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -284,6 +285,42 @@ test('Symfony switches back to Laravel and public forms use the selected API', a
   assert.equal(login.requests[0].url, `${auth.BACKENDS.symfony}/api/auth/login`)
   await respond(login.requests[0], 401, { success: false, error_code: 'E0101' })
   await signIn
+})
+
+// 新增的 ASP.NET 選擇須清掉原 JWT；同分頁後續公開請求與帳號表單都指向 8083。
+test('ASP.NET backend selection clears prior JWT and routes public and auth requests to 8083', async (t) => {
+  const switched = articleApp('/vue/articles/001', 'laravel-token')
+  t.after(switched.close)
+  await switched.page.chooseBackend({ target: { value: auth.BACKENDS.aspnet } })
+  assert.equal(auth.readBackend(switched.sessionStorage), 'http://localhost:8083')
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+  assert.equal(switched.page.backendLabel.value, 'ASP.NET Core Controllers')
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.aspnet)
+  t.after(registration.close)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const post = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, 'http://localhost:8083/api/auth/register')
+  await respond(registration.requests[0], 422, { success: false, error_code: 'E0001', errors: { email: ['此 Email 已註冊'] } })
+  await post
+
+  const login = articleApp('/vue/login', null, '', false, auth.BACKENDS.aspnet)
+  t.after(login.close)
+  login.page.email.value = 'new@example.test'
+  login.page.password.value = 'abcd'
+  const signIn = login.page.submitLogin()
+  assert.equal(login.requests[0].url, 'http://localhost:8083/api/auth/login')
+  await respond(login.requests[0], 401, { success: false, error_code: 'E0101' })
+  await signIn
+
+  const publicList = articleApp('/vue/', null, '', false, auth.BACKENDS.aspnet)
+  t.after(publicList.close)
+  assert.equal(publicList.page.backendLabel.value, 'ASP.NET Core Controllers')
+  assert.equal(publicList.requests[0].url, 'http://localhost:8083/api/articles?page=1&per_page=20')
+  assert.equal(publicList.requests[0].headers.Authorization, undefined)
 })
 
 // 已送出的舊後端寫入即使晚到成功回應，也不可觸發發文完成導頁或重送。

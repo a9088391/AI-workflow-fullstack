@@ -96,6 +96,8 @@ const copyState = ref('')
 const pending = ref(false)
 const credential = ref(null)
 const backend = ref(API_BASE)
+// 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
+const backendLabel = computed(() => backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
 const account = ref(null)
 const authChecking = ref(false)
 const logoutPending = ref(false)
@@ -1293,14 +1295,14 @@ onBeforeUnmount(() => {
           </nav>
         </div>
         <div class="version-area">
-          <div class="current-versions"><span>目前前端 <strong>Vue 3＋Vite</strong></span><span>目前後端 <strong>{{ backend === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</strong></span></div>
+          <div class="current-versions"><span>目前前端 <strong>Vue 3＋Vite</strong></span><span>目前後端 <strong>{{ backendLabel }}</strong></span></div>
           <button ref="versionsToggle" class="version-toggle" type="button" :aria-expanded="versionsOpen" aria-controls="version-panel" @click="toggleVersions">切換版本</button>
         </div>
       </div>
       <div v-if="versionsOpen" id="version-panel" class="version-panel">
         <div class="version-panel-inner">
           <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : '（此頁尚未提供）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">Nuxt 目前可切換文章列表、文章詳情、登入與註冊；未完成頁面請留在 Vue。</p></div>
-          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
+          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
           <button class="panel-close" type="button" @click="closePanel('versions')">關閉</button>
         </div>
       </div>
@@ -1652,6 +1654,6 @@ onBeforeUnmount(() => {
       </section>
       <section v-else class="message-page" aria-labelledby="page-title"><h1 id="page-title">找不到頁面</h1><p>這個路徑沒有對應頁面。</p><a class="text-link" href="/vue/">返回文章入口</a></section>
     </main>
-    <footer class="site-footer"><span>文章集</span><span>Vue 3＋Vite × {{ backend === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</span></footer>
+    <footer class="site-footer"><span>文章集</span><span>Vue 3＋Vite × {{ backendLabel }}</span></footer>
   </div>
 </template>

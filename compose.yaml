@@ -97,6 +97,29 @@ services:
       timeout: 3s
       retries: 20
 
+  aspnet-core:
+    build:
+      context: .
+      dockerfile: backends/aspnet-core/Dockerfile
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
+    volumes:
+      - ./.local/keys/aspnet-core.key:/run/secrets/aspnet-core-jwt.key:ro
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/up"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   frontend-vue:
     build:
       context: ./frontend/vue
