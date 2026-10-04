@@ -413,21 +413,53 @@ test('Django selection clears old JWT and serves public and auth routes', async 
   assert.equal(detail.page.canManageVisibility.value, false)
 })
 
-// Django 尚未提供作者及管理端點；直接開啟路徑時呈現不可用狀態，不能送出該端點請求。
-test('Django unsupported routes never request author or admin endpoints', async (t) => {
-  for (const path of ['/vue/articles/new', '/vue/articles/7/edit', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/comments/9/edit', '/vue/admin/members', '/vue/admin/settings/login-lockout']) {
+// Django 作者頁沿用登入與相同 API 路徑；管理頁仍不能請求尚未實作的端點。
+test('Django author routes verify identity and management routes remain unavailable', async (t) => {
+  const authorRoutes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+  ])
+  for (const [path, endpoint] of authorRoutes) {
     const guest = articleApp(path, null, '', false, auth.BACKENDS.django)
     t.after(guest.close)
-    assert.equal(guest.page.djangoUnavailable.value, true, path)
+    assert.equal(guest.page.djangoUnavailable.value, false, path)
     assert.equal(guest.requests.length, 0, path)
-    assert.equal(guest.redirects.length, 0, path)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
     const signedIn = articleApp(path, 'django-token', '', false, auth.BACKENDS.django)
     t.after(signedIn.close)
     assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.django}/api/me`)
     await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
-    assert.equal(signedIn.requests.length, 1, path)
-    assert.equal(signedIn.page.djangoUnavailable.value, true, path)
+    assert.equal(signedIn.page.djangoUnavailable.value, false, path)
+    assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.django}${endpoint}`, path)
   }
+  for (const path of ['/vue/admin/members', '/vue/admin/members/9', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
+    const signedIn = articleApp(path, 'django-token', '', false, auth.BACKENDS.django)
+    t.after(signedIn.close)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
+    assert.equal(signedIn.page.djangoUnavailable.value, true, path)
+    assert.equal(signedIn.requests.length, 1, path)
+  }
+})
+
+// Django 建立文章沿用 201 空 data 導向自己的列表，不猜新文章 ID。
+test('Django article publish reaches my articles without inventing an ID', async (t) => {
+  const app = articleApp('/vue/articles/new', 'django-token', '', false, auth.BACKENDS.django)
+  t.after(app.close)
+  await respond(app.requests[0], 200, { success: true, message: 'OK', data: member })
+  app.page.articleTitle.value = 'Django 標題'
+  app.page.articleBody.value = '原文\r\n第二行'
+  const write = app.page.submitArticle()
+  assert.equal(app.requests[1].url, `${auth.BACKENDS.django}/api/articles`)
+  assert.equal(app.requests[1].headers.Authorization, 'Bearer django-token')
+  assert.deepEqual(JSON.parse(app.requests[1].body), { title: 'Django 標題', body: '原文\r\n第二行' })
+  await respond(app.requests[1], 201, { success: true, message: 'OK', data: {} })
+  await write
+  assert.deepEqual(app.redirects, ['/vue/me/articles?published=1'])
 })
 
 // 已送出的舊後端寫入即使晚到成功回應，也不可觸發發文完成導頁或重送。

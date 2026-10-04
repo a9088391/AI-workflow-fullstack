@@ -1,0 +1,18 @@
+services:
+  laravel:
+    ports: !override
+      - "127.0.0.1:8081:8000"
+    volumes:
+      - ./.local/ticket17-backend/laravel-logs:/srv/laravel/storage/logs
+      - ./.local/ticket17-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+  django:
+    ports: !override
+      - "127.0.0.1:8084:8000"
+    volumes:
+      - ./.local/ticket17-backend/django.key:/run/secrets/django-jwt.key:ro
+  sql:
+    volumes:
+      - ./.local/ticket17-backend/backups:/backups
+  nginx:
+    ports: !override
+      - "127.0.0.1:8080:80"

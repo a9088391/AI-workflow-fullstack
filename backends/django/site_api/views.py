@@ -1,4 +1,4 @@
-"""Ticket 16 的七個共用 API 操作與 HTTP 錯誤邊界。"""
+"""Django 共用 API 與作者內容端點，統一 HTTP 錯誤邊界。"""
 
 import logging
 import re
@@ -12,7 +12,7 @@ from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from .core import (
-    ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, TYPE,
+    ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, SPACE, TYPE,
     account_resource, authenticate, b64url, business_time, connect,
     content_resource, failure, issue_token, normalize_email, password_hash,
     reject_non_json_number, success, valid_email, valid_nickname, verify_password,
@@ -43,13 +43,15 @@ def api(method):
             origin = request.headers.get("Origin")
             LOGGER.info("IN log_id=%s method=%s path=%s", log_id, request.method, request.path)
             try:
+                # 同一路徑可共用 GET 與寫入方法；其餘方法仍回共同 405 格式。
+                methods = (method,) if isinstance(method, str) else method
                 if request.method == "OPTIONS":
                     response = HttpResponse(status=204)
                     response["Access-Control-Allow-Methods"] = (
-                        "GET, POST, PUT, DELETE" if method == "*" else method
+                        "GET, POST, PUT, DELETE" if method == "*" else ", ".join(methods)
                     ) + ", OPTIONS"
                     response["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
-                elif method != "*" and request.method != method:
+                elif method != "*" and request.method not in methods:
                     error = ApiError("E0005")
                     response = failure(error, log_id)
                     response.status_code = 405
@@ -147,8 +149,8 @@ def url_integer(value, field):
     return int(digits)
 
 
-# 解析 JSON object 後依必填、null、型態、格式順序回每欄第一個錯誤。
-def json_body(request, fields, empty_allowed=False):
+# 解析 JSON object 後依必填、null、型態、格式順序回每欄第一個錯誤；內容另驗整數與純文字。
+def json_body(request, fields, empty_allowed=False, content_limits=None):
     if empty_allowed and not request.body:
         return {}
     if not request.body or not request.content_type.lower().startswith("application/json"):
@@ -191,7 +193,9 @@ def json_body(request, fields, empty_allowed=False):
             errors[field] = [REQUIRED]
         elif body[field] is None:
             errors[field] = [NULL]
-        elif not isinstance(body[field], str):
+        elif field == "version" and content_limits is not None and type(body[field]) is not int:
+            errors[field] = [TYPE]
+        elif field != "version" and not isinstance(body[field], str):
             errors[field] = [TYPE]
     for field in body:
         if field not in fields:
@@ -204,9 +208,59 @@ def json_body(request, fields, empty_allowed=False):
         errors["password"] = [INVALID]
     if "nickname" in fields and "nickname" not in errors and not valid_nickname(body["nickname"]):
         errors["nickname"] = [INVALID]
+    # 內容欄位保留原文；長度用 Python Unicode 碼點，NUL 在進入 PostgreSQL 前拒絕。
+    if content_limits is not None:
+        for field, limit in content_limits.items():
+            if field in errors:
+                continue
+            value = body[field]
+            if field == "version":
+                valid = 1 <= value <= 9007199254740991
+            elif field == "visibility":
+                valid = value in ("visible", "hidden")
+            else:
+                valid = 1 <= len(value) <= limit and "\0" not in value and any(character not in SPACE for character in value)
+            if not valid:
+                errors[field] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
     return body
+
+
+# 寫入前依帳號→登入紀錄取得列鎖並重驗撤銷，讓登出與內容寫入有明確提交順序。
+def authenticate_write(request, connection):
+    account, claims = authenticate(request, connection)
+    connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
+    connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+    return authenticate(request, connection)[0]
+
+
+# 已持有內容列鎖時先比版本；同值不動時間，變更時仍以 version 條件更新。
+def save_content(connection, table, row, version, changes):
+    if row["version"] != version:
+        raise ApiError("E0201")
+    if all(row[key] == value for key, value in changes.items()):
+        return
+    columns = list(changes)
+    assignments = ", ".join(f"{column} = %s" for column in columns)
+    result = connection.execute(
+        f"UPDATE {table} SET {assignments}, version = version + 1, updated_at = clock_timestamp() "
+        "WHERE id = %s AND version = %s",
+        (*[changes[column] for column in columns], row["id"], version),
+    )
+    if result.rowcount != 1:
+        raise ApiError("E0201")
+
+
+# 下架權由實際操作人決定；管理員接管他人內容時即使已隱藏也算變更。
+def visibility_changes(row, viewer, visibility):
+    own = viewer["id"] == row["author_id"]
+    if visibility == "visible" and row["visibility"] == "hidden" and viewer["role"] != "admin" and row["restore_control"] != "author":
+        raise ApiError("E0003")
+    control = None if visibility == "visible" else row["restore_control"] or "author"
+    if visibility == "hidden" and viewer["role"] == "admin" and not own:
+        control = "admin"
+    return {"visibility": visibility, "restore_control": control}
 
 
 # 列表先驗 Body 與 Query，管理權門禁已由呼叫端先處理。
@@ -359,9 +413,23 @@ def me(request):
         return success(account_resource(account))
 
 
-# 未指定 scope 時即使管理員也只見 visible；management 必須明確請求。
-@api("GET")
+# GET 預設只見公開內容，POST 在認證鎖保護下建立作者文章。
+@api(("GET", "POST"))
 def articles(request):
+    if request.method == "POST":
+        with connect() as connection:
+            viewer = authenticate_write(request, connection)
+            no_query(request)
+            body = json_body(request, ("title", "body"), content_limits={"title": 200, "body": 20000})
+            # 資料庫單次時鐘同時填入建立與更新時間，來源固定為本後端。
+            connection.execute(
+                "INSERT INTO articles (author_id, title, body, visibility, restore_control, version, "
+                "created_backend, created_at, updated_at) "
+                "SELECT %s, %s, %s, 'visible', NULL, 1, 'django', now, now "
+                "FROM (SELECT clock_timestamp() AS now) AS stamp",
+                (viewer["id"], body["title"], body["body"]),
+            )
+        return success(status=201)
     with connect() as connection:
         management = management_requested(request)
         identity = authenticate(request, connection, required=management)
@@ -386,9 +454,11 @@ def articles(request):
         })
 
 
-# 文章詳情先驗可選 JWT 與格式，再隱藏無權讀取的下架文章。
-@api("GET")
+# GET 隱藏無權讀取的下架文章；PUT 在同一列鎖內處理作者編修。
+@api(("GET", "PUT"))
 def article(request, article_id):
+    if request.method == "PUT":
+        return mutate_article(request, article_id, visibility=False)
     with connect() as connection:
         identity = authenticate(request, connection, required=False)
         viewer = identity[0] if identity else None
@@ -408,9 +478,31 @@ def article(request, article_id):
         return success(content_resource(row, viewer, "article"))
 
 
-# 留言列表先確認父文章可讀，作者預覽只見 visible 留言。
-@api("GET")
+# GET 先確認父文章可讀；POST 鎖同一父文章以和下架序列化。
+@api(("GET", "POST"))
 def comments(request, article_id):
+    if request.method == "POST":
+        with connect() as connection:
+            viewer = authenticate_write(request, connection)
+            no_query(request)
+            content_id = url_integer(article_id, "article_id")
+            body = json_body(request, ("body",), content_limits={"body": 2000})
+            parent = connection.execute(
+                "SELECT author_id, visibility FROM articles WHERE id = %s FOR UPDATE", (content_id,)
+            ).fetchone()
+            if parent is None or (parent["visibility"] == "hidden" and viewer["role"] != "admin" and viewer["id"] != parent["author_id"]):
+                raise ApiError("E0004")
+            if parent["visibility"] == "hidden":
+                raise ApiError("E0003")
+            # 作者與來源從已重驗的登入及本後端取得；同一 DB 時刻填兩個時間欄位。
+            connection.execute(
+                "INSERT INTO comments (article_id, author_id, body, visibility, restore_control, version, "
+                "created_backend, created_at, updated_at) "
+                "SELECT %s, %s, %s, 'visible', NULL, 1, 'django', now, now "
+                "FROM (SELECT clock_timestamp() AS now) AS stamp",
+                (content_id, viewer["id"], body["body"]),
+            )
+        return success(status=201)
     with connect() as connection:
         identity = authenticate(request, connection, required=False)
         viewer = identity[0] if identity else None
@@ -439,6 +531,122 @@ def comments(request, article_id):
             "list": [content_resource(row, viewer, "comment") for row in rows],
             "pagination": pagination(page, per_page, total),
         })
+
+
+# 個人列表只由已驗證帳號限定作者，包含個別及父文章的下架內容。
+@api("GET")
+def my_articles(request):
+    return my_content(request, "articles", ARTICLE_COLUMNS, "article")
+
+
+# 留言個人列表不讀父文章內文，故下架父文章也不洩漏其他資料。
+@api("GET")
+def my_comments(request):
+    return my_content(request, "comments", COMMENT_COLUMNS, "comment")
+
+
+# 共同分頁在資料庫精確計數與排序，避免全量載入及逐列查詢。
+def my_content(request, table, columns, kind):
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        page, per_page, _ = list_input(request)
+        total = connection.execute(f"SELECT count(*) FROM {table} WHERE author_id = %s", (viewer["id"],)).fetchone()["count"]
+        offset = (page - 1) * per_page
+        rows = [] if offset >= total else connection.execute(
+            f"SELECT {columns} FROM {table} JOIN accounts ON accounts.id = {table}.author_id "
+            f"WHERE {table}.author_id = %s ORDER BY {table}.created_at DESC, {table}.id DESC "
+            "LIMIT %s OFFSET %s", (viewer["id"], per_page, offset),
+        ).fetchall()
+        return success({"list": [content_resource(row, viewer, kind) for row in rows],
+                        "pagination": pagination(page, per_page, total)})
+
+
+# 文章下架與留言寫入鎖同一文章列，授權、版本及恢復權在鎖內裁決。
+@api("PUT")
+def article_visibility(request, article_id):
+    return mutate_article(request, article_id, visibility=True)
+
+
+# 文章修改只允許作者；管理員只在下架操作可處理他人文章。
+def mutate_article(request, article_id, visibility):
+    with connect() as connection:
+        viewer = authenticate_write(request, connection)
+        no_query(request)
+        content_id = url_integer(article_id, "article_id")
+        fields = ("visibility", "version") if visibility else ("title", "body", "version")
+        limits = {"visibility": 0, "version": 0} if visibility else {"title": 200, "body": 20000, "version": 0}
+        body = json_body(request, fields, content_limits=limits)
+        row = connection.execute("SELECT * FROM articles WHERE id = %s FOR UPDATE", (content_id,)).fetchone()
+        if row is None or (row["visibility"] == "hidden" and viewer["role"] != "admin" and viewer["id"] != row["author_id"]):
+            raise ApiError("E0004")
+        if viewer["id"] != row["author_id"] and (not visibility or viewer["role"] != "admin"):
+            raise ApiError("E0003")
+        # 恢復權先於版本檢查，避免以 409 暴露無權操作的版本資訊。
+        changes = visibility_changes(row, viewer, body["visibility"]) if visibility else {"title": body["title"], "body": body["body"]}
+        save_content(connection, "articles", row, body["version"], changes)
+    return success()
+
+
+# 作者或管理員可獨立讀取留言；他人公開留言先判可讀再回操作權 403。
+@api(("GET", "PUT"))
+def comment(request, comment_id):
+    if request.method == "PUT":
+        return mutate_comment(request, comment_id, visibility=False)
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        no_get_body(request)
+        no_query(request)
+        content_id = url_integer(comment_id, "comment_id")
+        row = connection.execute(
+            "SELECT " + COMMENT_COLUMNS + ", articles.visibility AS article_visibility "
+            "FROM comments JOIN accounts ON accounts.id = comments.author_id "
+            "JOIN articles ON articles.id = comments.article_id WHERE comments.id = %s", (content_id,),
+        ).fetchone()
+        if row is None:
+            raise ApiError("E0004")
+        if viewer["role"] != "admin" and viewer["id"] != row["author_id"]:
+            if row["visibility"] == "hidden" or row["article_visibility"] == "hidden":
+                raise ApiError("E0004")
+            raise ApiError("E0003")
+        return success(content_resource(row, viewer, "comment"))
+
+
+# 個別下架與恢復仍以目前作者或管理員權限判定，父文章下架不封鎖此操作。
+@api("PUT")
+def comment_visibility(request, comment_id):
+    return mutate_comment(request, comment_id, visibility=True)
+
+
+# 同一交易重驗登入與鎖定父文章、留言；內容編修須父文章目前公開。
+def mutate_comment(request, comment_id, visibility):
+    with connect() as connection:
+        viewer = authenticate_write(request, connection)
+        no_query(request)
+        content_id = url_integer(comment_id, "comment_id")
+        fields = ("visibility", "version") if visibility else ("body", "version")
+        limits = {"visibility": 0, "version": 0} if visibility else {"body": 2000, "version": 0}
+        body = json_body(request, fields, content_limits=limits)
+        # 先不鎖留言地查父 ID，才能先鎖文章再鎖留言；文章列鎖使留言修改與文章下架依序判定。
+        # 鎖定後複核 article_id，避免探索後的關聯變動影響授權與寫入。
+        initial = connection.execute("SELECT article_id FROM comments WHERE id = %s", (content_id,)).fetchone()
+        parent = None if initial is None else connection.execute(
+            "SELECT id, visibility FROM articles WHERE id = %s FOR UPDATE", (initial["article_id"],)
+        ).fetchone()
+        row = None if parent is None else connection.execute(
+            "SELECT * FROM comments WHERE id = %s FOR UPDATE", (content_id,)
+        ).fetchone()
+        if row is None or row["article_id"] != parent["id"] or (
+            viewer["role"] != "admin" and viewer["id"] != row["author_id"]
+            and (row["visibility"] == "hidden" or parent["visibility"] == "hidden")
+        ):
+            raise ApiError("E0004")
+        if (viewer["id"] != row["author_id"] and (not visibility or viewer["role"] != "admin")) or (
+            not visibility and parent["visibility"] == "hidden"
+        ):
+            raise ApiError("E0003")
+        changes = visibility_changes(row, viewer, body["visibility"]) if visibility else {"body": body["body"]}
+        save_content(connection, "comments", row, body["version"], changes)
+    return success()
 
 
 # 尚未實作的 API 固定回 404，不讓 Django HTML 錯誤或假成功外洩。

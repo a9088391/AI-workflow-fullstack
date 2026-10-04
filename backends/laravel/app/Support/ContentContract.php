@@ -106,7 +106,14 @@ trait ContentContract
                 $errors[$name] = ['此欄位為必填'];
             } elseif ($body->$name === null) {
                 $errors[$name] = ['此欄位不可為 null'];
-            } elseif (($limit === 'version' && ! is_int($body->$name)) || ($limit !== 'version' && ! is_string($body->$name))) {
+            } elseif ($limit === 'version' && ! is_int($body->$name)) {
+                // 原生解碼會把超大 JSON 整數轉成 float；只在此情況重解碼，保留小數與指數的型態錯誤。
+                $bigIntegerBody = is_float($body->$name)
+                    ? json_decode($raw, false, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING)
+                    : null;
+                $errors[$name] = [is_string($bigIntegerBody->$name ?? null)
+                    ? '欄位格式或範圍不正確' : '欄位型態不正確'];
+            } elseif ($limit !== 'version' && ! is_string($body->$name)) {
                 $errors[$name] = ['欄位型態不正確'];
             } elseif ($limit === 'version') {
                 if ($body->$name < 1 || $body->$name > 9007199254740991) {

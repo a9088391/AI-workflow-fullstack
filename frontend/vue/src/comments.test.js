@@ -40,7 +40,7 @@ test('comment routes and response parsing preserve page, parent and public autho
 })
 
 // 執行實際 Vue 狀態與 App script；只替換 HTTP、Storage 與導覽，控制權限和回應先後。
-function app(path, token = 'saved-token', search = '') {
+function app(path, token = 'saved-token', search = '', selectedBackend = auth.API_BASE) {
   const requests = []
   const redirects = []
   const confirmations = []
@@ -56,6 +56,8 @@ function app(path, token = 'saved-token', search = '') {
     // 驗證正式失效流程確實刪除憑證。
     removeItem(key) { storage.delete(key) },
   }
+  // 每例先選後端再保存憑證，確保 Django 作者請求沿同一登入來源送出。
+  if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
     ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
@@ -217,8 +219,8 @@ test('comment body validation preserves original line endings and rejects NUL an
 })
 
 // 載入目前登入與公開父文章，讓每個寫入案例從真實可送出的正式狀態開始。
-async function writableArticle(t, search = '') {
-  const instance = app('/vue/articles/7', 'saved-token', search)
+async function writableArticle(t, search = '', selectedBackend = auth.API_BASE) {
+  const instance = app('/vue/articles/7', 'saved-token', search, selectedBackend)
   t.after(instance.close)
   await respond(instance.requests[0], 200, success(member))
   await respond(instance.requests[1], 200, success(article))
@@ -252,6 +254,36 @@ test('comment creation reloads first page in place and blocks duplicate submissi
   await respond(instance.requests[4], 200, list([comment]))
   instance.page.commentBody.value = '下一則草稿'
   assert.equal(instance.page.hasDraft.value, true)
+})
+
+// Django 留言寫入後重讀原文章留言；自己的單則詳情即使父文章不可讀也保留操作。
+test('Django comment creation and own detail use author endpoints', async (t) => {
+  const instance = await writableArticle(t, '', auth.BACKENDS.django)
+  assert.equal(instance.requests[0].url, `${auth.BACKENDS.django}/api/me`)
+  assert.equal(instance.requests[1].url, `${auth.BACKENDS.django}/api/articles/7`)
+  assert.equal(instance.page.canComment.value, true)
+  assert.match(await renderedPage(instance.page), /發表留言/)
+  instance.page.commentBody.value = 'Django 留言'
+  const write = instance.page.submitComment()
+  assert.equal(instance.requests[3].url, `${auth.BACKENDS.django}/api/articles/7/comments`)
+  await respond(instance.requests[3], 201, success({}))
+  await write
+  assert.equal(instance.requests[4].url, `${auth.BACKENDS.django}/api/articles/7/comments?page=1&per_page=20`)
+  await respond(instance.requests[4], 200, list([{ ...comment, visibility: 'visible' }]))
+  assert.match(await renderedPage(instance.page), /href="\/vue\/comments\/9"/)
+
+  const own = app('/vue/comments/9', 'saved-token', '', auth.BACKENDS.django)
+  t.after(own.close)
+  await respond(own.requests[0], 200, success(member))
+  assert.equal(own.requests[1].url, `${auth.BACKENDS.django}/api/comments/9`)
+  await respond(own.requests[1], 200, success(comment))
+  assert.equal(own.requests[2].url, `${auth.BACKENDS.django}/api/articles/7`)
+  await respond(own.requests[2], 404, { success: false, error_code: 'E0004' })
+  assert.equal(own.page.commentData.value.body, comment.body)
+  assert.equal(own.page.relatedError.value, '所屬文章目前無法讀取')
+  assert.equal(own.page.canManageVisibility.value, true)
+  assert.equal(own.page.canEdit.value, false)
+  assert.match(await renderedPage(own.page), />恢復<\/button>/)
 })
 
 // 格式與後端 422 都保留草稿，欄位明細留在原表單且不產生額外送出。
@@ -527,8 +559,8 @@ test('editor routes and PUT envelope keep safe IDs and fixed validation contract
 })
 
 // 載入真實 App state；編輯與詳情都先經 /me，不繞過正式權限流程。
-async function resourcePage(t, path, resource = path.includes('/comments/') ? comment : article, identity = member, parent = article) {
-  const instance = app(path)
+async function resourcePage(t, path, resource = path.includes('/comments/') ? comment : article, identity = member, parent = article, selectedBackend = auth.API_BASE) {
+  const instance = app(path, 'saved-token', '', selectedBackend)
   instance.approve(true)
   t.after(instance.close)
   assert.equal(instance.page.contentReady.value, false)
@@ -685,6 +717,75 @@ test('edit conflict requires a fresh comparison and explicit merge or discard be
   assert.equal(instance.page.editVersion.value, 3)
   assert.equal(instance.page.hasDraft.value, false)
   assert.equal(instance.requests.length, 6)
+})
+
+// Django 編輯衝突保留草稿及原版本；讀取比較後仍要作者明確確認才可用新版本重送。
+test('Django edit conflict keeps draft until explicit latest-version comparison', async (t) => {
+  const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, auth.BACKENDS.django)
+  instance.page.articleTitle.value = '我的 Django 標題'
+  instance.page.articleBody.value = '我的 Django 內文'
+  const write = instance.page.submitEdit()
+  assert.equal(instance.requests[2].url, `${auth.BACKENDS.django}/api/articles/7`)
+  assert.deepEqual(JSON.parse(instance.requests[2].body), { title: '我的 Django 標題', body: '我的 Django 內文', version: 1 })
+  await respond(instance.requests[2], 409, { success: false, error_code: 'E0201' })
+  await write
+  assert.equal(instance.page.conflict.value, true)
+  await instance.page.submitEdit()
+  assert.equal(instance.requests.length, 3)
+  const read = instance.page.loadContent()
+  await respond(instance.requests[3], 200, success({ ...article, title: '最新標題', body: '最新內文', version: 2 }))
+  await read
+  assert.equal(instance.page.articleTitle.value, '我的 Django 標題')
+  assert.equal(instance.page.editVersion.value, 1)
+  assert.match(await renderedPage(instance.page), /最新內容（版本 2）/)
+  instance.page.acceptComparison(false)
+  assert.equal(instance.page.editVersion.value, 2)
+  const retry = instance.page.submitEdit()
+  assert.deepEqual(JSON.parse(instance.requests[4].body), { title: '我的 Django 標題', body: '我的 Django 內文', version: 2 })
+  await respond(instance.requests[4], 200, success({}))
+  await retry
+  assert.equal(instance.requests[5].url, `${auth.BACKENDS.django}/api/articles/7`)
+  await respond(instance.requests[5], 200, success({ ...article, title: '我的 Django 標題', body: '我的 Django 內文', version: 3 }))
+  assert.equal(instance.page.articleData.value.version, 3)
+})
+
+// Django 自己的留言編修須先確認父文章公開；成功後依原 ID 重讀，版本交由伺服器決定。
+test('Django own comment edit rereads the same detail after success', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9/edit', { ...comment, visibility: 'visible' }, member, article, auth.BACKENDS.django)
+  assert.equal(instance.page.canEdit.value, true)
+  instance.page.commentBody.value = '編修後留言'
+  const write = instance.page.submitEdit()
+  assert.equal(instance.requests[3].url, `${auth.BACKENDS.django}/api/comments/9`)
+  assert.deepEqual(JSON.parse(instance.requests[3].body), { body: '編修後留言', version: 1 })
+  await respond(instance.requests[3], 200, success({}))
+  await write
+  assert.equal(instance.requests[4].url, `${auth.BACKENDS.django}/api/comments/9`)
+  await respond(instance.requests[4], 200, success({ ...comment, body: '編修後留言', visibility: 'visible', version: 2 }))
+  await respond(instance.requests[5], 200, success(article))
+  assert.equal(instance.page.commentData.value.body, '編修後留言')
+  assert.equal(instance.page.editVersion.value, 2)
+})
+
+// Django 下架與恢復沿作者權限及 server can_restore；成功後必須重讀目前詳情。
+test('Django article visibility change uses version and server readback', async (t) => {
+  const instance = await resourcePage(t, '/vue/articles/7', article, member, article, auth.BACKENDS.django)
+  assert.equal(instance.page.canManageVisibility.value, true)
+  const hide = instance.page.submitVisibility('hidden')
+  assert.equal(instance.requests[3].url, `${auth.BACKENDS.django}/api/articles/7/visibility`)
+  assert.deepEqual(JSON.parse(instance.requests[3].body), { visibility: 'hidden', version: 1 })
+  await respond(instance.requests[3], 200, success({}))
+  await hide
+  await respond(instance.requests[4], 200, success({ ...article, visibility: 'hidden', can_restore: true, version: 2 }))
+  await respond(instance.requests[5], 200, list([]))
+  assert.equal(instance.page.articleData.value.visibility, 'hidden')
+  assert.match(await renderedPage(instance.page), />恢復<\/button>/)
+  const restore = instance.page.submitVisibility('visible')
+  assert.deepEqual(JSON.parse(instance.requests[6].body), { visibility: 'visible', version: 2 })
+  await respond(instance.requests[6], 200, success({}))
+  await restore
+  await respond(instance.requests[7], 200, success({ ...article, visibility: 'visible', can_restore: false, version: 3 }))
+  await respond(instance.requests[8], 200, list([]))
+  assert.equal(instance.page.articleData.value.visibility, 'visible')
 })
 
 // 管理員接管他人自行下架內容仍送 hidden；自己的下架不可借管理員身分取得接管控制。

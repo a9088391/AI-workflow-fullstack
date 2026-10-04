@@ -98,8 +98,8 @@ const credential = ref(null)
 const backend = ref(API_BASE)
 // 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
 const backendLabel = computed(() => backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
-// Django 本票只有公開閱讀與帳號端點；已知但未支援的頁面保留路徑並明確告知使用者。
-const djangoUnavailable = computed(() => backend.value === BACKENDS.django && !['articles', 'article', 'register', 'login', 'missing'].includes(page))
+// Django 已支援作者內容；管理端點仍未提供，已知管理路徑保留並顯示說明。
+const djangoUnavailable = computed(() => backend.value === BACKENDS.django && adminPage)
 const account = ref(null)
 const authChecking = ref(false)
 const logoutPending = ref(false)
@@ -145,16 +145,16 @@ function hasLockoutDraft() {
   for (const name of Object.keys(lockoutData.value)) if (lockoutDraft.value[name] !== lockoutData.value[name]) return true
   return false
 }
-// Django 尚未提供留言寫入；其他後端仍須確認父文章公開及目前登入有效。
-const canComment = computed(() => backend.value !== BACKENDS.django && page === 'article' && contentReady.value && articleData.value?.visibility === 'visible' && Boolean(account.value && credential.value) && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value)
+// 留言寫入須先確認父文章公開及目前登入有效，所有已支援後端共用此門禁。
+const canComment = computed(() => page === 'article' && contentReady.value && articleData.value?.visibility === 'visible' && Boolean(account.value && credential.value) && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value)
 // 詳情與編輯以後端最新讀取值判斷資格；管理員不能修改他人內文。
 const currentResource = computed(() => articleResource ? articleData.value : commentResource ? commentData.value : null)
 // 確認目前登入與資源後才顯示操作，避免重驗期間洩漏受保護內容。
 const authorizedResource = computed(() => Boolean(contentReady.value && currentResource.value && account.value && credential.value && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value))
 // 留言只有父文章已確認公開才可編修；父文章失敗不移除作者留言。
 const canEdit = computed(() => authorizedResource.value && currentResource.value.author.id === account.value.id && (!commentResource || parentArticle.value?.visibility === 'visible' && !relatedLoading.value))
-// Django 尚未提供下架／恢復；其他後端與父文章可讀性分開判斷，恢復仍使用伺服器 can_restore。
-const canManageVisibility = computed(() => backend.value !== BACKENDS.django && authorizedResource.value && (currentResource.value.author.id === account.value.id || account.value.role === 'admin'))
+// 下架／恢復與父文章可讀性分開判斷；恢復仍使用伺服器 can_restore。
+const canManageVisibility = computed(() => authorizedResource.value && (currentResource.value.author.id === account.value.id || account.value.role === 'admin'))
 // 管理員可再次下架他人內容以接管恢復權；自己的內容仍按作者規則。
 const canHide = computed(() => canManageVisibility.value && (currentResource.value.visibility === 'visible' || account.value.role === 'admin' && currentResource.value.author.id !== account.value.id))
 // 原文保留在 refs；textarea 的瀏覽器換行正規化只在真實 input 事件後採用。
@@ -308,7 +308,7 @@ async function copyRelatedLogId() {
   }
 }
 
-// 內容列表、詳情與管理設定沿同一讀取流程；Django 未支援的頁面不發請求，JWT 失效也不能悄悄改為訪客。
+// 內容列表、詳情與管理設定沿同一讀取流程；Django 管理頁不發請求，JWT 失效也不能悄悄改為訪客。
 async function loadContent() {
   if (djangoUnavailable.value || !['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
     || contentLoading.value || contentPending.value || statusPending.value || lockoutPending.value || authChecking.value
@@ -1112,7 +1112,7 @@ async function verifyAccount() {
     if (currentAuthRequest(request)) {
       authChecking.value = false
       finishAuthRequest(request)
-      // 重驗只恢復目前後端支援的資料頁，避免登入後讀取尚不存在的 Django 端點。
+      // 重驗只恢復目前後端支援的資料頁，避免登入後讀取尚不存在的 Django 管理端點。
       if (account.value && page !== 'login' && !djangoUnavailable.value && (!adminPage || account.value.role === 'admin')) loadContent()
     }
   }
@@ -1253,7 +1253,7 @@ onMounted(() => {
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('pageshow', onPageShow)
   try { backend.value = readBackend(window.sessionStorage); credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
-  // 未支援頁直接留在可導航的說明頁；有憑證仍只重驗已實作的 /api/me。
+  // 未支援的管理頁留在可導航的說明頁；有憑證仍只重驗已實作的 /api/me。
   if (credential.value) verifyAccount()
   else if (djangoUnavailable.value) return
   else if (protectedPage) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
@@ -1294,7 +1294,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><template v-if="backend !== BACKENDS.django"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin' && backend !== BACKENDS.django"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1314,11 +1314,11 @@ onBeforeUnmount(() => {
     </header>
 
     <main id="main-content" class="main-content">
-      <!-- Django 對已知但未實作的作者／管理路徑只顯示說明，不呈現操作表單。 -->
-      <section v-if="djangoUnavailable" class="reading-page" aria-labelledby="page-title"><h1 id="page-title">此功能尚未提供</h1><p>Django 目前提供註冊、登入、登出及公開文章與留言閱讀。此頁尚未支援 Django，請切換後端或返回文章列表。</p><a class="text-link" href="/vue/">返回文章列表</a></section>
+      <!-- Django 管理端點尚未實作；管理路徑只顯示說明，不呈現操作表單。 -->
+      <section v-if="djangoUnavailable" class="reading-page" aria-labelledby="page-title"><h1 id="page-title">此功能尚未提供</h1><p>Django 目前尚未支援管理功能，請切換後端或返回文章列表。</p><a class="text-link" href="/vue/">返回文章列表</a></section>
       <section v-else-if="page === 'register'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
-        <p class="intro">{{ backend === BACKENDS.django ? '建立帳號後即可登入並閱讀文章。' : '建立帳號後即可登入並發表文章。' }}</p>
+        <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
           <h2 id="error-title">{{ summary }}</h2>
           <ul v-if="Object.keys(errors).length">
@@ -1329,7 +1329,7 @@ onBeforeUnmount(() => {
         <form novalidate @submit.prevent="submitRegistration">
           <div class="field"><label for="email">Email</label><input id="email" v-model="email" type="email" inputmode="email" autocomplete="email" :aria-invalid="Boolean(errors.email)" :aria-describedby="errors.email ? 'email-error' : undefined" :disabled="pending" /><p v-if="errors.email" id="email-error" class="field-error">{{ errors.email.join('；') }}</p></div>
           <div class="field"><label for="password">密碼</label><input id="password" v-model="password" type="password" autocomplete="new-password" :aria-invalid="Boolean(errors.password)" :aria-describedby="errors.password ? 'password-error password-help' : 'password-help'" :disabled="pending" /><p id="password-help" class="field-help">4–16 碼英文字母或數字，可只用其中一種。</p><p v-if="errors.password" id="password-error" class="field-error">{{ errors.password.join('；') }}</p></div>
-          <div class="field"><label for="nickname">暱稱</label><input id="nickname" v-model="nickname" type="text" autocomplete="nickname" :aria-invalid="Boolean(errors.nickname)" :aria-describedby="errors.nickname ? 'nickname-error nickname-help' : 'nickname-help'" :disabled="pending" /><p id="nickname-help" class="field-help">{{ backend === BACKENDS.django ? '1–30 個字；登入後會顯示在您的帳號旁。' : '1–30 個字；會顯示在您日後發表的內容旁。' }}</p><p v-if="errors.nickname" id="nickname-error" class="field-error">{{ errors.nickname.join('；') }}</p></div>
+          <div class="field"><label for="nickname">暱稱</label><input id="nickname" v-model="nickname" type="text" autocomplete="nickname" :aria-invalid="Boolean(errors.nickname)" :aria-describedby="errors.nickname ? 'nickname-error nickname-help' : 'nickname-help'" :disabled="pending" /><p id="nickname-help" class="field-help">1–30 個字；會顯示在您日後發表的內容旁。</p><p v-if="errors.nickname" id="nickname-error" class="field-error">{{ errors.nickname.join('；') }}</p></div>
           <button class="primary-button" type="submit" :disabled="pending">{{ pending ? '註冊處理中…' : '建立帳號' }}</button>
           <p v-if="pending" class="pending-note" role="status">正在送出，請稍候；不要重複提交。</p>
         </form>
@@ -1337,7 +1337,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="page === 'articles' || page === 'article' || page === 'article-new' || page === 'my-articles' || page === 'my-comments' || page === 'comment' || editing" class="reading-page" aria-labelledby="page-title">
-        <div class="reading-heading"><div><p class="eyebrow">文章集 / {{ page === 'articles' ? '公開閱讀' : page === 'article' ? '文章詳情' : page === 'article-new' ? '會員發表' : page === 'my-articles' ? '會員文章' : page === 'article-edit' ? '文章編修' : page === 'comment-edit' ? '留言編修' : '會員留言' }}</p><h1 id="page-title">{{ page === 'articles' ? '最新文章' : page === 'article' ? '閱讀文章' : page === 'article-new' ? '發表文章' : page === 'my-articles' ? '我的文章' : page === 'my-comments' ? '我的留言' : page === 'article-edit' ? '編輯文章' : page === 'comment-edit' ? '編輯留言' : '留言詳情' }}</h1></div><a v-if="account && page === 'articles' && backend !== BACKENDS.django" class="secondary-button" href="/vue/articles/new">發表文章</a></div>
+        <div class="reading-heading"><div><p class="eyebrow">文章集 / {{ page === 'articles' ? '公開閱讀' : page === 'article' ? '文章詳情' : page === 'article-new' ? '會員發表' : page === 'my-articles' ? '會員文章' : page === 'article-edit' ? '文章編修' : page === 'comment-edit' ? '留言編修' : '會員留言' }}</p><h1 id="page-title">{{ page === 'articles' ? '最新文章' : page === 'article' ? '閱讀文章' : page === 'article-new' ? '發表文章' : page === 'my-articles' ? '我的文章' : page === 'my-comments' ? '我的留言' : page === 'article-edit' ? '編輯文章' : page === 'comment-edit' ? '編輯留言' : '留言詳情' }}</h1></div><a v-if="account && page === 'articles'" class="secondary-button" href="/vue/articles/new">發表文章</a></div>
         <p v-if="published && account" class="success-note" role="status">文章已發表，以下為我的文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title"><h2 id="error-title">{{ summary }}</h2><ul v-if="errorFields.length"><li v-for="name in errorFields" :key="name"><button type="button" @click="focusField(name)">{{ fieldNames[name] }}：{{ errors[name].join('；') }}</button></li></ul><div v-if="logId" class="trace"><span>追蹤編號：<span class="trace-id">{{ logId }}</span></span><button type="button" @click="copyLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
         <p v-if="authChecking" role="status">正在確認登入狀態，請稍候…</p>
@@ -1366,7 +1366,7 @@ onBeforeUnmount(() => {
           <article v-if="commentData && contentReady && !editing" class="article-detail"><p class="article-meta">{{ commentData.author.nickname }} · {{ commentData.created_at }} · 建立於 {{ backendName(commentData.created_backend) }}<span v-if="commentData.visibility === 'hidden'"> · 已下架</span></p><div class="article-body">{{ commentData.body }}</div></article>
           <button v-if="!contentReady && !contentLoading && !authChecking && !reLogin && !disabledAccount && account" type="button" class="secondary-button" :disabled="contentPending" @click="loadContent">重新讀取留言</button>
           <section v-if="commentData && contentReady" class="related-content" aria-labelledby="parent-title"><h2 id="parent-title">所屬文章</h2><p v-if="relatedLoading" role="status">正在確認所屬文章的讀取權限…</p><template v-if="parentArticle"><p class="article-meta"><span v-if="parentArticle.visibility === 'hidden'">已下架 · </span>建立於 {{ backendName(parentArticle.created_backend) }}</p><h3><a :href="`/vue/articles/${parentArticle.id}`">{{ parentArticle.title }}</a></h3></template><section v-if="relatedError" ref="relatedSummary" class="error-summary" tabindex="-1" aria-labelledby="related-error-title"><h3 id="related-error-title">{{ relatedError }}</h3><div v-if="relatedLogId" class="trace"><span>追蹤編號：<span class="trace-id">{{ relatedLogId }}</span></span><button type="button" @click="copyRelatedLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section><button v-if="relatedError && !relatedLoading" class="secondary-button" type="button" :disabled="contentPending" @click="loadRelated">重新讀取所屬文章</button></section>
-          <p class="detail-return-links"><a class="text-link" href="/vue/me/comments">返回我的留言</a><a v-if="account?.role === 'admin'" class="text-link" href="/vue/admin/comments">返回留言管理</a></p>
+          <p class="detail-return-links"><a class="text-link" href="/vue/me/comments">返回我的留言</a><a v-if="account?.role === 'admin' && backend !== BACKENDS.django" class="text-link" href="/vue/admin/comments">返回留言管理</a></p>
         </template>
         <template v-else-if="page === 'article-new'"><p class="intro">標題與內文會以純文字公開顯示。發表後可在我的文章查看。</p><form novalidate @submit.prevent="submitArticle"><div class="field"><label for="title">標題</label><input id="title" v-model="articleTitle" type="text" :disabled="contentPending || !account || disabledAccount" :aria-invalid="Boolean(errors.title)" :aria-describedby="errors.title ? 'title-error title-help' : 'title-help'" /><p id="title-help" class="field-help">1–200 個字，不可全為空白。</p><p v-if="errors.title" id="title-error" class="field-error">{{ errors.title.join('；') }}</p></div><div class="field"><label for="body">內文</label><textarea id="body" v-model="articleBody" :disabled="contentPending || !account || disabledAccount" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'body-error body-help' : 'body-help'"></textarea><p id="body-help" class="field-help">1–20,000 個字；原樣保留換行。</p><p v-if="errors.body" id="body-error" class="field-error">{{ errors.body.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="contentPending || !account || reLogin || disabledAccount">{{ contentPending ? '發表處理中…' : '發表文章' }}</button><p v-if="contentPending" class="pending-note" role="status">正在發表，請稍候；不要重複送出。</p></form><p v-if="writeUnknown" class="pending-note">發文結果尚未確認。<a class="text-link" href="/vue/me/articles">先到我的文章查證</a></p></template>
         <template v-if="editing">
@@ -1400,9 +1400,9 @@ onBeforeUnmount(() => {
           <h2 id="comments-title">留言</h2><p v-if="relatedLoading" role="status">正在讀取留言，請稍候…</p>
           <section v-if="relatedError" ref="relatedSummary" class="error-summary" tabindex="-1" aria-labelledby="related-error-title"><h3 id="related-error-title">{{ relatedError }}</h3><div v-if="relatedLogId" class="trace"><span>追蹤編號：<span class="trace-id">{{ relatedLogId }}</span></span><button type="button" @click="copyRelatedLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
           <button v-if="relatedError && !relatedLoading" type="button" class="secondary-button" :disabled="contentPending" @click="loadRelated">重新讀取留言</button>
-          <template v-if="commentList"><p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p><p v-if="!commentList.list.length" role="status">{{ commentList.pagination.total && commentPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p><ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><a v-if="backend !== BACKENDS.django && account && (account.id === item.author.id || account.role === 'admin')" class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></li></ol><nav v-if="commentList.pagination.total_pages > 1 || commentPage > 1" class="pagination" aria-label="文章留言分頁"><a v-if="commentPage > 1" :href="`${path}?page=${commentPage - 1}#comments`">上一頁</a><span>第 {{ commentPage }} 頁</span><a v-if="commentPage < commentList.pagination.total_pages" :href="`${path}?page=${commentPage + 1}#comments`">下一頁</a><a v-if="commentList.pagination.total && commentPage > commentList.pagination.total_pages" :href="`${path}#comments`">回第一頁</a></nav></template>
+          <template v-if="commentList"><p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p><p v-if="!commentList.list.length" role="status">{{ commentList.pagination.total && commentPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p><ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><a v-if="account && (account.id === item.author.id || account.role === 'admin')" class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></li></ol><nav v-if="commentList.pagination.total_pages > 1 || commentPage > 1" class="pagination" aria-label="文章留言分頁"><a v-if="commentPage > 1" :href="`${path}?page=${commentPage - 1}#comments`">上一頁</a><span>第 {{ commentPage }} 頁</span><a v-if="commentPage < commentList.pagination.total_pages" :href="`${path}?page=${commentPage + 1}#comments`">下一頁</a><a v-if="commentList.pagination.total && commentPage > commentList.pagination.total_pages" :href="`${path}#comments`">回第一頁</a></nav></template>
         </section>
-        <section v-if="page === 'article' && backend !== BACKENDS.django && (articleData && contentReady || reLogin && commentBody)" class="comment-form" aria-labelledby="comment-form-title">
+        <section v-if="page === 'article' && (articleData && contentReady || reLogin && commentBody)" class="comment-form" aria-labelledby="comment-form-title">
           <h2 id="comment-form-title">發表留言</h2>
           <p v-if="commentPosted" class="success-note" role="status">留言已發表。</p>
           <form v-if="canComment || reLogin && commentBody" novalidate @submit.prevent="submitComment"><div class="field"><label for="body">留言內容</label><textarea id="body" v-model="commentBody" :disabled="contentPending || !canComment" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'body-error comment-help' : 'comment-help'"></textarea><p id="comment-help" class="field-help">1–2,000 個字，不可全為空白；原樣保留換行。</p><p v-if="errors.body" id="body-error" class="field-error" role="alert">{{ errors.body.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="contentPending || !canComment">{{ contentPending ? '留言處理中…' : '發表留言' }}</button><p v-if="contentPending" class="pending-note" role="status">正在送出留言，請稍候；不要重複提交。</p></form>
@@ -1638,7 +1638,7 @@ onBeforeUnmount(() => {
       </section>
       <section v-else-if="page === 'login'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">會員登入</h1>
-        <p class="intro">{{ backend === BACKENDS.django ? 'Django 目前支援登入、公開文章與留言閱讀；發文與我的文章尚未提供。' : '登入後即可發表文章與查看自己的文章。' }}</p>
+        <p class="intro">登入後即可發表文章與查看自己的文章。</p>
         <p v-if="registered" class="success-note" role="status">帳號已建立，請輸入帳密登入。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
           <h2 id="error-title">{{ summary }}</h2>

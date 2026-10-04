@@ -78,8 +78,8 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
   }
 }
 
-// 登入及註冊畫面的 Django 說明只承諾已支援閱讀；其他後端維持既有發表說明。
-test('Django auth copy withholds unsupported publishing claims', async (t) => {
+// Django 作者端點已支援；登入及註冊說明與其他後端使用同一發表承諾。
+test('Django auth copy offers publishing without unsupported warnings', async (t) => {
   const djangoLogin = app('/vue/login', '', null, auth.BACKENDS.django)
   const djangoRegister = app('/vue/register', '', null, auth.BACKENDS.django)
   const laravelLogin = app('/vue/login', '', null)
@@ -89,13 +89,26 @@ test('Django auth copy withholds unsupported publishing claims', async (t) => {
   t.after(laravelLogin.close)
   t.after(laravelRegister.close)
   const loginHtml = await rendered(djangoLogin.page)
-  assert.match(loginHtml, /Django 目前支援登入、公開文章與留言閱讀；發文與我的文章尚未提供。/)
-  assert.doesNotMatch(loginHtml, /登入後即可發表文章/)
+  assert.match(loginHtml, /登入後即可發表文章與查看自己的文章。/)
+  assert.doesNotMatch(loginHtml, /發文與我的文章尚未提供/)
   const registrationHtml = await rendered(djangoRegister.page)
-  assert.match(registrationHtml, /登入後會顯示在您的帳號旁/)
-  assert.doesNotMatch(registrationHtml, /日後發表的內容旁/)
+  assert.match(registrationHtml, /登入並發表文章/)
+  assert.match(registrationHtml, /日後發表的內容旁/)
   assert.match(await rendered(laravelLogin.page), /登入後即可發表文章與查看自己的文章/)
   assert.match(await rendered(laravelRegister.page), /會顯示在您日後發表的內容旁/)
+})
+
+// Django 管理員仍可使用自己的作者入口，導覽不可連到未實作的管理端點。
+test('Django signed-in navigation shows author links but no management links', async (t) => {
+  const django = app('/vue/', '', 'django-token', auth.BACKENDS.django)
+  t.after(django.close)
+  await respond(django.requests[0], 200, success(administrator))
+  assert.equal(django.requests[1].url, `${auth.BACKENDS.django}/api/articles?page=1&per_page=20`)
+  const html = await rendered(django.page)
+  assert.match(html, /href="\/vue\/articles\/new"/)
+  assert.match(html, /href="\/vue\/me\/articles"/)
+  assert.match(html, /href="\/vue\/me\/comments"/)
+  assert.doesNotMatch(html, /href="\/vue\/admin\//)
 })
 
 // 使用 Vue 正式模板條件產生 HTML，驗證提示和導覽是否真的出現在畫面。
