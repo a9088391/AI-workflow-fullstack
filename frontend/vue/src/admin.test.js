@@ -22,7 +22,7 @@ const success = (data) => ({ success: true, message: 'OK', data })
 const list = (items, page = 1, total = items.length) => success({ list: items, pagination: { page, per_page: 20, total, total_pages: Math.ceil(total / 20) } })
 
 // 測試真實 App script 與模板，只替換 HTTP、Storage 和導覽來控制交錯回應。
-function app(path, search = '', token = 'saved-token') {
+function app(path, search = '', token = 'saved-token', selectedBackend = auth.API_BASE) {
   const requests = []
   const redirects = []
   const focuses = []
@@ -36,6 +36,8 @@ function app(path, search = '', token = 'saved-token') {
     // 記錄失效或登出撤銷，避免測試憑證殘留。
     removeItem(key) { storage.delete(key) },
   }
+  // 渲染前先寫入同分頁選擇，讓測試涵蓋 Django 與原 Laravel 文案。
+  if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
     ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
@@ -75,6 +77,26 @@ function app(path, search = '', token = 'saved-token') {
     close() { lifecycle.unmount(); scope.stop() },
   }
 }
+
+// 登入及註冊畫面的 Django 說明只承諾已支援閱讀；其他後端維持既有發表說明。
+test('Django auth copy withholds unsupported publishing claims', async (t) => {
+  const djangoLogin = app('/vue/login', '', null, auth.BACKENDS.django)
+  const djangoRegister = app('/vue/register', '', null, auth.BACKENDS.django)
+  const laravelLogin = app('/vue/login', '', null)
+  const laravelRegister = app('/vue/register', '', null)
+  t.after(djangoLogin.close)
+  t.after(djangoRegister.close)
+  t.after(laravelLogin.close)
+  t.after(laravelRegister.close)
+  const loginHtml = await rendered(djangoLogin.page)
+  assert.match(loginHtml, /Django 目前支援登入、公開文章與留言閱讀；發文與我的文章尚未提供。/)
+  assert.doesNotMatch(loginHtml, /登入後即可發表文章/)
+  const registrationHtml = await rendered(djangoRegister.page)
+  assert.match(registrationHtml, /登入後會顯示在您的帳號旁/)
+  assert.doesNotMatch(registrationHtml, /日後發表的內容旁/)
+  assert.match(await rendered(laravelLogin.page), /登入後即可發表文章與查看自己的文章/)
+  assert.match(await rendered(laravelRegister.page), /會顯示在您日後發表的內容旁/)
+})
 
 // 使用 Vue 正式模板條件產生 HTML，驗證提示和導覽是否真的出現在畫面。
 async function rendered(state) {

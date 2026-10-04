@@ -8,10 +8,10 @@ import * as vue from 'vue'
 import * as contracts from '../utils/contracts.js'
 
 // 執行既有頁面 script 與真實 Vue watch，只替換 Nuxt 邊界及可控制的 HTTP 回應。
-function guestPage(file) {
+function guestPage(file, selectedBackend = contracts.API_BASE) {
   const requests = []
   const lifecycle = {}
-  const site = { ready: vue.ref(true), token: vue.ref(null), backend: vue.ref(contracts.API_BASE), leaving: vue.ref(false) }
+  const site = { ready: vue.ref(true), token: vue.ref(null), backend: vue.ref(selectedBackend), leaving: vue.ref(false) }
   const route = { query: {}, params: { id: '001' } }
   const context = {
     ...vue, ...contracts, AbortController,
@@ -40,6 +40,27 @@ function guestPage(file) {
     close() { lifecycle.unmount(); scope.stop() },
   }
 }
+
+// Django 公開列表與詳情仍使用共同文章、留言路徑，並接受其來源標籤資料。
+test('Django guest pages read articles and comments through the common routes', async (t) => {
+  const sample = { id: 1, title: '文章', body: '內容', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'django', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
+  const list = guestPage('./index.vue', contracts.BACKENDS.django)
+  t.after(list.close)
+  assert.equal(list.requests[0].path, '/api/articles?page=1&per_page=20')
+  list.requests[0].resolve({ status: 200, body: { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } } })
+  await setImmediate()
+  assert.equal(list.page.visible.value?.list[0].created_backend, 'django')
+
+  const detail = guestPage('./articles/[id].vue', contracts.BACKENDS.django)
+  t.after(detail.close)
+  assert.equal(detail.requests[0].path, '/api/articles/1')
+  detail.requests[0].resolve({ status: 200, body: { success: true, message: 'OK', data: sample } })
+  await setImmediate()
+  assert.equal(detail.page.visible.value?.id, 1)
+  assert.equal(detail.requests[1].path, '/api/articles/1/comments?page=1&per_page=20')
+  detail.requests[1].resolve({ status: 200, body: { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } } })
+  await setImmediate()
+})
 
 // 訪客 JWT 一直是 null；改後端仍須取消舊 GET，晚到的舊內容不可顯示。
 for (const file of ['./index.vue', './articles/[id].vue']) {

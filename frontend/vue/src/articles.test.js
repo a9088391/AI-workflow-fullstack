@@ -19,6 +19,7 @@ test('article contract keeps original text and validates routes and envelopes', 
   assert.equal(articles.articlePage('/vue/articles/new'), 'article-new')
   assert.equal(articles.articlePage('/vue/articles/007'), 'article')
   assert.equal(articles.articlePage('/vue/articles/0'), 'missing')
+  assert.equal(articles.backendName('django'), 'Django')
   assert.equal(articles.localPage('https://evil.test'), false)
   assert.equal(articles.localPage('//evil.test'), false)
   assert.deepEqual(articles.validateArticle({ title: '😀', body: '\r\n內容' }), {})
@@ -88,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, djangoUnavailable, canComment, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -96,9 +97,9 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   }
 }
 
-// 等待回應及 Vue 微任務，觀察穩定的使用者可見狀態。
-async function respond(request, status, body) {
-  request.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }))
+// 等待回應及 Vue 微任務；可指定 Retry-After 等標頭檢查登入互動。
+async function respond(request, status, body, headers = {}) {
+  request.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } }))
   await setImmediate()
 }
 
@@ -287,6 +288,30 @@ test('Symfony switches back to Laravel and public forms use the selected API', a
   await signIn
 })
 
+// Django 回傳 E0105 時表單在倒數內不送第二次登入，歸零後只恢復操作而不自動提交。
+test('Django login lockout blocks Enter-style submit until countdown ends', async (t) => {
+  const app = articleApp('/vue/login', null, '', false, auth.BACKENDS.django)
+  t.after(app.close)
+  app.page.email.value = 'new@example.test'
+  app.page.password.value = 'abcd'
+  await vue.nextTick()
+  const attempt = app.page.submitLogin()
+  await respond(app.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await attempt
+  assert.equal(app.page.locked.value, true)
+  assert.match(app.page.lockText.value, /登入暫時鎖定，約剩 01:00/)
+  await app.page.submitLogin()
+  assert.equal(app.requests.length, 1)
+  app.page.lockDeadline.value = performance.now() - 1
+  app.page.tickLock()
+  assert.equal(app.page.locked.value, false)
+  assert.equal(app.requests.length, 1)
+  const retry = app.page.submitLogin()
+  assert.equal(app.requests[1].url, `${auth.BACKENDS.django}/api/auth/login`)
+  await respond(app.requests[1], 401, { success: false, error_code: 'E0101' })
+  await retry
+})
+
 // 新增的 ASP.NET 選擇須清掉原 JWT；同分頁後續公開請求與帳號表單都指向 8083。
 test('ASP.NET backend selection clears prior JWT and routes public and auth requests to 8083', async (t) => {
   const switched = articleApp('/vue/articles/001', 'laravel-token')
@@ -321,6 +346,88 @@ test('ASP.NET backend selection clears prior JWT and routes public and auth requ
   assert.equal(publicList.page.backendLabel.value, 'ASP.NET Core Controllers')
   assert.equal(publicList.requests[0].url, 'http://localhost:8083/api/articles?page=1&per_page=20')
   assert.equal(publicList.requests[0].headers.Authorization, undefined)
+})
+
+// Django 改選後舊 JWT 立即失效；公開閱讀、註冊與登入都直連相同 API 路徑。
+test('Django selection clears old JWT and serves public and auth routes', async (t) => {
+  const switched = articleApp('/vue/articles/001', 'laravel-token')
+  t.after(switched.close)
+  await switched.page.chooseBackend({ target: { value: auth.BACKENDS.django } })
+  assert.equal(auth.readBackend(switched.sessionStorage), auth.BACKENDS.django)
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+  assert.equal(switched.page.backendLabel.value, 'Django')
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+  await respond(switched.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(switched.page.account.value, null)
+
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.django)
+  t.after(registration.close)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const post = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.django}/api/auth/register`)
+  await respond(registration.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await post
+
+  const login = articleApp('/vue/login', null, '', false, auth.BACKENDS.django)
+  t.after(login.close)
+  login.page.email.value = 'new@example.test'
+  login.page.password.value = 'abcd'
+  const signIn = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.django}/api/auth/login`)
+  await respond(login.requests[0], 401, { success: false, error_code: 'E0101' })
+  await signIn
+  const successfulLogin = login.page.submitLogin()
+  assert.equal(login.requests[1].url, `${auth.BACKENDS.django}/api/auth/login`)
+  await respond(login.requests[1], 200, { success: true, message: 'OK', data: { access_token: 'django-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+  await successfulLogin
+  assert.deepEqual(auth.readSession(login.sessionStorage), { backend: auth.BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
+
+  const authenticated = articleApp('/vue/', 'django-jwt', '', false, auth.BACKENDS.django)
+  t.after(authenticated.close)
+  assert.equal(authenticated.requests[0].url, `${auth.BACKENDS.django}/api/me`)
+  await respond(authenticated.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(authenticated.requests[1].url, `${auth.BACKENDS.django}/api/articles?page=1&per_page=20`)
+  await respond(authenticated.requests[1], 200, { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } })
+  const logout = authenticated.page.submitLogout()
+  assert.equal(authenticated.requests[2].url, `${auth.BACKENDS.django}/api/auth/logout`)
+  assert.equal(authenticated.requests[2].headers.Authorization, 'Bearer django-jwt')
+  await respond(authenticated.requests[2], 200, { success: true, message: 'OK', data: {} })
+  await logout
+  assert.equal(auth.readSession(authenticated.sessionStorage), null)
+
+  const listing = articleApp('/vue/', null, '', false, auth.BACKENDS.django)
+  t.after(listing.close)
+  assert.equal(listing.requests[0].url, `${auth.BACKENDS.django}/api/articles?page=1&per_page=20`)
+  assert.equal(listing.requests[0].headers.Authorization, undefined)
+  await respond(listing.requests[0], 200, { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
+  assert.equal(listing.page.articleList.value?.list[0].id, sample.id)
+
+  const detail = articleApp('/vue/articles/007', null, '', false, auth.BACKENDS.django)
+  t.after(detail.close)
+  assert.equal(detail.requests[0].url, `${auth.BACKENDS.django}/api/articles/7`)
+  await respond(detail.requests[0], 200, { success: true, message: 'OK', data: sample })
+  assert.equal(detail.requests[1].url, `${auth.BACKENDS.django}/api/articles/7/comments?page=1&per_page=20`)
+  assert.equal(detail.page.canComment.value, false)
+  assert.equal(detail.page.canManageVisibility.value, false)
+})
+
+// Django 尚未提供作者及管理端點；直接開啟路徑時呈現不可用狀態，不能送出該端點請求。
+test('Django unsupported routes never request author or admin endpoints', async (t) => {
+  for (const path of ['/vue/articles/new', '/vue/articles/7/edit', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/comments/9/edit', '/vue/admin/members', '/vue/admin/settings/login-lockout']) {
+    const guest = articleApp(path, null, '', false, auth.BACKENDS.django)
+    t.after(guest.close)
+    assert.equal(guest.page.djangoUnavailable.value, true, path)
+    assert.equal(guest.requests.length, 0, path)
+    assert.equal(guest.redirects.length, 0, path)
+    const signedIn = articleApp(path, 'django-token', '', false, auth.BACKENDS.django)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.django}/api/me`)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    assert.equal(signedIn.requests.length, 1, path)
+    assert.equal(signedIn.page.djangoUnavailable.value, true, path)
+  }
 })
 
 // 已送出的舊後端寫入即使晚到成功回應，也不可觸發發文完成導頁或重送。

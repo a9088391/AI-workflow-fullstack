@@ -2,5 +2,5 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-# down 不加 -v，保留資料庫、備份及金鑰供下次啟動沿用。
-docker compose down
+# 啟用 Django profile 以納入已啟動服務；down 不加 -v，保留資料與金鑰。
+docker compose --profile django down

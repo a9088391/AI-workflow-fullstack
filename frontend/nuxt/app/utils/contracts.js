@@ -1,6 +1,6 @@
 export const API_BASE = 'http://localhost:8081'
 export const BACKEND_KEY = 'article-collection.backend.v1'
-export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083' }
+export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084' }
 export const SESSION_KEY = 'article-collection.auth.v1'
 const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
 const backends = { laravel: 'Laravel', symfony: 'Symfony', 'aspnet-core': 'ASP.NET Core', django: 'Django', flask: 'Flask', fastapi: 'FastAPI', gin: 'Gin', echo: 'Echo', fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS' }
@@ -84,8 +84,13 @@ export function saveSession(storage, token, expiresAt) {
 // 只在憑證失效、停用或登出成功等已知結果下清除共用憑證。
 export function clearSession(storage) { storage.removeItem(SESSION_KEY) }
 
-// 註冊與登入採共同 Email 正規化，僅去除兩端 ASCII 空格。
-export function normalizeEmail(value) { return typeof value === 'string' ? value.replace(/^ +| +$/g, '').toLowerCase() : '' }
+// 註冊與登入只修剪 ASCII 空格並折 ASCII 大寫，避免 K 等 Unicode 字元變成合法 Email。
+export function normalizeEmail(value) {
+  if (typeof value !== 'string') return ''
+  return value.replace(/^ +| +$/g, '').replace(/[A-Z]/g,
+    // 已由正規式限縮為 A–Z，這個轉換不會改動非 ASCII 字元。
+    (letter) => letter.toLowerCase())
+}
 
 // 逐段驗證已核准的 ASCII Email，不依賴較寬鬆的瀏覽器規則。
 export function validEmail(value) {

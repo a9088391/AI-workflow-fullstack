@@ -174,6 +174,92 @@ test('ASP.NET Core Vue session survives Nuxt verification and reverse frontend s
   assert.equal(app.storage.getItem(BACKEND_KEY), backend)
 })
 
+// Vue 選用 Django 後，Nuxt 只重驗既有憑證；切回 Vue 仍保留原到期時間。
+test('Django Vue session survives Nuxt me verification and reverse switch', async (t) => {
+  const app = switchingPage('index', true, BACKENDS.django)
+  t.after(app.close)
+  assert.equal(app.app.site.backend.value, BACKENDS.django)
+  assert.equal(app.requests[0].url, `${BACKENDS.django}/api/me`)
+  assert.equal(app.requests[0].options.headers.Authorization, 'Bearer same-token')
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+  await setImmediate()
+  assert.equal(app.app.site.account.value?.id, account.id)
+  app.app.chooseFrontend({ target: { value: 'vue' } })
+  assert.deepEqual(app.redirects, ['/vue/'])
+  assert.deepEqual(JSON.parse(app.storage.getItem(SESSION_KEY)), { backend: BACKENDS.django, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(app.storage.getItem(BACKEND_KEY), BACKENDS.django)
+})
+
+// Nuxt 表單沿用固定 /api 路徑；Django 登入只保存原 JWT 與到期時間。
+test('Nuxt registration and login use the selected Django API', async (t) => {
+  const registration = switchingPage('register', false, BACKENDS.django)
+  t.after(registration.close)
+  registration.form.email.value = 'new@example.test'
+  registration.form.password.value = 'abcd'
+  registration.form.nickname.value = '新會員'
+  await vue.nextTick()
+  const post = registration.form.submit()
+  assert.equal(registration.requests[0].url, `${BACKENDS.django}/api/auth/register`)
+  respond(registration.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await post
+  assert.equal(registration.form.created.value, true)
+
+  const login = switchingPage('login', false, BACKENDS.django)
+  t.after(login.close)
+  login.form.email.value = 'reader@example.test'
+  login.form.password.value = 'abcd'
+  await vue.nextTick()
+  const signIn = login.form.submit()
+  assert.equal(login.requests[0].url, `${BACKENDS.django}/api/auth/login`)
+  respond(login.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'django-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: account } })
+  await signIn
+  assert.deepEqual(readSession(login.storage), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
+})
+
+// 登入與註冊的真實 submit 都須擋住 K 地址，修正為 ASCII 後才允許送到 Django。
+for (const page of ['login', 'register']) {
+  test(`Nuxt ${page} rejects Kelvin sign before Django request`,
+    // 同一表單先驗證失敗，再改成合法地址，確認沒有永久卡住送出狀態。
+    async (t) => {
+      const app = switchingPage(page, false, BACKENDS.django)
+      t.after(app.close)
+      app.form.email.value = 'K@example.test'
+      app.form.password.value = 'Abc1234'
+      if (page === 'register') app.form.nickname.value = '讀者'
+      await vue.nextTick()
+      await app.form.submit()
+      assert.equal(app.requests.length, 0)
+      assert.equal(app.form.pending.value, false)
+      assert.equal(app.storage.getItem(SESSION_KEY), null)
+
+      app.form.email.value = 'K@example.test'
+      await vue.nextTick()
+      const retry = app.form.submit()
+      assert.equal(app.requests.length, 1)
+      assert.equal(app.requests[0].url, `${BACKENDS.django}/api/auth/${page}`)
+      respond(app.requests[0], 422, { success: false, error_code: 'E0001', message: '欄位資料不正確，請確認後再送出', errors: { email: ['此 Email 已註冊'] } })
+      await retry
+    })
+}
+
+// Django 的登入晚到成功不可覆寫已改選的後端，也不可保留舊憑證。
+test('Django pending login cannot overwrite a later backend selection', async (t) => {
+  const app = switchingPage('login', false, BACKENDS.django)
+  t.after(app.close)
+  app.form.email.value = 'reader@example.test'
+  app.form.password.value = 'abcd'
+  await vue.nextTick()
+  const pending = app.form.submit()
+  assert.equal(app.requests[0].url, `${BACKENDS.django}/api/auth/login`)
+  app.app.chooseBackend({ target: { value: BACKENDS.laravel } })
+  assert.equal(app.requests[0].options.signal.aborted, true)
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'late-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: account } })
+  await pending
+  assert.equal(app.app.site.backend.value, BACKENDS.laravel)
+  assert.equal(app.storage.getItem(SESSION_KEY), null)
+  assert.deepEqual(app.redirects, ['/nuxt/login?return_to=%2Fnuxt%2Farticles%2F001'])
+})
+
 // 後端改選仍走原本的清除憑證流程；舊登入與註冊成功不能把狀態寫回新後端。
 for (const page of ['login', 'register']) {
   test(`pending ${page} cannot overwrite backend switch`,

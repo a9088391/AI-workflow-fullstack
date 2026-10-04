@@ -59,6 +59,21 @@ test('backend selection persists without token and rejects previous backend cred
   assert.equal(readSession(s).accessToken, 'new-login')
 })
 
+// Django 只接受固定 8084 位址；切入與切出都清除前一後端 JWT，未知值不得改選。
+test('Django session selection is exact and fails closed', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(selectBackend(s, BACKENDS.django), true)
+  assert.equal(BACKENDS.django, 'http://localhost:8084')
+  assert.equal(readSession(s), null)
+  saveSession(s, 'django-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, 'http://localhost:8085'), false)
+  assert.equal(readSession(s).accessToken, 'django-jwt')
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+})
+
 // 瀏覽器拒絕清除 JWT 時，失敗切換不可把舊 JWT 配給新後端。
 test('backend selection fails closed when token removal throws', () => {
   const s = storage()

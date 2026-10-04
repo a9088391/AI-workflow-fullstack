@@ -92,7 +92,7 @@ async function submitLogout() {
         <p class="edition">一份關於文字的日常刊物</p>
         <div class="environment" aria-label="目前版本與後端">
           <span>目前前端 <strong>Nuxt</strong></span>
-          <span>目前後端 <strong>{{ site.backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : site.backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</strong></span>
+          <span>目前後端 <strong>{{ site.backend.value === BACKENDS.django ? 'Django' : site.backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : site.backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</strong></span>
         </div>
       </div>
       <div class="masthead-rule" />
@@ -112,7 +112,7 @@ async function submitLogout() {
         <summary>切換版本</summary>
         <div class="version-fields">
           <div><label for="nuxt-frontend-version">前端版本</label><select id="nuxt-frontend-version" value="nuxt" @change="chooseFrontend"><option value="nuxt">Nuxt（目前使用）</option><option value="vue" :disabled="!frontendTarget">Vue 3＋Vite{{ frontendTarget ? '' : '（此頁不可切換）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select></div>
-          <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version" :value="site.backend.value" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option></select></div>
+          <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version" :value="site.backend.value" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option></select></div>
           <p>切換後端會清除目前登入並要求重新登入。</p>
         </div>
       </details>

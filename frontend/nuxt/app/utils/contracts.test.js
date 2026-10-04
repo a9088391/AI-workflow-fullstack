@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, apiFailure, apiRequest, emptySuccess, formatCountdown, isAccount, loginData, loginHref, positiveUrlInteger, readArticle, readBackend, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateCredentials, vueFrontendTarget } from './contracts.js'
+import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, apiFailure, apiRequest, backendName, emptySuccess, formatCountdown, isAccount, loginData, loginHref, normalizeEmail, positiveUrlInteger, readArticle, readBackend, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateCredentials, vueFrontendTarget } from './contracts.js'
+import * as vueAuth from '../../../vue/src/auth.js'
 
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 const article = { id: 101, title: '一篇文章', body: '第一行\n第二行', author: { id: 1, nickname: '林' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
@@ -57,6 +58,26 @@ test('ASP.NET Core backend selection clears the previous session', () => {
   assert.equal(readBackend(s), 'http://localhost:8083')
 })
 
+// Vue 與 Nuxt 必須讀同一份 Django JWT 與原到期時間，切後端則拒絕舊配對。
+test('Django session survives both frontend implementations without reissue', () => {
+  const s = storage()
+  assert.equal(vueAuth.BACKENDS.django, BACKENDS.django)
+  assert.equal(backendName('django'), 'Django')
+  vueAuth.selectBackend(s, vueAuth.BACKENDS.django)
+  vueAuth.saveSession(s, 'django-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(readBackend(s), BACKENDS.django)
+  assert.equal(s.getItem(SESSION_KEY), JSON.stringify({ backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(vueAuth.readSession(s).expiresAt, '2026-09-24 18:00:00')
+  assert.equal(selectBackend(s, 'http://localhost:8085'), false)
+  assert.equal(readSession(s).accessToken, 'django-jwt')
+  saveSession(s, 'nuxt-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(vueAuth.readSession(s), { backend: BACKENDS.django, accessToken: 'nuxt-jwt', expiresAt: '2026-09-24 18:00:00' })
+  selectBackend(s, BACKENDS.symfony)
+  assert.equal(vueAuth.readSession(s), null)
+  assert.equal(readBackend(s), BACKENDS.symfony)
+})
+
 // 清除 JWT 若遭瀏覽器拒絕，新後端選擇不能已寫入儲存。
 test('backend switch keeps original pairing when storage removal fails', () => {
   const s = storage()
@@ -95,6 +116,15 @@ test('route and credential boundaries', () => {
   for (const path of ['/nuxt/articles/new', '/nuxt/admin/members', '/nuxt/articles/0', '//evil.test']) assert.equal(vueFrontendTarget(path), null)
   assert.deepEqual(validateCredentials({ email: ' Reader@Example.Test ', password: 'abcd' }), { email: 'reader@example.test', errors: {} })
   assert.ok(validateCredentials({ email: 'bad', password: 'a', nickname: '　' }, true).errors.nickname)
+})
+
+// SEC01 只折 ASCII 大寫；K 不得在驗證前變成 k 而登入或註冊另一個帳號。
+test('non-ASCII Kelvin sign remains invalid after Email normalization', () => {
+  assert.equal(normalizeEmail('  K@EXAMPLE.TEST  '), 'K@example.test')
+  assert.deepEqual(validateCredentials({ email: 'K@example.test', password: 'Abc1234' }).errors.email, ['請輸入符合格式的 Email'])
+  assert.deepEqual(validateCredentials({ email: 'K@example.test', password: 'Abc1234', nickname: '讀者' }, true).errors.email, ['請輸入符合格式的 Email'])
+  assert.equal(isAccount({ ...account, email: 'K@example.test' }), false)
+  assert.equal(normalizeEmail('  READER@EXAMPLE.TEST  '), 'reader@example.test')
 })
 
 // 鎖定只接受安全秒數，並按真實時鐘推算，不因計時器延遲拉長。
@@ -145,6 +175,10 @@ test('API request keeps base path and headers', async (t) => {
   const response = await apiRequest('/api/me', { token: 'jwt' })
   assert.equal(request.url, `${API_BASE}/api/me`)
   assert.equal(request.options.headers.Authorization, 'Bearer jwt')
+  selectBackend(selected, BACKENDS.django)
+  await apiRequest('/api/articles?page=1&per_page=20')
+  assert.equal(request.url, `${BACKENDS.django}/api/articles?page=1&per_page=20`)
+  assert.equal(request.options.headers.Authorization, undefined)
   assert.equal(response.retryAfter, '5')
   // 切換後公開註冊與登入也須直連 Symfony，不能沿用 Laravel 固定網址。
   selectBackend(selected, BACKENDS.symfony)
