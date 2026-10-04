@@ -50,24 +50,34 @@ trait ContentContract
             foreach (['page', 'per_page'] as $name) {
                 if (! array_key_exists($name, $values)) {
                     $errors[$name] = ['此欄位為必填'];
-                } elseif (! isset($errors[$name]) && (($number = $this->integer($values[$name])) === null || ($name === 'per_page' && $number > 100))) {
+                } elseif (
+                    ! isset($errors[$name])
+                    && (($number = $this->integer($values[$name])) === null
+                        || ($name === 'per_page' && $number > 100))
+                ) {
                     $errors[$name] = ['欄位格式或範圍不正確'];
                 }
             }
-            if ($scope === true
+            if (
+                $scope === true
                 && isset($values['filters[scope]'])
                 && ! isset($errors['filters.scope'])
-                && $values['filters[scope]'] !== 'management') {
+                && $values['filters[scope]'] !== 'management'
+            ) {
                 $errors['filters.scope'] = ['欄位格式或範圍不正確'];
             }
             // 會員關鍵字只去除 U+0020；無效 UTF-8 與資料庫不能處理的 NUL 在查詢前拒絕。
-            if ($scope === 'keyword'
+            if (
+                $scope === 'keyword'
                 && isset($values['filters[keyword]'])
-                && ! isset($errors['filters.keyword'])) {
+                && ! isset($errors['filters.keyword'])
+            ) {
                 $keyword = trim($values['filters[keyword]'], ' ');
-                if (! mb_check_encoding($keyword, 'UTF-8')
+                if (
+                    ! mb_check_encoding($keyword, 'UTF-8')
                     || str_contains($keyword, "\0")
-                    || mb_strlen($keyword, 'UTF-8') > 254) {
+                    || mb_strlen($keyword, 'UTF-8') > 254
+                ) {
                     $errors['filters.keyword'] = ['欄位格式或範圍不正確'];
                 }
             }
@@ -128,9 +138,15 @@ trait ContentContract
                 if (! in_array($body->$name, ['active', 'disabled'], true)) {
                     $errors[$name] = ['欄位格式或範圍不正確'];
                 }
-            } elseif (str_contains($body->$name, "\0")
+            } elseif (
+                str_contains($body->$name, "\0")
                 || mb_strlen($body->$name, 'UTF-8') < 1 || mb_strlen($body->$name, 'UTF-8') > $limit
-                || preg_match('/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u', $body->$name) !== 1) {
+                || preg_match(
+                    '/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}'
+                    . '\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u',
+                    $body->$name
+                ) !== 1
+            ) {
                 $errors[$name] = ['欄位格式或範圍不正確'];
             }
         }
@@ -148,8 +164,10 @@ trait ContentContract
     private function visibilityChanges(stdClass $content, stdClass $viewer, string $visibility): array|JsonResponse
     {
         $own = (int) $viewer->id === (int) $content->author_id;
-        if ($visibility === 'visible' && $content->visibility === 'hidden'
-            && $viewer->role !== 'admin' && $content->restore_control !== 'author') {
+        if (
+            $visibility === 'visible' && $content->visibility === 'hidden'
+            && $viewer->role !== 'admin' && $content->restore_control !== 'author'
+        ) {
             return $this->error(403, 'E0003', '沒有權限使用此功能');
         }
 
@@ -192,7 +210,10 @@ trait ContentContract
             return null;
         }
         $digits = ltrim($value, '0');
-        if ($digits === '' || strlen($digits) > 16 || (strlen($digits) === 16 && strcmp($digits, '9007199254740991') > 0)) {
+        if (
+            $digits === '' || strlen($digits) > 16
+            || (strlen($digits) === 16 && strcmp($digits, '9007199254740991') > 0)
+        ) {
             return null;
         }
 
