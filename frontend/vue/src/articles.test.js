@@ -89,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, djangoUnavailable, canComment, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, canComment, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -413,8 +413,8 @@ test('Django selection clears old JWT and serves public and auth routes', async 
   assert.equal(detail.page.canManageVisibility.value, false)
 })
 
-// Django 作者頁沿用登入與相同 API 路徑；管理頁仍不能請求尚未實作的端點。
-test('Django author routes verify identity and management routes remain unavailable', async (t) => {
+// Django 作者與管理頁都須先驗證身分，再以同一後端的共同 API 路徑讀取。
+test('Django author and management routes verify identity before content requests', async (t) => {
   const authorRoutes = new Map([
     ['/vue/articles/new', null],
     ['/vue/articles/7/edit', '/api/articles/7'],
@@ -426,23 +426,28 @@ test('Django author routes verify identity and management routes remain unavaila
   for (const [path, endpoint] of authorRoutes) {
     const guest = articleApp(path, null, '', false, auth.BACKENDS.django)
     t.after(guest.close)
-    assert.equal(guest.page.djangoUnavailable.value, false, path)
     assert.equal(guest.requests.length, 0, path)
     assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
     const signedIn = articleApp(path, 'django-token', '', false, auth.BACKENDS.django)
     t.after(signedIn.close)
     assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.django}/api/me`)
     await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
-    assert.equal(signedIn.page.djangoUnavailable.value, false, path)
     assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
     if (endpoint) assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.django}${endpoint}`, path)
   }
-  for (const path of ['/vue/admin/members', '/vue/admin/members/9', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
+  const managementRoutes = new Map([
+    ['/vue/admin/members', '/api/members?page=1&per_page=20'],
+    ['/vue/admin/members/9', '/api/members/9'],
+    ['/vue/admin/articles', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management'],
+    ['/vue/admin/comments', '/api/comments?page=1&per_page=20'],
+    ['/vue/admin/settings/login-lockout', '/api/settings/login-lockout'],
+  ])
+  for (const [path, endpoint] of managementRoutes) {
     const signedIn = articleApp(path, 'django-token', '', false, auth.BACKENDS.django)
     t.after(signedIn.close)
     await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
-    assert.equal(signedIn.page.djangoUnavailable.value, true, path)
-    assert.equal(signedIn.requests.length, 1, path)
+    assert.equal(signedIn.requests.length, 2, path)
+    assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.django}${endpoint}`, path)
   }
 })
 

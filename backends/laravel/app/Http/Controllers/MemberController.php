@@ -26,13 +26,20 @@ class MemberController extends Controller
             if ($input instanceof JsonResponse) {
                 return $input;
             }
+            // PostgreSQL text 無法含 NUL；字面搜尋不可能命中，仍保留合法頁碼的空結果。
+            if ($input['keyword'] !== null && str_contains($input['keyword'], "\0")) {
+                return $this->success(['list' => [], 'pagination' => [
+                    'page' => $input['page'], 'per_page' => $input['per_page'], 'total' => 0, 'total_pages' => 0,
+                ]]);
+            }
 
             // translate 只折疊 ASCII；strpos 將 %, _ 和反斜線當一般字元，不受 LIKE 模式影響。
             $accounts = DB::table('accounts')->where('role', 'member');
             if ($input['keyword'] !== null && $input['keyword'] !== '') {
                 $folded = strtr($input['keyword'], 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz');
                 $accounts->whereRaw(
-                    "(strpos(translate(nickname, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), ?) > 0 OR strpos(translate(email, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), ?) > 0)",
+                    "(strpos(translate(nickname, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), ?) > 0 "
+                    . "OR strpos(translate(email, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), ?) > 0)",
                     [$folded, $folded]
                 );
             }

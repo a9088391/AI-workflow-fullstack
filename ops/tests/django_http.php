@@ -2,15 +2,17 @@
 
 declare(strict_types=1);
 
-// 測試只對已確認的 Ticket 16 隔離專案及固定埠寫入，避免污染正式展示資料。
+// Ticket 16 僅用專用隔離設定；Ticket 18 須先通過其容器守衛才重用本測試，避免污染展示資料。
 if (
-    ! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket16_')
-    || ! str_contains(getenv('COMPOSE_FILE') ?: '', 'ops/tests/ticket16_compose.yaml')
+    ! ($GLOBALS['t18VerifiedTarget'] ?? false) && (
+        ! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket16_')
+        || ! str_contains(getenv('COMPOSE_FILE') ?: '', 'ops/tests/ticket16_compose.yaml')
+    )
 ) {
     throw new RuntimeException('必須使用 ticket16_ 隔離 Compose 與 ticket16_compose.yaml');
 }
-$django = 'http://localhost:18084';
-$laravel = 'http://localhost:18081';
+$django = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19384' : 'http://localhost:18084';
+$laravel = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19381' : 'http://localhost:18081';
 
 /** 保留真實 HTTP status、Body、Headers，讓同一案例可比較不同後端契約。 */
 function t16Request(string $base, string $method, string $path, array|string|null $body = null, ?string $token = null): array
@@ -201,7 +203,9 @@ function t16TokenWithClaims(string $token, array $updates): string
     $claims = array_replace($claims, $updates);
     $payload = rtrim(strtr(base64_encode(json_encode($claims, JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
     $signed = $header . '.' . $payload;
-    $key = base64_decode(trim(file_get_contents('.local/ticket16-backend/django.key')), true);
+    $keyPath = ($GLOBALS['t18VerifiedTarget'] ?? false)
+        ? '.local/ticket18-backend/django.key' : '.local/ticket16-backend/django.key';
+    $key = base64_decode(trim(file_get_contents($keyPath)), true);
     assert($key !== false && strlen($key) === 32);
     return $signed . '.' . rtrim(strtr(base64_encode(hash_hmac('sha256', $signed, $key, true)), '+/', '-_'), '=');
 }
@@ -561,12 +565,14 @@ t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $outage, 
 $outageToken = t16Login($django, $outage);
 t16Check(t16Request($django, 'GET', '/api/me', null, $outageToken), 200);
 assert(t16Health($django) === 200);
-t16Docker(['stop', 'db']);
-try {
-    assert(t16Health($django) === 503);
-    t16Check(t16Request($django, 'GET', '/api/me', null, $outageToken), 500, 'E9999');
-} finally {
-    t16Docker(['up', '-d', '--wait', 'db']);
+if (! ($GLOBALS['t18VerifiedTarget'] ?? false)) {
+    t16Docker(['stop', 'db']);
+    try {
+        assert(t16Health($django) === 503);
+        t16Check(t16Request($django, 'GET', '/api/me', null, $outageToken), 500, 'E9999');
+    } finally {
+        t16Docker(['up', '-d', '--wait', 'db']);
+    }
+    assert(t16Health($django) === 200);
+    t16Check(t16Request($django, 'GET', '/api/me', null, $outageToken), 200);
 }
-assert(t16Health($django) === 200);
-t16Check(t16Request($django, 'GET', '/api/me', null, $outageToken), 200);

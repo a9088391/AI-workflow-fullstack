@@ -4,30 +4,37 @@ declare(strict_types=1);
 
 // 寫入前驗證 Compose 解析結果；測試只接受獨立 volume、密鑰及指定本機埠。
 if (
-    getenv('COMPOSE_PROJECT_NAME') !== 'ticket17_test'
-    || getenv('COMPOSE_FILE') !== 'compose.yaml:ops/tests/ticket17_compose.yaml'
-    || getenv('COMPOSE_PROFILES') !== 'django'
+    ! ($GLOBALS['t18VerifiedTarget'] ?? false) && (
+        getenv('COMPOSE_PROJECT_NAME') !== 'ticket17_test'
+        || getenv('COMPOSE_FILE') !== 'compose.yaml:ops/tests/ticket17_compose.yaml'
+        || getenv('COMPOSE_PROFILES') !== 'django'
+    )
 ) {
     throw new RuntimeException('必須使用 ticket17_test 與 ticket17_compose.yaml 隔離設定');
 }
-$configuration = json_decode(
-    (string) shell_exec('docker compose config --format json'),
-    true,
-    512,
-    JSON_THROW_ON_ERROR
-);
-if (
-    $configuration['name'] !== 'ticket17_test'
-    || $configuration['volumes']['postgres_data']['name'] !== 'ticket17_test_postgres_data'
-    || ($configuration['services']['django']['ports'][0]['published'] ?? null) !== '8084'
-    || ($configuration['services']['laravel']['ports'][0]['published'] ?? null) !== '8081'
-    || ! str_contains($configuration['services']['django']['volumes'][0]['source'] ?? '', '/.local/ticket17-backend/')
-) {
-    throw new RuntimeException('隔離 Compose 解析結果不符，禁止建立 fixture');
+if (! ($GLOBALS['t18VerifiedTarget'] ?? false)) {
+    $configuration = json_decode(
+        (string) shell_exec('docker compose config --format json'),
+        true,
+        512,
+        JSON_THROW_ON_ERROR
+    );
+    if (
+        $configuration['name'] !== 'ticket17_test'
+        || $configuration['volumes']['postgres_data']['name'] !== 'ticket17_test_postgres_data'
+        || ($configuration['services']['django']['ports'][0]['published'] ?? null) !== '8084'
+        || ($configuration['services']['laravel']['ports'][0]['published'] ?? null) !== '8081'
+        || ! str_contains(
+            $configuration['services']['django']['volumes'][0]['source'] ?? '',
+            '/.local/ticket17-backend/'
+        )
+    ) {
+        throw new RuntimeException('隔離 Compose 解析結果不符，禁止建立 fixture');
+    }
 }
 
-$django = 'http://localhost:8084';
-$laravel = 'http://localhost:8081';
+$django = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19384' : 'http://localhost:8084';
+$laravel = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19381' : 'http://localhost:8081';
 
 require_once __DIR__ . '/ticket17_http_support.php';
 

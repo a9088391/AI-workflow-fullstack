@@ -1,4 +1,4 @@
-# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core
+# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django
 
 目前 Vue 提供註冊、登入、文章／留言閱讀與會員及管理頁；Nuxt 提供註冊、登入、公開文章列表與詳情。共同頁面可在同一分頁切換 Vue／Nuxt；Laravel／Symfony 使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 可發表、編修、下架與恢復文章／留言；送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
@@ -23,7 +23,7 @@ COMPOSE_PROJECT_NAME=ticket13_test COMPOSE_FILE=compose.yaml:ops/tests/aspnet_co
 COMPOSE_PROJECT_NAME=ticket13_test COMPOSE_FILE=compose.yaml:ops/tests/aspnet_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/aspnet_http.php
 ```
 
-Django API 固定於 `http://localhost:8084`，僅實作註冊、登入、登出、me、文章列表／詳情與文章留言列表。使用 Django 5.2.17、Python 3.13.16、psycopg 3.3.6（LGPL-3.0-only）及 argon2-cffi 25.1.0（MIT）；直接讀寫共用 SQL 結構，JWT 金鑰讀取 `.local/keys/django.key`。Python 完整版本列於 `backends/django/requirements.txt`，ARM64 Python 基底映像以 digest 鎖定。Ticket 16 的 HTTP 驗證只對 `ticket16_` 開頭的隔離 Compose 專案寫入；準備 `.local/ticket16-backend/` 下四份測試專用金鑰與 `laravel-logs/`、`symfony-logs/`、`backups/` 後執行：
+Django API 固定於 `http://localhost:8084`，提供全部 22 項共用操作，包括作者內容、會員與內容管理及登入鎖定設定；Vue 的既有管理頁可選用 Django。使用 Django 5.2.17、Python 3.13.16、psycopg 3.3.6（LGPL-3.0-only）及 argon2-cffi 25.1.0（MIT）；直接讀寫共用 SQL 結構，JWT 金鑰讀取 `.local/keys/django.key`。Python 完整版本列於 `backends/django/requirements.txt`，ARM64 Python 基底映像以 digest 鎖定。Ticket 16 的 HTTP 驗證只對 `ticket16_` 開頭的隔離 Compose 專案寫入；準備 `.local/ticket16-backend/` 下四份測試專用金鑰與 `laravel-logs/`、`symfony-logs/`、`backups/` 後執行：
 
 主 Compose 的 Django profile 讓舊票隔離 fixture 預設不啟動 Django，維持原本專用金鑰與埠；`ops/start.sh` 在一般展示與 Ticket 16 專用 fixture 明確啟動它，`ops/stop.sh` 則一併停止。
 
@@ -31,6 +31,8 @@ Django API 固定於 `http://localhost:8084`，僅實作註冊、登入、登出
 COMPOSE_PROJECT_NAME=ticket16_test COMPOSE_FILE=compose.yaml:ops/tests/ticket16_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
 COMPOSE_PROJECT_NAME=ticket16_test COMPOSE_FILE=compose.yaml:ops/tests/ticket16_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/django_http.php
 ```
+
+Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
 
 登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Nuxt 尚無作者及管理頁，這些頁面不能切到 Nuxt；其他四版前端尚未提供。
 

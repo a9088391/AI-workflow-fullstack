@@ -66,7 +66,7 @@ trait ContentContract
             ) {
                 $errors['filters.scope'] = ['欄位格式或範圍不正確'];
             }
-            // 會員關鍵字只去除 U+0020；無效 UTF-8 與資料庫不能處理的 NUL 在查詢前拒絕。
+            // 會員關鍵字只去除 U+0020；無效 UTF-8 與超長字串在查詢前拒絕。
             if (
                 $scope === 'keyword'
                 && isset($values['filters[keyword]'])
@@ -75,7 +75,6 @@ trait ContentContract
                 $keyword = trim($values['filters[keyword]'], ' ');
                 if (
                     ! mb_check_encoding($keyword, 'UTF-8')
-                    || str_contains($keyword, "\0")
                     || mb_strlen($keyword, 'UTF-8') > 254
                 ) {
                     $errors['filters.keyword'] = ['欄位格式或範圍不正確'];

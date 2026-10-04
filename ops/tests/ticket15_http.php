@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 // 共用 Ticket 10 的管理與交易案例；主腳本先驗隔離 Compose，完成後再補 Ticket 15 邊界。
-define('T10_TARGET', 'ticket15');
+if (! defined('T10_TARGET') && ($GLOBALS['t10Target'] ?? null) !== 'ticket18') {
+    define('T10_TARGET', 'ticket15');
+}
 require __DIR__ . '/ticket10_http.php';
 
 // JSON 整數須先分型態再判範圍；兩端錯誤全文一致且失敗不能改共用設定。
@@ -65,7 +67,7 @@ $literalLaravel = t10Request($laravel, 'GET', $literalPath, null, $laravelToken)
 t10Check($literalSubject, 200);
 t10Check($literalLaravel, 200);
 assert(in_array($keywordId, array_column($literalSubject[1]['data']['list'], 'id'), true));
-assert($literalSubject[1]['data'] === $literalLaravel[1]['data']);
+assert(t10CanonicalJson($literalSubject[1]['data']) === t10CanonicalJson($literalLaravel[1]['data']));
 $encodedPath = $searchBase . rawurlencode($keyword);
 $fromSubject = t10Request($subject, 'GET', $encodedPath, null, $admin);
 $fromLaravel = t10Request($laravel, 'GET', $encodedPath, null, $laravelToken);
@@ -73,7 +75,7 @@ t10Check($fromSubject, 200);
 t10Check($fromLaravel, 200);
 assert(array_column($fromSubject[1]['data']['list'], 'id') === [$keywordId]);
 assert($fromSubject[1]['data']['pagination']['total'] === 1);
-assert($fromSubject[1]['data'] === $fromLaravel[1]['data']);
+assert(t10CanonicalJson($fromSubject[1]['data']) === t10CanonicalJson($fromLaravel[1]['data']));
 echo "PASS UTF-8 keyword and literal percent search\n";
 
 // 兩端以各自管理員及新會員重播相同重複鍵案例，並從共用資料確認最後值與撤銷。
@@ -209,4 +211,4 @@ foreach ([0 => [401, 401], 1 => [401, 429]] as $microseconds => $expectedStatuse
 }
 t10Check(t10Request($subject, 'PUT', $settingsPath, $defaults, $admin), 200);
 echo "PASS cross-backend concurrent lockout and microsecond boundary\n";
-echo "Ticket 15 ASP.NET Core management HTTP: PASS\n";
+echo $ticket18 ? "Ticket 18 Django management HTTP: PASS\n" : "Ticket 15 ASP.NET Core management HTTP: PASS\n";

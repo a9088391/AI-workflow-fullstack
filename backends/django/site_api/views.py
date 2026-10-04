@@ -90,7 +90,7 @@ def health(request):
     return HttpResponse("OK")
 
 
-# 先解析原始 Query 鍵，保留重複與不支援欄位而不受 Django QueryDict 覆蓋。
+# 先解析原始 Query 鍵，保留重複與不支援欄位；非法 UTF-8 值不能被替代字元吞掉。
 def query_values(request, allowed):
     raw = request.META.get("QUERY_STRING", "")
     values = {}
@@ -111,7 +111,13 @@ def query_values(request, allowed):
             errors[label] = [TYPE]
         elif canonical not in allowed:
             errors[label] = ["不支援此欄位"]
-        values[canonical] = unquote_plus(encoded_value, errors="replace")
+        # 值採嚴格 UTF-8；遇到非法位元組保留欄位錯誤，不交給資料庫搜尋。
+        try:
+            values[canonical] = unquote_plus(encoded_value, errors="strict")
+        except UnicodeDecodeError:
+            values[canonical] = ""
+            if canonical in allowed and label not in errors:
+                errors[label] = [INVALID]
     return values, errors
 
 
@@ -149,8 +155,20 @@ def url_integer(value, field):
     return int(digits)
 
 
-# 解析 JSON object 後依必填、null、型態、格式順序回每欄第一個錯誤；內容另驗整數與純文字。
-def json_body(request, fields, empty_allowed=False, content_limits=None):
+# 為極長 JSON 整數保留來源型態，避免與真正的 JSON 字串混淆。
+class OversizedJsonInteger(str):
+    pass
+
+
+# 只轉換最多 19 位的整數；更長的數字用固定標記避免 Python 字數上限與巨量轉換。
+def parse_json_integer(value):
+    if len(value.lstrip("-")) > 19:
+        return OversizedJsonInteger("")
+    return int(value)
+
+
+# 解析 JSON object 後依必填、null、型態、格式順序回第一個錯誤；管理設定整數遵守跨後端 64 位元型態。
+def json_body(request, fields, empty_allowed=False, content_limits=None, field_types=None):
     if empty_allowed and not request.body:
         return {}
     if not request.body or not request.content_type.lower().startswith("application/json"):
@@ -180,7 +198,7 @@ def json_body(request, fields, empty_allowed=False, content_limits=None):
                     raise ApiError("E0005")
             elif character in "]}":
                 depth -= 1
-        body = json.loads(decoded, parse_constant=reject_non_json_number)
+        body = json.loads(decoded, parse_int=parse_json_integer, parse_constant=reject_non_json_number)
         # PHP 等後端把不成對的 UTF-16 surrogate 視為解析錯誤。
         json.dumps(body, ensure_ascii=False).encode("utf-8")
     except (UnicodeError, ValueError, RecursionError):
@@ -188,14 +206,20 @@ def json_body(request, fields, empty_allowed=False, content_limits=None):
     if not isinstance(body, dict):
         raise ApiError("E0001", {"_body": ["Request Body 必須為 JSON object"]})
     errors = {}
+    field_types = field_types or {}
     for field in fields:
         if field not in body:
             errors[field] = [REQUIRED]
         elif body[field] is None:
             errors[field] = [NULL]
-        elif field == "version" and content_limits is not None and type(body[field]) is not int:
+        elif type(body[field]) is OversizedJsonInteger:
+            errors[field] = [INVALID if field == "version" else TYPE]
+        elif type(body[field]) is not field_types.get(
+            field, int if field == "version" and content_limits is not None else str
+        ):
             errors[field] = [TYPE]
-        elif field != "version" and not isinstance(body[field], str):
+        elif field_types.get(field) is int and not -(1 << 63) <= body[field] < (1 << 63):
+            # Python 整數沒有固定寬度；超出共用後端的有號 64 位元解析範圍屬型態錯誤。
             errors[field] = [TYPE]
     for field in body:
         if field not in fields:
@@ -218,6 +242,10 @@ def json_body(request, fields, empty_allowed=False, content_limits=None):
                 valid = 1 <= value <= 9007199254740991
             elif field == "visibility":
                 valid = value in ("visible", "hidden")
+            elif field == "status":
+                valid = value in ("active", "disabled")
+            elif type(value) is int:
+                valid = 1 <= value <= limit
             else:
                 valid = 1 <= len(value) <= limit and "\0" not in value and any(character not in SPACE for character in value)
             if not valid:
@@ -263,12 +291,14 @@ def visibility_changes(row, viewer, visibility):
     return {"visibility": visibility, "restore_control": control}
 
 
-# 列表先驗 Body 與 Query，管理權門禁已由呼叫端先處理。
-def list_input(request, allow_scope=False):
+# 列表先驗 Body 與 Query，會員關鍵字只裁切 ASCII 空格；管理權門禁由呼叫端先處理。
+def list_input(request, allow_scope=False, allow_keyword=False):
     no_get_body(request)
     allowed = {"page", "per_page"}
     if allow_scope:
         allowed.add("filters[scope]")
+    if allow_keyword:
+        allowed.add("filters[keyword]")
     values, errors = query_values(request, allowed)
     numbers = {}
     for name in ("page", "per_page"):
@@ -286,10 +316,14 @@ def list_input(request, allow_scope=False):
                     numbers[name] = number
     if allow_scope and "filters[scope]" in values and "filters.scope" not in errors and values["filters[scope]"] != "management":
         errors["filters.scope"] = [INVALID]
+    if allow_keyword and "filters[keyword]" in values and "filters.keyword" not in errors:
+        values["filters[keyword]"] = values["filters[keyword]"].strip(" ")
+        if len(values["filters[keyword]"]) > 254:
+            errors["filters.keyword"] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
     # 沿用已驗證數值，避免大量前導零在原字串二次轉換時觸發 Python 上限。
-    return numbers["page"], numbers["per_page"], values.get("filters[scope]")
+    return numbers["page"], numbers["per_page"], values.get("filters[keyword]" if allow_keyword else "filters[scope]")
 
 
 # 精確總數與原頁碼組成共同分頁格式，超頁仍保留 total。
@@ -559,6 +593,168 @@ def my_content(request, table, columns, kind):
         ).fetchall()
         return success({"list": [content_resource(row, viewer, kind) for row in rows],
                         "pagination": pagination(page, per_page, total)})
+
+
+# 管理員只搜尋一般會員；SQL 同時負責字面包含、精確計數與排序分頁。
+@api("GET")
+def members(request):
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        if viewer["role"] != "admin":
+            raise ApiError("E0003")
+        page, per_page, keyword = list_input(request, allow_keyword=True)
+        # translate 僅折疊 ASCII，strpos 將百分號、底線及反斜線視為普通字元。
+        folded = (keyword or "").translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+        # PostgreSQL text 不含 NUL；合法字面搜尋含 NUL 時沒有可能的結果。
+        if "\0" in folded:
+            return success({"list": [], "pagination": pagination(page, per_page, 0)})
+        condition = "WHERE role = 'member'"
+        params = ()
+        if folded:
+            condition += (
+                " AND (strpos(translate(nickname, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), %s) > 0"
+                " OR strpos(translate(email, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), %s) > 0)"
+            )
+            params = (folded, folded)
+        total = connection.execute("SELECT count(*) FROM accounts " + condition, params).fetchone()["count"]
+        offset = (page - 1) * per_page
+        rows = [] if offset >= total else connection.execute(
+            "SELECT id, email, nickname, role, status, created_at FROM accounts " + condition
+            + " ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s", (*params, per_page, offset),
+        ).fetchall()
+        return success({"list": [account_resource(row) for row in rows],
+                        "pagination": pagination(page, per_page, total)})
+
+
+# 管理員詳情先驗角色與輸入，對管理員帳號及不存在 ID 統一回 404。
+@api("GET")
+def member(request, member_id):
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        if viewer["role"] != "admin":
+            raise ApiError("E0003")
+        no_get_body(request)
+        no_query(request)
+        target_id = url_integer(member_id, "member_id")
+        row = connection.execute(
+            "SELECT id, email, nickname, role, status, created_at FROM accounts "
+            "WHERE id = %s AND role = 'member'", (target_id,),
+        ).fetchone()
+        if row is None:
+            raise ApiError("E0004")
+        return success(account_resource(row))
+
+
+# 狀態變更先驗權與輸入，寫入交易再依 ID 鎖帳號及 session 重驗權限。
+@api("PUT")
+def member_status(request, member_id):
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        if viewer["role"] != "admin":
+            raise ApiError("E0003")
+        admin_id = viewer["id"]
+    no_query(request)
+    target_id = url_integer(member_id, "member_id")
+    body = json_body(request, ("status",), content_limits={"status": 0})
+    with connect() as connection:
+        # 目標與管理員帳號一律依 ID 鎖定，防止停用、登入與寫入交錯。
+        rows = connection.execute(
+            "SELECT id, role, status FROM accounts WHERE id IN (%s, %s) ORDER BY id FOR UPDATE",
+            (admin_id, target_id),
+        ).fetchall()
+        accounts = {row["id"]: row for row in rows}
+        current, claims = authenticate(request, connection)
+        connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+        current, _ = authenticate(request, connection)
+        if current["role"] != "admin":
+            raise ApiError("E0003")
+        target = accounts.get(target_id)
+        if target is None or target["role"] != "member":
+            raise ApiError("E0004")
+        if target["status"] != body["status"]:
+            connection.execute("UPDATE accounts SET status = %s WHERE id = %s", (body["status"], target_id))
+            if body["status"] == "disabled":
+                # 帳號鎖阻止新登入；同一提交撤銷全部後端的既有 session。
+                connection.execute(
+                    "UPDATE login_sessions SET revoked_at = clock_timestamp() "
+                    "WHERE account_id = %s AND revoked_at IS NULL", (target_id,),
+                )
+    return success()
+
+
+# 管理員留言列表包含個別及父文章下架的留言，不藉文章狀態省略資料。
+@api("GET")
+def admin_comments(request):
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        if viewer["role"] != "admin":
+            raise ApiError("E0003")
+        page, per_page, _ = list_input(request)
+        total = connection.execute("SELECT count(*) FROM comments").fetchone()["count"]
+        offset = (page - 1) * per_page
+        rows = [] if offset >= total else connection.execute(
+            "SELECT " + COMMENT_COLUMNS + " FROM comments JOIN accounts ON accounts.id = comments.author_id "
+            "ORDER BY comments.created_at DESC, comments.id DESC LIMIT %s OFFSET %s", (per_page, offset),
+        ).fetchall()
+        return success({"list": [content_resource(row, viewer, "comment") for row in rows],
+                        "pagination": pagination(page, per_page, total)})
+
+
+# 管理員讀取或完整更新四個共用鎖定設定欄位；設定缺失屬認證設定錯誤。
+@api(("GET", "PUT"))
+def login_lockout_settings(request):
+    if request.method == "GET":
+        with connect() as connection:
+            viewer, _ = authenticate(request, connection)
+            if viewer["role"] != "admin":
+                raise ApiError("E0003")
+            no_get_body(request)
+            no_query(request)
+            row = connection.execute(
+                "SELECT enabled, window_minutes, failure_threshold, lock_seconds "
+                "FROM login_lockout_settings WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                raise ApiError("E0104")
+            return success(row)
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        if viewer["role"] != "admin":
+            raise ApiError("E0003")
+    no_query(request)
+    fields = ("enabled", "window_minutes", "failure_threshold", "lock_seconds")
+    body = json_body(
+        request, fields, field_types={"enabled": bool, "window_minutes": int,
+                                      "failure_threshold": int, "lock_seconds": int},
+        content_limits={"window_minutes": 60, "failure_threshold": 100, "lock_seconds": 86400},
+    )
+    with connect() as connection:
+        # 登入也先鎖這筆設定；真正關閉時依序鎖全部帳號，最後重驗管理員 session。
+        row = connection.execute(
+            "SELECT enabled, window_minutes, failure_threshold, lock_seconds "
+            "FROM login_lockout_settings WHERE id = 1 FOR UPDATE"
+        ).fetchone()
+        if row is None:
+            raise ApiError("E0104")
+        disabling = row["enabled"] and not body["enabled"]
+        if disabling:
+            connection.execute("SELECT id FROM accounts ORDER BY id FOR UPDATE").fetchall()
+        current = authenticate_write(request, connection)
+        if current["role"] != "admin":
+            raise ApiError("E0003")
+        if any(row[field] != body[field] for field in fields):
+            connection.execute(
+                "UPDATE login_lockout_settings SET enabled = %s, window_minutes = %s, "
+                "failure_threshold = %s, lock_seconds = %s WHERE id = 1",
+                tuple(body[field] for field in fields),
+            )
+            if disabling:
+                # 保留歷史失敗事件，但切換世代並解除會員目前的暫時鎖定。
+                connection.execute(
+                    "UPDATE accounts SET locked_until = NULL, failure_epoch = failure_epoch + 1 "
+                    "WHERE role = 'member'"
+                )
+    return success()
 
 
 # 文章下架與留言寫入鎖同一文章列，授權、版本及恢復權在鎖內裁決。

@@ -4,13 +4,19 @@ declare(strict_types=1);
 
 // 測試會改會員、內容與鎖定設定；Ticket 15 另須核對 Compose 設定及實際資料庫容器。
 $ticket15 = defined('T10_TARGET') && T10_TARGET === 'ticket15';
-if ($ticket15) {
+$ticket18 = ($GLOBALS['t10Target'] ?? null) === 'ticket18';
+if ($ticket18) {
+    if (! isset($t18Guard) || ! is_callable($t18Guard)) {
+        throw new RuntimeException('Ticket 18 缺少隔離容器守衛');
+    }
+    $t18Guard();
+} elseif ($ticket15) {
     t10Ticket15Guard();
 } elseif ((getenv('COMPOSE_PROJECT_NAME') ?: '') !== 'ticket10_test') {
     throw new RuntimeException('請使用 ticket10_test 隔離 Compose project');
 }
-$subject = $ticket15 ? 'http://localhost:19283' : 'http://localhost:19182';
-$laravel = $ticket15 ? 'http://localhost:19281' : 'http://localhost:19181';
+$subject = $ticket18 ? 'http://localhost:19384' : ($ticket15 ? 'http://localhost:19283' : 'http://localhost:19182');
+$laravel = $ticket18 ? 'http://localhost:19381' : ($ticket15 ? 'http://localhost:19281' : 'http://localhost:19181');
 
 /** 執行只讀的 Docker 身分查核，失敗時不洩漏可能含密碼的設定輸出。 */
 function t10Docker(array $command): string
@@ -165,7 +171,24 @@ function t10Check(array $result, int $status, ?string $code = null, ?array $erro
 function t10SameError(array $subjectResult, array $laravelResult): void
 {
     assert($subjectResult[0] === $laravelResult[0]);
-    assert(array_diff_key($subjectResult[1], ['log_id' => true]) === array_diff_key($laravelResult[1], ['log_id' => true]));
+    assert(t10CanonicalJson(array_diff_key($subjectResult[1], ['log_id' => true]))
+        === t10CanonicalJson(array_diff_key($laravelResult[1], ['log_id' => true])));
+}
+
+/** JSON object 鍵順序無語意；僅排序 object，保留陣列順序、欄位和值的嚴格比較。 */
+function t10CanonicalJson(mixed $value): mixed
+{
+    if (! is_array($value)) {
+        return $value;
+    }
+    if (! array_is_list($value)) {
+        ksort($value);
+    }
+    foreach ($value as $key => $item) {
+        $value[$key] = t10CanonicalJson($item);
+    }
+
+    return $value;
 }
 
 /** fixture 僅寫入隔離 Compose 資料庫；公開結果仍由 HTTP 案例驗證。 */
@@ -304,7 +327,7 @@ foreach (
     t10Check($fromLaravel, 200);
     assert(array_column($fromSubject[1]['data']['list'], 'id') === [$expectedId], $keyword);
     assert($fromSubject[1]['data']['pagination']['total'] === 1, $keyword);
-    assert($fromSubject[1]['data'] === $fromLaravel[1]['data'], $keyword);
+    assert(t10CanonicalJson($fromSubject[1]['data']) === t10CanonicalJson($fromLaravel[1]['data']), $keyword);
 }
 $repeatedSubject = t10Request($subject, 'GET', $path . '&filters%5Bkeyword%5D=x&filters%5Bkeyword%5D=y', null, $admin);
 $repeatedLaravel = t10Request($laravel, 'GET', $path . '&filters%5Bkeyword%5D=x&filters%5Bkeyword%5D=y', null, $laravelToken);
@@ -323,7 +346,7 @@ $deepLaravel = t10Request($laravel, 'GET', $deepPath, null, $laravelToken);
 t10Check($deep, 200);
 t10Check($deepLaravel, 200);
 assert($deep[1]['data']['list'] === [] && $deep[1]['data']['pagination']['total'] === 4);
-assert($deep[1]['data'] === $deepLaravel[1]['data']);
+assert(t10CanonicalJson($deep[1]['data']) === t10CanonicalJson($deepLaravel[1]['data']));
 echo "PASS member authorization, literal search and pagination\n";
 
 // 既有作者操作建立內容，管理列表需含隱藏內容且只回核准欄位。
@@ -365,7 +388,23 @@ foreach ([$path, '/api/members/' . $memberId, '/api/comments?page=1&per_page=100
     $fromLaravel = t10Request($laravel, 'GET', $readPath, null, $laravelToken);
     t10Check($fromSubject, 200);
     t10Check($fromLaravel, 200);
-    assert($fromSubject[1]['data'] === $fromLaravel[1]['data'], '管理資料跨後端不一致：' . $readPath);
+    if (t10CanonicalJson($fromSubject[1]['data']) !== t10CanonicalJson($fromLaravel[1]['data'])) {
+        $subjectRows = $fromSubject[1]['data']['list'] ?? [];
+        $laravelRows = $fromLaravel[1]['data']['list'] ?? [];
+        foreach ($subjectRows as $index => $row) {
+            if (t10CanonicalJson($row) !== t10CanonicalJson($laravelRows[$index] ?? null)) {
+                throw new RuntimeException('管理資料跨後端不一致：' . $readPath . ' 首筆差異=' . json_encode([
+                    'index' => $index,
+                    'django' => $row,
+                    'laravel' => $laravelRows[$index] ?? null,
+                ], JSON_UNESCAPED_UNICODE));
+            }
+        }
+        throw new RuntimeException('管理資料跨後端不一致：' . $readPath . ' pagination=' . json_encode([
+            $fromSubject[1]['data']['pagination'] ?? null,
+            $fromLaravel[1]['data']['pagination'] ?? null,
+        ]));
+    }
 }
 $wrong = ['email' => $memberEmail, 'password' => 'Wrong123'];
 t10Check(t10Request($laravel, 'POST', '/api/auth/login', $wrong), 401, 'E0101');
@@ -469,6 +508,6 @@ foreach (['0 microseconds' => 401, '1 microsecond' => 429] as $offset => $status
 }
 t10Sql('UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE id=1');
 echo "PASS cross-backend error and microsecond boundary parity\n";
-if (! $ticket15) {
+if (! $ticket15 && ! $ticket18) {
     echo "Ticket 10 Symfony management HTTP: PASS\n";
 }

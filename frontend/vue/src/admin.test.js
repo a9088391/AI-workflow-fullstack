@@ -98,8 +98,8 @@ test('Django auth copy offers publishing without unsupported warnings', async (t
   assert.match(await rendered(laravelRegister.page), /會顯示在您日後發表的內容旁/)
 })
 
-// Django 管理員仍可使用自己的作者入口，導覽不可連到未實作的管理端點。
-test('Django signed-in navigation shows author links but no management links', async (t) => {
+// Django 管理端點啟用後，管理員導覽需保留作者與全部管理入口。
+test('Django admin navigation shows author and management links', async (t) => {
   const django = app('/vue/', '', 'django-token', auth.BACKENDS.django)
   t.after(django.close)
   await respond(django.requests[0], 200, success(administrator))
@@ -108,7 +108,120 @@ test('Django signed-in navigation shows author links but no management links', a
   assert.match(html, /href="\/vue\/articles\/new"/)
   assert.match(html, /href="\/vue\/me\/articles"/)
   assert.match(html, /href="\/vue\/me\/comments"/)
-  assert.doesNotMatch(html, /href="\/vue\/admin\//)
+  for (const href of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
+    assert.match(html, new RegExp(`href="${href}"`))
+  }
+  assert.doesNotMatch(html, /Django 目前尚未支援管理功能/)
+})
+
+// 訪客仍須登入，非管理員重驗後不得送出管理讀取，也不能看見管理導覽。
+test('Django management routes require current admin role', async (t) => {
+  const guest = app('/vue/admin/members/2', '', null, auth.BACKENDS.django)
+  t.after(guest.close)
+  assert.deepEqual(guest.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers%2F2'])
+
+  const denied = app('/vue/admin/members', '', 'member-token', auth.BACKENDS.django)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success({ ...member }))
+  assert.equal(denied.requests.length, 1)
+  const html = await rendered(denied.page)
+  assert.match(html, /沒有權限使用此功能/)
+  assert.doesNotMatch(html, /href="\/vue\/admin\/members"|member@example.test/)
+
+  const forbidden = app('/vue/admin/members/2', '', 'admin-token', auth.BACKENDS.django)
+  t.after(forbidden.close)
+  await respond(forbidden.requests[0], 200, success(administrator))
+  await respond(forbidden.requests[1], 403, { success: false, error_code: 'E0003' })
+  assert.match(await rendered(forbidden.page), /沒有權限使用此功能/)
+  assert.doesNotMatch(await rendered(forbidden.page), /停用會員|恢復會員/)
+
+  const hiddenAdmin = app('/vue/admin/members/1', '', 'admin-token', auth.BACKENDS.django)
+  t.after(hiddenAdmin.close)
+  await respond(hiddenAdmin.requests[0], 200, success(administrator))
+  await respond(hiddenAdmin.requests[1], 404, { success: false, error_code: 'E0004' })
+  assert.match(await rendered(hiddenAdmin.page), /找不到指定資料或 API/)
+  assert.doesNotMatch(await rendered(hiddenAdmin.page), /停用會員|恢復會員/)
+})
+
+// Django 會員清單、詳情與停用都使用共同 API，寫入後必須重讀目前會員。
+test('Django member management reads list and detail then confirms status', async (t) => {
+  const members = app('/vue/admin/members', '?keyword=%25&page=2', 'admin-token', auth.BACKENDS.django)
+  t.after(members.close)
+  await respond(members.requests[0], 200, success(administrator))
+  assert.equal(members.requests[1].url, `${auth.BACKENDS.django}/api/members?page=2&per_page=20&filters%5Bkeyword%5D=%25`)
+  await respond(members.requests[1], 200, list([member], 2, 21))
+  assert.match(await rendered(members.page), /member@example.test/)
+
+  const detail = app('/vue/admin/members/2', '', 'admin-token', auth.BACKENDS.django)
+  t.after(detail.close)
+  await respond(detail.requests[0], 200, success(administrator))
+  assert.equal(detail.requests[1].url, `${auth.BACKENDS.django}/api/members/2`)
+  await respond(detail.requests[1], 200, success(member))
+  assert.match(await rendered(detail.page), /停用會員/)
+  const write = detail.page.submitMemberStatus()
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.django}/api/members/2/status`)
+  assert.deepEqual(JSON.parse(detail.requests[2].body), { status: 'disabled' })
+  await respond(detail.requests[2], 200, success({}))
+  assert.equal(detail.requests[3].url, `${auth.BACKENDS.django}/api/members/2`)
+  await respond(detail.requests[3], 200, success({ ...member, status: 'disabled' }))
+  await write
+  assert.equal(detail.page.memberData.value.status, 'disabled')
+  assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
+})
+
+// Django 管理內容列表要帶明確範圍，詳情頁也提供返回原管理入口。
+test('Django managed content lists and detail return links', async (t) => {
+  const content = { id: 7, title: '下架文章', body: '保留的內容', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'django', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }
+  const articleList = app('/vue/admin/articles', '', 'admin-token', auth.BACKENDS.django)
+  t.after(articleList.close)
+  await respond(articleList.requests[0], 200, success(administrator))
+  assert.equal(articleList.requests[1].url, `${auth.BACKENDS.django}/api/articles?page=1&per_page=20&filters%5Bscope%5D=management`)
+  await respond(articleList.requests[1], 200, list([content]))
+  assert.match(await rendered(articleList.page), /href="\/vue\/articles\/7"/)
+
+  const commentsList = app('/vue/admin/comments', '', 'admin-token', auth.BACKENDS.django)
+  t.after(commentsList.close)
+  await respond(commentsList.requests[0], 200, success(administrator))
+  assert.equal(commentsList.requests[1].url, `${auth.BACKENDS.django}/api/comments?page=1&per_page=20`)
+  await respond(commentsList.requests[1], 200, list([{ ...content, id: 9, article_id: 7 }]))
+  assert.match(await rendered(commentsList.page), /href="\/vue\/comments\/9"/)
+
+  const articleDetail = app('/vue/articles/7', '', 'admin-token', auth.BACKENDS.django)
+  t.after(articleDetail.close)
+  await respond(articleDetail.requests[0], 200, success(administrator))
+  await respond(articleDetail.requests[1], 200, success(content))
+  assert.match(await rendered(articleDetail.page), /href="\/vue\/admin\/articles"[^>]*>返回文章管理<\/a>/)
+
+  const commentDetail = app('/vue/comments/9', '', 'admin-token', auth.BACKENDS.django)
+  t.after(commentDetail.close)
+  await respond(commentDetail.requests[0], 200, success(administrator))
+  await respond(commentDetail.requests[1], 200, success({ ...content, id: 9, article_id: 7 }))
+  assert.match(await rendered(commentDetail.page), /href="\/vue\/admin\/comments"[^>]*>返回留言管理<\/a>/)
+})
+
+// Django 設定只供管理員操作，完整 PUT 後以同後端 GET 的值更新畫面。
+test('Django lockout settings authorize and read back full update', async (t) => {
+  const denied = app('/vue/admin/settings/login-lockout', '', 'member-token', auth.BACKENDS.django)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  assert.doesNotMatch(await rendered(denied.page), /儲存完整設定/)
+
+  const settings = app('/vue/admin/settings/login-lockout', '', 'admin-token', auth.BACKENDS.django)
+  t.after(settings.close)
+  await respond(settings.requests[0], 200, success(administrator))
+  assert.equal(settings.requests[1].url, `${auth.BACKENDS.django}/api/settings/login-lockout`)
+  await respond(settings.requests[1], 200, success(lockout))
+  assert.match(await rendered(settings.page), /儲存完整設定/)
+  settings.page.lockoutDraft.value.window_minutes = 10
+  const write = settings.page.submitLockoutSettings()
+  assert.equal(settings.requests[2].url, `${auth.BACKENDS.django}/api/settings/login-lockout`)
+  assert.deepEqual(JSON.parse(settings.requests[2].body), { ...lockout, window_minutes: 10 })
+  await respond(settings.requests[2], 200, success({}))
+  assert.equal(settings.requests[3].url, `${auth.BACKENDS.django}/api/settings/login-lockout`)
+  await respond(settings.requests[3], 200, success({ ...lockout, window_minutes: 10 }))
+  await write
+  assert.match(await rendered(settings.page), /已重新讀取並顯示目前伺服器設定/)
 })
 
 // 使用 Vue 正式模板條件產生 HTML，驗證提示和導覽是否真的出現在畫面。
