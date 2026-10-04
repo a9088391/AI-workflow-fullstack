@@ -94,6 +94,7 @@ internal static class ApiInput
                     var maximum = field == "title" ? 200 : fields.Contains("title", StringComparer.Ordinal) ? 20000 : 2000;
                     if (field is "title" or "body" && !Rules.ValidContent(raw, maximum)) errors[field] = ["欄位格式或範圍不正確"];
                     if (field == "visibility" && raw is not ("visible" or "hidden")) errors[field] = ["欄位格式或範圍不正確"];
+                    if (field == "status" && raw is not ("active" or "disabled")) errors[field] = ["欄位格式或範圍不正確"];
                 }
             }
             // 未知名稱即使重複仍是未支援欄位，不把 JSON Body 當作 Query 重複參數。
@@ -120,7 +121,7 @@ internal static class ApiInput
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (name, _) in Pairs(request))
+        foreach (var (name, _, _) in Pairs(request))
         {
             var key = ErrorKey(name);
             errors[key] = [seen.Add(name) ? "不支援此欄位" : "此參數不可重複"];
@@ -135,33 +136,78 @@ internal static class ApiInput
         return Pairs(request).Any(pair => pair.Name == "filters[scope]" && pair.Value == "management");
     }
 
-    /// <summary>列表必填 page/per_page；重複、未知、陣列與不合法 scope 均按共同文案回報。</summary>
-    internal static (long Page, int PerPage, string? Scope) ListQuery(HttpRequest request, bool allowScope)
+    /// <summary>列表必填 page/per_page；管理 scope 與會員 keyword 各依端點白名單和共同文案驗證。</summary>
+    internal static (long Page, int PerPage, string? Filter) ListQuery(HttpRequest request, bool allowScope, bool allowKeyword = false)
     {
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
         // 先辨識巢狀欄名與重複參數，避免框架把陣列 Query 當成合法純文字。
-        foreach (var (name, value) in Pairs(request))
+        foreach (var (name, value, validValue) in Pairs(request))
         {
-            var canonical = name.StartsWith("page[", StringComparison.Ordinal) ? "page" : name.StartsWith("per_page[", StringComparison.Ordinal) ? "per_page" : name.StartsWith("filters[scope][", StringComparison.Ordinal) ? "filters[scope]" : name;
-            var allowed = canonical is "page" or "per_page" || allowScope && canonical == "filters[scope]";
+            var canonical = name.StartsWith("page[", StringComparison.Ordinal) ? "page" : name.StartsWith("per_page[", StringComparison.Ordinal) ? "per_page" : name.StartsWith("filters[scope][", StringComparison.Ordinal) ? "filters[scope]" : name.StartsWith("filters[keyword][", StringComparison.Ordinal) ? "filters[keyword]" : name;
+            var allowed = canonical is "page" or "per_page" || allowScope && canonical == "filters[scope]" || allowKeyword && canonical == "filters[keyword]";
             var key = ErrorKey(canonical);
             if (values.ContainsKey(canonical)) errors[key] = ["此參數不可重複"];
             else if (canonical != name && allowed) errors[key] = ["欄位型態不正確"];
             else if (!allowed) errors[key] = ["不支援此欄位"];
+            else if (allowKeyword && canonical == "filters[keyword]" && !validValue) errors[key] = ["欄位格式或範圍不正確"];
             values[canonical] = value;
         }
-        // 再驗必填數字與可選 scope；不合法 Query 一律不進入資料庫列表查詢。
+        // 再驗必填數字與可選篩選值；不合法 Query 一律不進入資料庫列表查詢。
         foreach (var name in new[] { "page", "per_page" })
         {
             if (!values.TryGetValue(name, out var value)) errors[name] = ["此欄位為必填"];
             else if (!errors.ContainsKey(name) && (!Rules.TryId(value, out var number) || name == "per_page" && number > 100)) errors[name] = ["欄位格式或範圍不正確"];
         }
         if (allowScope && values.TryGetValue("filters[scope]", out var scope) && !errors.ContainsKey("filters.scope") && scope != "management") errors["filters.scope"] = ["欄位格式或範圍不正確"];
+        if (allowKeyword && values.TryGetValue("filters[keyword]", out var keyword) && !errors.ContainsKey("filters.keyword"))
+        {
+            // 只裁切 U+0020，拒絕 PostgreSQL text 無法儲存的 NUL 與超長關鍵字。
+            keyword = keyword.Trim(' ');
+            if (keyword.Contains('\0') || keyword.EnumerateRunes().Count() > 254) errors["filters.keyword"] = ["欄位格式或範圍不正確"];
+            values["filters[keyword]"] = keyword;
+        }
         if (errors.Count > 0) throw new ApiFailure("E0001", errors);
         Rules.TryId(values["page"], out var page);
         Rules.TryId(values["per_page"], out var perPage);
-        return (page, (int)perPage, values.GetValueOrDefault("filters[scope]"));
+        return (page, (int)perPage, values.GetValueOrDefault(allowKeyword ? "filters[keyword]" : "filters[scope]"));
+    }
+
+    /// <summary>管理設定以 JSON 最後同名鍵為準，嚴格驗四欄原生型態及範圍。</summary>
+    internal static async Task<(bool Enabled, int WindowMinutes, int FailureThreshold, int LockSeconds)> SettingsBodyAsync(HttpRequest request, CancellationToken cancellationToken)
+    {
+        await using var stream = new MemoryStream();
+        await request.Body.CopyToAsync(stream, cancellationToken);
+        if (stream.Length == 0 || !string.Equals(request.ContentType?.Split(';', 2)[0].Trim(), "application/json", StringComparison.OrdinalIgnoreCase))
+            throw Invalid("_body", "Request Body 必須為 JSON object");
+        JsonDocument document;
+        try { document = JsonDocument.Parse(stream.ToArray()); }
+        catch (JsonException) { throw new ApiFailure("E0005"); }
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object) throw Invalid("_body", "Request Body 必須為 JSON object");
+            var properties = document.RootElement.EnumerateObject().ToArray();
+            var fields = new[] { "enabled", "window_minutes", "failure_threshold", "lock_seconds" };
+            var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            var values = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            // JSON object 同名鍵採最後一筆；每個欄位仍依必填、null、型態、範圍先後裁決。
+            foreach (var property in properties)
+            {
+                if (fields.Contains(property.Name, StringComparer.Ordinal)) values[property.Name] = property.Value;
+                else errors[property.Name] = ["不支援此欄位"];
+            }
+            foreach (var field in fields)
+            {
+                if (!values.TryGetValue(field, out var value)) errors[field] = ["此欄位為必填"];
+                else if (value.ValueKind == JsonValueKind.Null) errors[field] = ["此欄位不可為 null"];
+                // 原始數字只接受整數字元，排除小數與指數表示法，維持共同的 JSON integer 型態判定。
+                else if (field == "enabled" ? value.ValueKind is not (JsonValueKind.True or JsonValueKind.False) : value.ValueKind != JsonValueKind.Number || value.GetRawText().Any(c => c is not ('-' or >= '0' and <= '9')) || !value.TryGetInt64(out _)) errors[field] = ["欄位型態不正確"];
+                // PHP json_decode 在 64-bit 整數範圍內保留 integer 型態；超過設定上限才屬範圍錯誤。
+                else if (field != "enabled" && (value.GetInt64() < 1 || value.GetInt64() > (field == "window_minutes" ? 60 : field == "failure_threshold" ? 100 : 86400))) errors[field] = ["欄位格式或範圍不正確"];
+            }
+            if (errors.Count > 0) throw new ApiFailure("E0001", errors);
+            return (values["enabled"].GetBoolean(), values["window_minutes"].GetInt32(), values["failure_threshold"].GetInt32(), values["lock_seconds"].GetInt32());
+        }
     }
 
     /// <summary>路徑 ID 的無效字元與超出安全整數範圍都回欄位驗證錯誤。</summary>
@@ -171,23 +217,45 @@ internal static class ApiInput
         return id;
     }
 
-    /// <summary>原始 Query 逐對解碼，保留重複欄位並將無效 UTF-8 名稱轉為安全錯誤鍵。</summary>
-    private static IEnumerable<(string Name, string Value)> Pairs(HttpRequest request)
+    /// <summary>原始 Query 逐對解碼並保留重複欄位；無效 UTF-8 名稱保留原編碼供安全定位。</summary>
+    private static IEnumerable<(string Name, string Value, bool ValueValid)> Pairs(HttpRequest request)
     {
         var raw = request.QueryString.Value?.TrimStart('?') ?? "";
         if (raw == "") yield break;
         foreach (var pair in raw.Split('&'))
         {
             var parts = pair.Split('=', 2);
-            yield return (Decode(parts[0]), Decode(parts.Length == 2 ? parts[1] : ""));
+            var encodedValue = parts.Length == 2 ? parts[1] : "";
+            yield return (Decode(parts[0]), Decode(encodedValue), ValidUtf8(encodedValue));
         }
     }
 
     /// <summary>Query 使用表單 URL 解碼；無效 bytes 保留原百分號文字供安全顯示。</summary>
     private static string Decode(string encoded)
     {
-        var decoded = WebUtility.UrlDecode(encoded);
-        return decoded.Contains('\uFFFD') ? encoded : decoded;
+        return ValidUtf8(encoded) ? WebUtility.UrlDecode(encoded) : encoded;
+    }
+
+    /// <summary>驗證百分號編碼後的 UTF-8 bytes，區分無效位元組與合法的 U+FFFD、字面 %FF。</summary>
+    private static bool ValidUtf8(string encoded)
+    {
+        var bytes = new List<byte>();
+        for (var i = 0; i < encoded.Length; i++)
+        {
+            if (encoded[i] == '%' && i + 2 < encoded.Length && Uri.IsHexDigit(encoded[i + 1]) && Uri.IsHexDigit(encoded[i + 2]))
+            {
+                bytes.Add(Convert.ToByte(encoded.Substring(i + 1, 2), 16));
+                i += 2;
+            }
+            else
+            {
+                if (!Rune.TryGetRuneAt(encoded, i, out var rune)) return false;
+                bytes.AddRange(Encoding.UTF8.GetBytes(rune.ToString()));
+                i += rune.Utf16SequenceLength - 1;
+            }
+        }
+        try { new UTF8Encoding(false, true).GetString([.. bytes]); return true; }
+        catch (DecoderFallbackException) { return false; }
     }
 
     /// <summary>巢狀 filters 名稱在錯誤物件中使用點號，其餘維持原名稱。</summary>

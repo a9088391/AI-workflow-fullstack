@@ -36,6 +36,30 @@ await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":2,\"version\":
 await ExpectContentFailureAsync("{\"body\":\"a\",\"unexpected\":1}", ["body"], "unexpected", "不支援此欄位");
 await ExpectContentFailureAsync("{\"body\":\"a\",\"unexpected\":1,\"unexpected\":2}", ["body"], "unexpected", "不支援此欄位");
 await ExpectContentFailureAsync("{}", ["body"], "body", "此欄位為必填");
+// 管理端點必須保留字面搜尋與嚴格 Body 型態；重複 JSON 鍵依最後一筆裁決。
+var memberQuery = MemberQuery("?page=2&per_page=1&filters%5Bkeyword%5D=%20A%25_%5C%E9%99%B3%20");
+Check(memberQuery.Page == 2 && memberQuery.PerPage == 1 && memberQuery.Filter == "A%_\\陳", "member keyword literal preservation");
+await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=a&filters%5Bkeyword%5D=b", "filters.keyword", "此參數不可重複");
+await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D%5B0%5D=a", "filters.keyword", "欄位型態不正確");
+await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=%00", "filters.keyword", "欄位格式或範圍不正確");
+// 無效 UTF-8 位元組不可搜尋；合法字面百分號序列及 U+FFFD 仍保留原文。
+await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=%FF", "filters.keyword", "欄位格式或範圍不正確");
+Check(MemberQuery("?page=1&per_page=20&filters%5Bkeyword%5D=%25FF").Filter == "%FF", "literal percent keyword remains valid");
+Check(MemberQuery("?page=1&per_page=20&filters%5Bkeyword%5D=%EF%BF%BD").Filter == "\uFFFD", "valid replacement character keyword remains valid");
+await ExpectQueryFailureAsync("?page=1&per_page=20&%FF=x", "%FF", "不支援此欄位");
+await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=" + new string('x', 255), "filters.keyword", "欄位格式或範圍不正確");
+var status = await ParseContentAsync("{\"status\":\"active\",\"status\":\"disabled\"}", ["status"]);
+Check(status.Text["status"] == "disabled", "member status final duplicate key");
+await ExpectContentFailureAsync("{\"status\":\"blocked\"}", ["status"], "status", "欄位格式或範圍不正確");
+var settings = await ParseSettingsAsync("{\"enabled\":true,\"enabled\":false,\"window_minutes\":5,\"failure_threshold\":5,\"lock_seconds\":300}");
+Check(!settings.Enabled && settings.WindowMinutes == 5 && settings.FailureThreshold == 5 && settings.LockSeconds == 300, "settings final duplicate key and exact fields");
+await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":1.0,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位型態不正確");
+// PHP 的 64-bit JSON 整數即使超過 Int32，仍屬範圍錯誤；超過 Int64 才是型態錯誤。
+await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":2147483648,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位格式或範圍不正確");
+await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":9223372036854775808,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位型態不正確");
+await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":0,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位格式或範圍不正確");
+await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":5,\"failure_threshold\":5,\"lock_seconds\":300,\"extra\":1}", "extra", "不支援此欄位");
+await ExpectSettingsFailureAsync("{\"enabled\":null,\"window_minutes\":5,\"failure_threshold\":5,\"lock_seconds\":300}", "enabled", "此欄位不可為 null");
 
 // 驗證有效 JWT 的固定八小時、跨後端金鑰隔離與到期邊界。
 var keyFile = Path.GetTempFileName();
@@ -110,4 +134,37 @@ static async Task ExpectContentFailureAsync(string json, string[] fields, string
     try { await ParseContentAsync(json, fields); }
     catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return; }
     throw new Exception("Expected content error " + field + ": " + message);
+}
+
+/// <summary>以原始 QueryString 驗證會員搜尋解析，避免測試工具先摺疊重複參數。</summary>
+static (long Page, int PerPage, string? Filter) MemberQuery(string query)
+{
+    var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+    context.Request.QueryString = new Microsoft.AspNetCore.Http.QueryString(query);
+    return ApiInput.ListQuery(context.Request, false, true);
+}
+
+/// <summary>逐字比對會員 Query 的第一項欄位錯誤。</summary>
+static Task ExpectQueryFailureAsync(string query, string field, string message)
+{
+    try { MemberQuery(query); }
+    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return Task.CompletedTask; }
+    throw new Exception("Expected member query error " + field + ": " + message);
+}
+
+/// <summary>直接餵原始 JSON Body，確認設定型態未被 MVC model binding 轉換。</summary>
+static Task<(bool Enabled, int WindowMinutes, int FailureThreshold, int LockSeconds)> ParseSettingsAsync(string json)
+{
+    var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+    context.Request.ContentType = "application/json";
+    context.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+    return ApiInput.SettingsBodyAsync(context.Request, CancellationToken.None);
+}
+
+/// <summary>逐字比對設定 Body 的固定欄位錯誤，涵蓋 null、型態與未知欄位。</summary>
+static async Task ExpectSettingsFailureAsync(string json, string field, string message)
+{
+    try { await ParseSettingsAsync(json); }
+    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return; }
+    throw new Exception("Expected settings error " + field + ": " + message);
 }
