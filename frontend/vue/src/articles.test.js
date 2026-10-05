@@ -89,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, canComment, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, flaskPublicOnly, unsupportedOnBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -411,6 +411,153 @@ test('Django selection clears old JWT and serves public and auth routes', async 
   assert.equal(detail.requests[1].url, `${auth.BACKENDS.django}/api/articles/7/comments?page=1&per_page=20`)
   assert.equal(detail.page.canComment.value, false)
   assert.equal(detail.page.canManageVisibility.value, false)
+})
+
+// Flask 切換保留合法文章返回目標，並使晚到的 Laravel 驗權回應無法恢復舊登入。
+test('Flask selection clears prior JWT and ignores old backend response', async (t) => {
+  const switched = articleApp('/vue/articles/001', 'laravel-jwt')
+  t.after(switched.close)
+  await switched.page.chooseBackend({ target: { value: auth.BACKENDS.flask } })
+  assert.equal(auth.readBackend(switched.sessionStorage), 'http://localhost:8085')
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+  assert.equal(switched.page.backendLabel.value, 'Flask')
+  assert.equal(switched.page.canSwitchNuxt.value, false)
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+  await respond(switched.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(switched.page.account.value, null)
+
+  // 反向切換也不能把 Flask JWT 配給 Laravel。
+  const reverse = articleApp('/vue/articles/001', 'flask-jwt', '', false, auth.BACKENDS.flask)
+  t.after(reverse.close)
+  await reverse.page.chooseBackend({ target: { value: auth.BACKENDS.laravel } })
+  assert.equal(auth.readBackend(reverse.sessionStorage), auth.BACKENDS.laravel)
+  assert.equal(auth.readSession(reverse.sessionStorage), null)
+  assert.deepEqual(reverse.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+})
+
+// Nuxt 尚未接受 Flask 後端 key，選單應拒絕切換並保留目前的 Flask 憑證。
+test('Flask selection keeps Nuxt switch unavailable', (t) => {
+  const app = articleApp('/vue/', 'flask-jwt', '', false, auth.BACKENDS.flask)
+  t.after(app.close)
+  const choice = { target: { value: 'nuxt' } }
+  app.page.chooseFrontend(choice)
+  assert.equal(app.page.canSwitchNuxt.value, false)
+  assert.equal(choice.target.value, 'vue')
+  assert.deepEqual(app.redirects, [])
+  assert.equal(auth.readSession(app.sessionStorage).accessToken, 'flask-jwt')
+  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
+  assert.match(descriptor.template.content, /flaskPublicOnly \? '（此後端尚未提供）'/)
+})
+
+// Flask 註冊與登入沿用共用路徑，429 倒數期間阻擋送出，成功後只保存原 JWT 期限。
+test('Flask registration and locked login keep approved transitions', async (t) => {
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.flask)
+  t.after(registration.close)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const post = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.flask}/api/auth/register`)
+  assert.equal(registration.requests[0].method, 'POST')
+  await respond(registration.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await post
+  assert.deepEqual(registration.redirects, ['/vue/login?registered=1'])
+  assert.equal(auth.readSession(registration.sessionStorage), null)
+
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F007', false, auth.BACKENDS.flask)
+  t.after(login.close)
+  login.page.email.value = 'writer@example.test'
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const first = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.flask}/api/auth/login`)
+  assert.equal(login.requests[0].method, 'POST')
+  assert.equal(login.requests[0].headers.Authorization, undefined)
+  await respond(login.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await first
+  assert.equal(login.page.locked.value, true)
+  assert.match(login.page.lockText.value, /登入暫時鎖定，約剩 01:00/)
+  await login.page.submitLogin()
+  assert.equal(login.requests.length, 1, 'Enter and button submission use the same locked guard')
+  login.page.lockDeadline.value = performance.now() - 1
+  login.page.tickLock()
+  assert.equal(login.page.locked.value, false)
+  assert.equal(login.requests.length, 1, 'countdown end never submits automatically')
+  const second = login.page.submitLogin()
+  await respond(login.requests[1], 200, { success: true, message: 'OK', data: { access_token: 'flask-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+  await second
+  assert.deepEqual(auth.readSession(login.sessionStorage), { backend: auth.BACKENDS.flask, accessToken: 'flask-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.deepEqual(login.redirects, ['/vue/articles/007'])
+})
+
+// Flask 刷新時先 GET /api/me，再讀公開文章；登出失敗保留同一 JWT，成功才清除。
+test('Flask public reading and logout use only approved endpoints', async (t) => {
+  const authenticated = articleApp('/vue/', 'flask-jwt', '', false, auth.BACKENDS.flask)
+  t.after(authenticated.close)
+  assert.equal(authenticated.requests[0].url, `${auth.BACKENDS.flask}/api/me`)
+  assert.equal(authenticated.requests[0].headers.Authorization, 'Bearer flask-jwt')
+  await respond(authenticated.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(authenticated.requests[1].url, `${auth.BACKENDS.flask}/api/articles?page=1&per_page=20`)
+  await respond(authenticated.requests[1], 200, { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
+  assert.equal(authenticated.page.articleList.value?.list[0].id, sample.id)
+  const failedLogout = authenticated.page.submitLogout()
+  assert.equal(authenticated.requests[2].url, `${auth.BACKENDS.flask}/api/auth/logout`)
+  assert.equal(authenticated.requests[2].headers.Authorization, 'Bearer flask-jwt')
+  await respond(authenticated.requests[2], 500, { success: false, error_code: 'E9999' })
+  await failedLogout
+  assert.equal(auth.readSession(authenticated.sessionStorage).accessToken, 'flask-jwt')
+  const logout = authenticated.page.submitLogout()
+  assert.equal(authenticated.requests[3].headers.Authorization, 'Bearer flask-jwt')
+  await respond(authenticated.requests[3], 200, { success: true, message: 'OK', data: {} })
+  await logout
+  assert.equal(auth.readSession(authenticated.sessionStorage), null)
+  assert.deepEqual(authenticated.redirects, ['/vue/login'])
+
+  // 訪客直接讀列表、詳情及留言，均沿用共用路徑且不攜帶 JWT。
+  const listing = articleApp('/vue/', null, '', false, auth.BACKENDS.flask)
+  t.after(listing.close)
+  assert.equal(listing.requests[0].url, `${auth.BACKENDS.flask}/api/articles?page=1&per_page=20`)
+  assert.equal(listing.requests[0].headers.Authorization, undefined)
+  const detail = articleApp('/vue/articles/007', null, '', false, auth.BACKENDS.flask)
+  t.after(detail.close)
+  assert.equal(detail.requests[0].url, `${auth.BACKENDS.flask}/api/articles/7`)
+  await respond(detail.requests[0], 200, { success: true, message: 'OK', data: sample })
+  assert.equal(detail.requests[1].url, `${auth.BACKENDS.flask}/api/articles/7/comments?page=1&per_page=20`)
+  assert.equal(detail.page.canComment.value, false)
+  assert.equal(detail.page.canEdit.value, false)
+  assert.equal(detail.page.canManageVisibility.value, false)
+
+  // 作者登入後即使可讀自己的文章，也不可顯示尚未支援的編輯與留言操作。
+  const authorDetail = articleApp('/vue/articles/007', 'flask-jwt', '', false, auth.BACKENDS.flask)
+  t.after(authorDetail.close)
+  await respond(authorDetail.requests[0], 200, { success: true, message: 'OK', data: member })
+  await respond(authorDetail.requests[1], 200, { success: true, message: 'OK', data: sample })
+  assert.equal(authorDetail.page.canEdit.value, false)
+  assert.equal(authorDetail.page.canComment.value, false)
+  assert.equal(authorDetail.page.canManageVisibility.value, false)
+})
+
+// 未支援的作者與管理深連結只顯示返回入口，不要求登入或呼叫不存在的 Flask API。
+test('Flask unsupported pages stay readable without unsupported requests', async (t) => {
+  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/admin/members']) {
+    const app = articleApp(path, null, '', false, auth.BACKENDS.flask)
+    t.after(app.close)
+    assert.equal(app.page.unsupportedOnBackend.value, true, path)
+    assert.deepEqual(app.redirects, [], path)
+    assert.equal(app.requests.length, 0, path)
+  }
+  // 已登入者只做共用 /api/me 驗權，不因深連結再要求不存在的內容 API。
+  const signedIn = articleApp('/vue/admin/members', 'flask-jwt', '', false, auth.BACKENDS.flask)
+  t.after(signedIn.close)
+  assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.flask}/api/me`)
+  await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
+  assert.equal(signedIn.requests.length, 1)
+  assert.equal(signedIn.page.unsupportedOnBackend.value, true)
+  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
+  assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
+  assert.match(descriptor.template.content, /v-if="unsupportedOnBackend"[^>]*>.*此後端尚未提供此頁/s)
+  assert.match(descriptor.template.content, /v-if="!flaskPublicOnly"/)
+  assert.match(descriptor.template.content, /v-if="!flaskPublicOnly && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // Django 作者與管理頁都須先驗證身分，再以同一後端的共同 API 路徑讀取。

@@ -2,7 +2,7 @@ import { normalizeEmail, validEmail } from './registration.js'
 
 export const API_BASE = 'http://localhost:8081'
 export const BACKEND_KEY = 'article-collection.backend.v1'
-export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084' }
+export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084', flask: 'http://localhost:8085' }
 // 六版前端共用此 key／schema：只存目前後端、JWT 與原到期時間，絕不快取帳號資料。
 export const SESSION_KEY = 'article-collection.auth.v1'
 

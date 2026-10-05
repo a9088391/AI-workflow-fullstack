@@ -25,7 +25,8 @@ class AuthController extends Controller
         }
 
         // ponytail: 核准的設定單列鎖限制登入吞吐量；高流量時再評估按帳號細分。
-        return DB::transaction(function () use ($body): JsonResponse {
+        // 交易只回傳鎖定到期時間；提交後才依新時間產生 Retry-After，避免回報已流逝秒數。
+        $outcome = DB::transaction(function () use ($body): JsonResponse|CarbonImmutable {
             $settings = DB::table('login_lockout_settings')->where('id', 1)->lockForUpdate()->first();
             if ($settings === null) {
                 throw new AuthFailure('E0104');
@@ -43,7 +44,7 @@ class AuthController extends Controller
             if ($account->role === 'member' && $account->locked_until !== null) {
                 $until = CarbonImmutable::parse($account->locked_until);
                 if ($settings->enabled && $now->lessThan($until)) {
-                    return $this->locked($now, $until);
+                    return $until;
                 }
                 $account->failure_epoch++;
                 DB::table('accounts')->where('id', $account->id)->update(['failure_epoch' => $account->failure_epoch, 'locked_until' => null]);
@@ -60,7 +61,7 @@ class AuthController extends Controller
                         $until = $now->addSeconds($settings->lock_seconds);
                         DB::table('accounts')->where('id', $account->id)->update(['locked_until' => $this->timestamp($until)]);
 
-                        return $this->locked($now, $until);
+                        return $until;
                     }
                 }
 
@@ -77,6 +78,8 @@ class AuthController extends Controller
 
             return $this->success(['access_token' => $token, 'token_type' => 'Bearer', 'expires_at' => $this->displayTime($expires), 'user' => $this->account($account)]);
         });
+
+        return $outcome instanceof CarbonImmutable ? $this->locked($outcome) : $outcome;
     }
 
     /** 查詢目前身分但不續期；與登出共用取得鎖後的認證順序。 */
@@ -192,10 +195,12 @@ class AuthController extends Controller
         return ['id' => (int) $account->id, 'email' => $account->email, 'nickname' => $account->nickname, 'role' => $account->role, 'status' => $account->status, 'created_at' => $this->displayTime(CarbonImmutable::parse($account->created_at))];
     }
 
-    /** 以原到期時間計算剩餘秒數，重試不延長鎖定。 */
-    private function locked(CarbonImmutable $now, CarbonImmutable $until): JsonResponse
+    /** 交易提交後取資料庫新時間計算剩餘秒數，避免將寫入與等待耗時加回倒數。 */
+    private function locked(CarbonImmutable $until): JsonResponse
     {
-        return (new AuthFailure('E0105'))->response()->header('Retry-After', (string) max(1, (int) ceil($now->diffInSeconds($until))));
+        $remaining = max(1, (int) ceil($this->now()->diffInSeconds($until)));
+
+        return (new AuthFailure('E0105'))->response()->header('Retry-After', (string) $remaining);
     }
 
     /** 維持所有驗證錯誤的固定文案與欄位陣列。 */

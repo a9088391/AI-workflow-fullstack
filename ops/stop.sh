@@ -2,5 +2,5 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-# 啟用 Django profile 以納入已啟動服務；down 不加 -v，保留資料與金鑰。
-docker compose --profile django down
+# 啟用已實作後端 profile 以納入停止範圍；不加 -v，保留資料與金鑰。
+docker compose --profile django --profile flask down

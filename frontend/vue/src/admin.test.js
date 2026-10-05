@@ -98,6 +98,20 @@ test('Django auth copy offers publishing without unsupported warnings', async (t
   assert.match(await rendered(laravelRegister.page), /會顯示在您日後發表的內容旁/)
 })
 
+// Flask 登入與暱稱說明只陳述已提供的帳號及公開閱讀能力，其他後端仍保留發表文案。
+test('Flask auth copy does not promise unsupported publishing', async (t) => {
+  const flaskLogin = app('/vue/login', '', null, auth.BACKENDS.flask)
+  const flaskRegister = app('/vue/register', '', null, auth.BACKENDS.flask)
+  t.after(flaskLogin.close)
+  t.after(flaskRegister.close)
+  const loginHtml = await rendered(flaskLogin.page)
+  const registrationHtml = await rendered(flaskRegister.page)
+  assert.match(loginHtml, /Flask 目前提供會員登入、公開文章與留言閱讀。/)
+  assert.doesNotMatch(loginHtml, /登入後即可發表文章與查看自己的文章/)
+  assert.match(registrationHtml, /會顯示為您的會員名稱。/)
+  assert.doesNotMatch(registrationHtml, /日後發表的內容旁/)
+})
+
 // Django 管理端點啟用後，管理員導覽需保留作者與全部管理入口。
 test('Django admin navigation shows author and management links', async (t) => {
   const django = app('/vue/', '', 'django-token', auth.BACKENDS.django)

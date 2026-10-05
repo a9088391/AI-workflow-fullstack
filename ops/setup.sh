@@ -12,7 +12,7 @@ cleanup() {
         printf '\n'
     fi
     if [ ! -f ".local/setup-complete-$project_name" ]; then
-        docker compose stop laravel symfony aspnet-core django frontend-vue nginx >/dev/null 2>&1 || true
+        docker compose stop laravel symfony aspnet-core django flask frontend-vue nginx >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
