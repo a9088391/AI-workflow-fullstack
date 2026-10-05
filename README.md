@@ -27,7 +27,7 @@ Django API 固定於 `http://localhost:8084`，提供全部 22 項共用操作�
 
 主 Compose 的 Django profile 讓舊票隔離 fixture 預設不啟動 Django，維持原本專用金鑰與埠；`ops/start.sh` 在一般展示與 Ticket 16 專用 fixture 明確啟動它，`ops/stop.sh` 則一併停止。
 
-Flask API 固定於 `http://localhost:8085`，目前提供註冊、登入／登出、本人及公開文章／留言閱讀；尚未提供內容寫入或管理端點。它使用獨立的 `.local/keys/flask.key`，並讀寫同一 PostgreSQL 資料。一般 `ops/start.sh` 會啟動 Flask；舊票隔離 fixture 預設不啟動。容器內可用 `python -m unittest discover -s site_api -t . -p 'test_*.py'` 執行 Flask 專屬單元測試。
+Flask API 固定於 `http://localhost:8085`，提供註冊、登入／登出、本人及公開文章／留言閱讀，以及作者發文、留言、編修、下架與恢復；管理端點尚未提供。Vue 可選用 Flask 完成作者流程，管理頁與 Nuxt 切換仍不可用。它使用獨立的 `.local/keys/flask.key`，並讀寫同一 PostgreSQL 資料。一般 `ops/start.sh` 會啟動 Flask；舊票隔離 fixture 預設不啟動。容器內可用 `python -m unittest discover -s site_api -t . -p 'test_*.py'` 執行 Flask 專屬單元測試。Ticket 20 的真實 HTTP／SQL 驗證僅可在 `ticket20_test` 隔離 Compose 專案執行，使用 `ops/tests/ticket20_compose.yaml` 與 `ops/tests/ticket20_http.py`；腳本會先核對專案、資料庫與後端身分，再建立唯一合成測資。
 
 ```sh
 COMPOSE_PROJECT_NAME=ticket16_test COMPOSE_FILE=compose.yaml:ops/tests/ticket16_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only

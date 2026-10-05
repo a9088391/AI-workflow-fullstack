@@ -18,7 +18,7 @@ backend_services="laravel symfony aspnet-core django flask"
 case "${COMPOSE_FILE:-}" in
     *ops/tests/*)
         case "${COMPOSE_FILE}" in
-            *ops/tests/ticket19_compose.yaml*) backend_services="laravel flask" ;;
+            *ops/tests/ticket19_compose.yaml*|*ops/tests/ticket20_compose.yaml*) backend_services="laravel flask" ;;
             *ops/tests/ticket16_compose.yaml*) backend_services="laravel symfony aspnet-core django" ;;
             *) backend_services="laravel symfony aspnet-core" ;;
         esac

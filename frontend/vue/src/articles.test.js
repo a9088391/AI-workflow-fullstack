@@ -89,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, flaskPublicOnly, unsupportedOnBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, flaskBackend, unsupportedOnBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -446,7 +446,7 @@ test('Flask selection keeps Nuxt switch unavailable', (t) => {
   assert.deepEqual(app.redirects, [])
   assert.equal(auth.readSession(app.sessionStorage).accessToken, 'flask-jwt')
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /flaskPublicOnly \? '（此後端尚未提供）'/)
+  assert.match(descriptor.template.content, /flaskBackend \? '（此後端尚未提供）'/)
 })
 
 // Flask 註冊與登入沿用共用路徑，429 倒數期間阻擋送出，成功後只保存原 JWT 期限。
@@ -527,37 +527,76 @@ test('Flask public reading and logout use only approved endpoints', async (t) =>
   assert.equal(detail.page.canEdit.value, false)
   assert.equal(detail.page.canManageVisibility.value, false)
 
-  // 作者登入後即使可讀自己的文章，也不可顯示尚未支援的編輯與留言操作。
+  // Flask 作者驗權並讀到自己的公開文章後，可以進入共用編輯、留言與可見性流程。
   const authorDetail = articleApp('/vue/articles/007', 'flask-jwt', '', false, auth.BACKENDS.flask)
   t.after(authorDetail.close)
   await respond(authorDetail.requests[0], 200, { success: true, message: 'OK', data: member })
   await respond(authorDetail.requests[1], 200, { success: true, message: 'OK', data: sample })
-  assert.equal(authorDetail.page.canEdit.value, false)
-  assert.equal(authorDetail.page.canComment.value, false)
-  assert.equal(authorDetail.page.canManageVisibility.value, false)
+  assert.equal(authorDetail.page.canEdit.value, true)
+  assert.equal(authorDetail.page.canComment.value, true)
+  assert.equal(authorDetail.page.canManageVisibility.value, true)
 })
 
-// 未支援的作者與管理深連結只顯示返回入口，不要求登入或呼叫不存在的 Flask API。
-test('Flask unsupported pages stay readable without unsupported requests', async (t) => {
-  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/admin/members']) {
+// Flask 作者深連結須先登入；管理深連結仍不呼叫尚未實作的 API。
+test('Flask author routes verify identity while management remains unavailable', async (t) => {
+  const authorRoutes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+  ])
+  for (const [path, endpoint] of authorRoutes) {
     const app = articleApp(path, null, '', false, auth.BACKENDS.flask)
     t.after(app.close)
-    assert.equal(app.page.unsupportedOnBackend.value, true, path)
-    assert.deepEqual(app.redirects, [], path)
+    assert.equal(app.page.unsupportedOnBackend.value, false, path)
     assert.equal(app.requests.length, 0, path)
+    assert.deepEqual(app.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    const signedIn = articleApp(path, 'flask-jwt', '', false, auth.BACKENDS.flask)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.flask}/api/me`, path)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.flask}${endpoint}`, path)
   }
-  // 已登入者只做共用 /api/me 驗權，不因深連結再要求不存在的內容 API。
-  const signedIn = articleApp('/vue/admin/members', 'flask-jwt', '', false, auth.BACKENDS.flask)
-  t.after(signedIn.close)
-  assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.flask}/api/me`)
-  await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
-  assert.equal(signedIn.requests.length, 1)
-  assert.equal(signedIn.page.unsupportedOnBackend.value, true)
+  // 所有管理語意頁仍維持門禁；已有管理員 JWT 也不能讀取 Ticket 21 API。
+  for (const path of ['/vue/admin/members', '/vue/admin/members/9', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
+    const adminGuest = articleApp(path, null, '', false, auth.BACKENDS.flask)
+    t.after(adminGuest.close)
+    assert.equal(adminGuest.page.unsupportedOnBackend.value, true, path)
+    assert.equal(adminGuest.requests.length, 0, path)
+    assert.deepEqual(adminGuest.redirects, [], path)
+    const signedIn = articleApp(path, 'flask-jwt', '', false, auth.BACKENDS.flask)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.flask}/api/me`, path)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
+    assert.equal(signedIn.requests.length, 1, path)
+    assert.equal(signedIn.page.unsupportedOnBackend.value, true, path)
+  }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
   assert.match(descriptor.template.content, /v-if="unsupportedOnBackend"[^>]*>.*此後端尚未提供此頁/s)
-  assert.match(descriptor.template.content, /v-if="!flaskPublicOnly"/)
-  assert.match(descriptor.template.content, /v-if="!flaskPublicOnly && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /account\.role === 'admin' && !flaskBackend/)
+  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+})
+
+// Flask 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在同一作者頁發文。
+test('Flask member and admin publish to the first my articles page', async (t) => {
+  for (const actor of [member, { ...member, role: 'admin' }]) {
+    const app = articleApp('/vue/articles/new', 'flask-jwt', '', false, auth.BACKENDS.flask)
+    t.after(app.close)
+    await respond(app.requests[0], 200, { success: true, message: 'OK', data: actor })
+    app.page.articleTitle.value = 'Flask 標題'
+    app.page.articleBody.value = '原文\r\n第二行'
+    const write = app.page.submitArticle()
+    assert.equal(app.requests[1].url, `${auth.BACKENDS.flask}/api/articles`)
+    assert.equal(app.requests[1].method, 'POST')
+    assert.deepEqual(JSON.parse(app.requests[1].body), { title: 'Flask 標題', body: '原文\r\n第二行' })
+    await respond(app.requests[1], 201, { success: true, message: 'OK', data: {} })
+    await write
+    assert.deepEqual(app.redirects, ['/vue/me/articles?published=1'])
+  }
 })
 
 // Django 作者與管理頁都須先驗證身分，再以同一後端的共同 API 路徑讀取。

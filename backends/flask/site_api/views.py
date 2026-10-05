@@ -12,7 +12,7 @@ import psycopg
 from flask import Flask, Response, g, make_response, request
 
 from .core import (
-    ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, TYPE,
+    ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, SPACE, TYPE,
     account_resource, authenticate, b64url, business_time, connect,
     content_resource, failure, issue_token, normalize_email, password_hash,
     reject_non_json_number, success, valid_email, valid_nickname, verify_password,
@@ -98,9 +98,14 @@ def create_app():
         ("/api/auth/login", login, ("POST",)),
         ("/api/auth/logout", logout, ("POST",)),
         ("/api/me", me, ("GET",)),
-        ("/api/articles", articles, ("GET",)),
-        ("/api/articles/<article_id>", article, ("GET",)),
-        ("/api/articles/<article_id>/comments", comments, ("GET",)),
+        ("/api/articles", articles, ("GET", "POST")),
+        ("/api/articles/<article_id>", article, ("GET", "PUT")),
+        ("/api/articles/<article_id>/visibility", article_visibility, ("PUT",)),
+        ("/api/articles/<article_id>/comments", comments, ("GET", "POST")),
+        ("/api/me/articles", my_articles, ("GET",)),
+        ("/api/me/comments", my_comments, ("GET",)),
+        ("/api/comments/<comment_id>", comment, ("GET", "PUT")),
+        ("/api/comments/<comment_id>/visibility", comment_visibility, ("PUT",)),
     )
     for path, view, methods in routes:
         app.add_url_rule(path, view_func=view, methods=(*methods, "OPTIONS"), provide_automatic_options=False)
@@ -211,8 +216,8 @@ def parse_json_integer(value):
     return int(value)
 
 
-# 直接解析 UTF-8 JSON，並以共用順序驗證註冊、登入與登出欄位。
-def json_body(request, fields, empty_allowed=False):
+# 直接解析 UTF-8 JSON，依共用順序驗證帳號與內容欄位及型態。
+def json_body(request, fields, empty_allowed=False, content_limits=None):
     raw = request.get_data(cache=True)
     if empty_allowed and not raw:
         return {}
@@ -252,7 +257,9 @@ def json_body(request, fields, empty_allowed=False):
             errors[field] = [REQUIRED]
         elif body[field] is None:
             errors[field] = [NULL]
-        elif type(body[field]) is not str:
+        elif type(body[field]) is OversizedJsonInteger:
+            errors[field] = [INVALID if field == "version" else TYPE]
+        elif type(body[field]) is not (int if field == "version" and content_limits is not None else str):
             errors[field] = [TYPE]
     for field in body:
         if field not in fields:
@@ -265,6 +272,20 @@ def json_body(request, fields, empty_allowed=False):
         errors["password"] = [INVALID]
     if "nickname" in fields and "nickname" not in errors and not valid_nickname(body["nickname"]):
         errors["nickname"] = [INVALID]
+    # 內容保留原文字與換行，只拒絕超界、NUL 及固定集合的全空白。
+    if content_limits is not None:
+        for field, limit in content_limits.items():
+            if field in errors:
+                continue
+            value = body[field]
+            if field == "version":
+                valid = 1 <= value <= 9007199254740991
+            elif field == "visibility":
+                valid = value in ("visible", "hidden")
+            else:
+                valid = 1 <= len(value) <= limit and "\0" not in value and any(char not in SPACE for char in value)
+            if not valid:
+                errors[field] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
     return body
@@ -305,6 +326,42 @@ def pagination(page, per_page, total):
         "page": page, "per_page": per_page, "total": total,
         "total_pages": (total + per_page - 1) // per_page,
     }
+
+
+# 寫入交易依帳號、session 順序鎖列再重驗，與登出及停用明確排序。
+def authenticate_write(request, connection):
+    account, claims = authenticate(request, connection)
+    connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
+    connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+    return authenticate(request, connection)[0]
+
+
+# 先比版本，即使提交同值也拒絕過期；實際變更才增加版本與時間。
+def save_content(connection, table, row, version, changes):
+    if row["version"] != version:
+        raise ApiError("E0201")
+    if all(row[key] == value for key, value in changes.items()):
+        return
+    columns = list(changes)
+    assignments = ", ".join(f"{column} = %s" for column in columns)
+    result = connection.execute(
+        f"UPDATE {table} SET {assignments}, version = version + 1, updated_at = clock_timestamp() "
+        "WHERE id = %s AND version = %s",
+        (*[changes[column] for column in columns], row["id"], version),
+    )
+    if result.rowcount != 1:
+        raise ApiError("E0201")
+
+
+# 作者只能恢復自行下架內容；管理員下架他人內容會取得恢復權。
+def visibility_changes(row, viewer, visibility):
+    own = viewer["id"] == row["author_id"]
+    if visibility == "visible" and row["visibility"] == "hidden" and viewer["role"] != "admin" and row["restore_control"] != "author":
+        raise ApiError("E0003")
+    control = None if visibility == "visible" else row["restore_control"] or "author"
+    if visibility == "hidden" and viewer["role"] == "admin" and not own:
+        control = "admin"
+    return {"visibility": visibility, "restore_control": control}
 
 
 
@@ -428,9 +485,23 @@ def me(request):
         return success(account_resource(account))
 
 
-# 預設只見公開文章；明確管理範圍才檢查管理員角色並包含下架內容。
-@api("GET")
+# 公開列表維持原有範圍；POST 則在重驗登入的交易建立作者文章。
+@api(("GET", "POST"))
 def articles(request):
+    if request.method == "POST":
+        with connect() as connection:
+            viewer = authenticate_write(request, connection)
+            no_query(request)
+            body = json_body(request, ("title", "body"), content_limits={"title": 200, "body": 20000})
+            # 同一資料庫時刻建立兩個時間欄，作者和來源由後端指定。
+            connection.execute(
+                "INSERT INTO articles (author_id, title, body, visibility, restore_control, version, "
+                "created_backend, created_at, updated_at) "
+                "SELECT %s, %s, %s, 'visible', NULL, 1, 'flask', now, now "
+                "FROM (SELECT clock_timestamp() AS now) AS stamp",
+                (viewer["id"], body["title"], body["body"]),
+            )
+        return success(status=201)
     with connect() as connection:
         management = management_requested(request)
         identity = authenticate(request, connection, required=management)
@@ -455,9 +526,11 @@ def articles(request):
         })
 
 
-# 詳情對訪客與非作者隱藏下架文章。
-@api("GET")
+# 詳情隱藏無權讀取的下架文章；PUT 進入作者編修交易。
+@api(("GET", "PUT"))
 def article(request, article_id):
+    if request.method == "PUT":
+        return mutate_article(request, article_id, visibility=False)
     with connect() as connection:
         identity = authenticate(request, connection, required=False)
         viewer = identity[0] if identity else None
@@ -477,9 +550,31 @@ def article(request, article_id):
         return success(content_resource(row, viewer, "article"))
 
 
-# 先確認父文章可讀，再依角色列出可見留言，避免父文章資訊外洩。
-@api("GET")
+# GET 先確認父文章可讀；POST 鎖同一父文章以和下架序列化。
+@api(("GET", "POST"))
 def comments(request, article_id):
+    if request.method == "POST":
+        with connect() as connection:
+            viewer = authenticate_write(request, connection)
+            no_query(request)
+            content_id = url_integer(article_id, "article_id")
+            body = json_body(request, ("body",), content_limits={"body": 2000})
+            parent = connection.execute(
+                "SELECT author_id, visibility FROM articles WHERE id = %s FOR UPDATE", (content_id,)
+            ).fetchone()
+            if parent is None or (parent["visibility"] == "hidden" and viewer["role"] != "admin" and viewer["id"] != parent["author_id"]):
+                raise ApiError("E0004")
+            if parent["visibility"] == "hidden":
+                raise ApiError("E0003")
+            # 父文章仍公開才在相同交易新增，避免與並行下架交錯。
+            connection.execute(
+                "INSERT INTO comments (article_id, author_id, body, visibility, restore_control, version, "
+                "created_backend, created_at, updated_at) "
+                "SELECT %s, %s, %s, 'visible', NULL, 1, 'flask', now, now "
+                "FROM (SELECT clock_timestamp() AS now) AS stamp",
+                (content_id, viewer["id"], body["body"]),
+            )
+        return success(status=201)
     with connect() as connection:
         identity = authenticate(request, connection, required=False)
         viewer = identity[0] if identity else None
@@ -508,3 +603,118 @@ def comments(request, article_id):
             "list": [content_resource(row, viewer, "comment") for row in rows],
             "pagination": pagination(page, per_page, total),
         })
+
+
+# 我的文章只按目前帳號篩選，包含自行或管理員下架內容。
+@api("GET")
+def my_articles(request):
+    return my_content(request, "articles", ARTICLE_COLUMNS, "article")
+
+
+# 我的留言不讀父文章內文；父文章下架仍可列自己的留言。
+@api("GET")
+def my_comments(request):
+    return my_content(request, "comments", COMMENT_COLUMNS, "comment")
+
+
+# 精確計數及排序分頁留給資料庫，避免整表載入或逐筆查詢。
+def my_content(request, table, columns, kind):
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        page, per_page, _ = list_input(request)
+        total = connection.execute(f"SELECT count(*) FROM {table} WHERE author_id = %s", (viewer["id"],)).fetchone()["count"]
+        offset = (page - 1) * per_page
+        rows = [] if offset >= total else connection.execute(
+            f"SELECT {columns} FROM {table} JOIN accounts ON accounts.id = {table}.author_id "
+            f"WHERE {table}.author_id = %s ORDER BY {table}.created_at DESC, {table}.id DESC "
+            "LIMIT %s OFFSET %s", (viewer["id"], per_page, offset),
+        ).fetchall()
+        return success({"list": [content_resource(row, viewer, kind) for row in rows],
+                        "pagination": pagination(page, per_page, total)})
+
+
+# 文章下架和留言新增、修改同鎖文章列，權限與版本在交易內裁決。
+@api("PUT")
+def article_visibility(request, article_id):
+    return mutate_article(request, article_id, visibility=True)
+
+
+# 文章內文限作者編修；管理員可透過下架操作處理他人文章。
+def mutate_article(request, article_id, visibility):
+    with connect() as connection:
+        viewer = authenticate_write(request, connection)
+        no_query(request)
+        content_id = url_integer(article_id, "article_id")
+        fields = ("visibility", "version") if visibility else ("title", "body", "version")
+        limits = {"visibility": 0, "version": 0} if visibility else {"title": 200, "body": 20000, "version": 0}
+        body = json_body(request, fields, content_limits=limits)
+        row = connection.execute("SELECT * FROM articles WHERE id = %s FOR UPDATE", (content_id,)).fetchone()
+        if row is None or (row["visibility"] == "hidden" and viewer["role"] != "admin" and viewer["id"] != row["author_id"]):
+            raise ApiError("E0004")
+        if viewer["id"] != row["author_id"] and (not visibility or viewer["role"] != "admin"):
+            raise ApiError("E0003")
+        # 恢復資格須先於版本判定；同值與過期判定由共用儲存流程處理。
+        changes = visibility_changes(row, viewer, body["visibility"]) if visibility else {"title": body["title"], "body": body["body"]}
+        save_content(connection, "articles", row, body["version"], changes)
+    return success()
+
+
+# 留言作者即使父文章下架仍可讀自己的詳情；他人先依可見性隱藏存在。
+@api(("GET", "PUT"))
+def comment(request, comment_id):
+    if request.method == "PUT":
+        return mutate_comment(request, comment_id, visibility=False)
+    with connect() as connection:
+        viewer, _ = authenticate(request, connection)
+        no_get_body(request)
+        no_query(request)
+        content_id = url_integer(comment_id, "comment_id")
+        row = connection.execute(
+            "SELECT " + COMMENT_COLUMNS + ", articles.visibility AS article_visibility "
+            "FROM comments JOIN accounts ON accounts.id = comments.author_id "
+            "JOIN articles ON articles.id = comments.article_id WHERE comments.id = %s", (content_id,),
+        ).fetchone()
+        if row is None:
+            raise ApiError("E0004")
+        if viewer["role"] != "admin" and viewer["id"] != row["author_id"]:
+            if row["visibility"] == "hidden" or row["article_visibility"] == "hidden":
+                raise ApiError("E0004")
+            raise ApiError("E0003")
+        return success(content_resource(row, viewer, "comment"))
+
+
+# 留言下架與恢復不因父文章已下架而禁止，但不能繞過父文章可見性。
+@api("PUT")
+def comment_visibility(request, comment_id):
+    return mutate_comment(request, comment_id, visibility=True)
+
+
+# 父文章、留言依序取得列鎖；修改內文必須確認父文章仍公開。
+def mutate_comment(request, comment_id, visibility):
+    with connect() as connection:
+        viewer = authenticate_write(request, connection)
+        no_query(request)
+        content_id = url_integer(comment_id, "comment_id")
+        fields = ("visibility", "version") if visibility else ("body", "version")
+        limits = {"visibility": 0, "version": 0} if visibility else {"body": 2000, "version": 0}
+        body = json_body(request, fields, content_limits=limits)
+        # 先讀父 ID 而不鎖留言，之後先鎖文章再鎖留言；鎖後複核關聯。
+        initial = connection.execute("SELECT article_id FROM comments WHERE id = %s", (content_id,)).fetchone()
+        parent = None if initial is None else connection.execute(
+            "SELECT id, visibility FROM articles WHERE id = %s FOR UPDATE", (initial["article_id"],)
+        ).fetchone()
+        row = None if parent is None else connection.execute(
+            "SELECT * FROM comments WHERE id = %s FOR UPDATE", (content_id,)
+        ).fetchone()
+        if row is None or row["article_id"] != parent["id"] or (
+            viewer["role"] != "admin" and viewer["id"] != row["author_id"]
+            and (row["visibility"] == "hidden" or parent["visibility"] == "hidden")
+        ):
+            raise ApiError("E0004")
+        if (viewer["id"] != row["author_id"] and (not visibility or viewer["role"] != "admin")) or (
+            not visibility and parent["visibility"] == "hidden"
+        ):
+            raise ApiError("E0003")
+        changes = visibility_changes(row, viewer, body["visibility"]) if visibility else {"body": body["body"]}
+        save_content(connection, "comments", row, body["version"], changes)
+    return success()
