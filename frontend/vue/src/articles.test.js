@@ -89,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, flaskBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, commentList, account, credential, backend, backendLabel, flaskBackend, fastapiBackend, unsupportedFastapiPage, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -561,7 +561,130 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="!fastapiBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+})
+
+// FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
+test('FastAPI selection clears prior JWT and ignores old backend response', async (t) => {
+  const switched = articleApp('/vue/articles/001', 'laravel-jwt')
+  t.after(switched.close)
+  await switched.page.chooseBackend({ target: { value: auth.BACKENDS.fastapi } })
+  assert.equal(auth.readBackend(switched.sessionStorage), auth.BACKENDS.fastapi)
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+  assert.equal(switched.page.backendLabel.value, 'FastAPI')
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+  await respond(switched.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(switched.page.account.value, null)
+
+  const reverse = articleApp('/vue/articles/001', 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
+  t.after(reverse.close)
+  await reverse.page.chooseBackend({ target: { value: auth.BACKENDS.laravel } })
+  assert.equal(auth.readSession(reverse.sessionStorage), null)
+  assert.deepEqual(reverse.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
+})
+
+// Nuxt 尚未支援 FastAPI；使用者即使觸發 change 也保留目前 JWT 與 Vue 畫面。
+test('FastAPI keeps Nuxt switch unavailable without clearing JWT', (t) => {
+  const app = articleApp('/vue/', 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
+  t.after(app.close)
+  const choice = { target: { value: 'nuxt' } }
+  app.page.chooseFrontend(choice)
+  assert.equal(app.page.canSwitchNuxt.value, false)
+  assert.equal(choice.target.value, 'vue')
+  assert.deepEqual(app.redirects, [])
+  assert.equal(auth.readSession(app.sessionStorage).accessToken, 'fastapi-jwt')
+  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
+  assert.match(descriptor.template.content, /<option :value="BACKENDS\.fastapi">FastAPI<\/option>/)
+  assert.match(descriptor.template.content, /fastapiBackend \? 'Nuxt 尚未支援目前選擇的 FastAPI 後端/)
+})
+
+// FastAPI 沿用正式表單、429 倒數與公開 API，登入後只保存 8086 對應的原 JWT 期限。
+test('FastAPI registration, lockout, reading and logout use approved endpoints', async (t) => {
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.fastapi)
+  t.after(registration.close)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const post = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.fastapi}/api/auth/register`)
+  await respond(registration.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await post
+  assert.deepEqual(registration.redirects, ['/vue/login?registered=1'])
+
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F007', false, auth.BACKENDS.fastapi)
+  t.after(login.close)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const first = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.fastapi}/api/auth/login`)
+  await respond(login.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await first
+  assert.equal(login.page.locked.value, true)
+  await login.page.submitLogin()
+  assert.equal(login.requests.length, 1)
+  login.page.lockDeadline.value = performance.now() - 1
+  login.page.tickLock()
+  const second = login.page.submitLogin()
+  await respond(login.requests[1], 200, { success: true, message: 'OK', data: { access_token: 'fastapi-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+  await second
+  assert.deepEqual(auth.readSession(login.sessionStorage), { backend: auth.BACKENDS.fastapi, accessToken: 'fastapi-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.deepEqual(login.redirects, ['/vue/articles/007'])
+
+  const detail = articleApp('/vue/articles/007', 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
+  t.after(detail.close)
+  assert.equal(detail.requests[0].url, `${auth.BACKENDS.fastapi}/api/me`)
+  await respond(detail.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(detail.requests[1].url, `${auth.BACKENDS.fastapi}/api/articles/7`)
+  await respond(detail.requests[1], 200, { success: true, message: 'OK', data: sample })
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.fastapi}/api/articles/7/comments?page=1&per_page=20`)
+  await respond(detail.requests[2], 200, { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } })
+  assert.equal(detail.page.commentList.value?.list.length, 0)
+  assert.equal(detail.page.canComment.value, false)
+  assert.equal(detail.page.canEdit.value, false)
+  assert.equal(detail.page.canManageVisibility.value, false)
+  const logout = detail.page.submitLogout()
+  assert.equal(detail.requests[3].url, `${auth.BACKENDS.fastapi}/api/auth/logout`)
+  await respond(detail.requests[3], 200, { success: true, message: 'OK', data: {} })
+  await logout
+  assert.equal(auth.readSession(detail.sessionStorage), null)
+  assert.deepEqual(detail.redirects, ['/vue/login'])
+
+  const visitor = articleApp('/vue/', null, '', false, auth.BACKENDS.fastapi)
+  t.after(visitor.close)
+  assert.equal(visitor.requests[0].url, `${auth.BACKENDS.fastapi}/api/articles?page=1&per_page=20`)
+  assert.equal(visitor.requests[0].headers.Authorization, undefined)
+})
+
+// FastAPI 作者／管理深連結不導向登入，登入返回目標亦只呈現未提供狀態。
+test('FastAPI unsupported routes never request unimplemented endpoints', async (t) => {
+  const paths = ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/comments/9/edit', '/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']
+  for (const path of paths) {
+    const visitor = articleApp(path, null, '', false, auth.BACKENDS.fastapi)
+    t.after(visitor.close)
+    assert.equal(visitor.page.unsupportedFastapiPage.value, true, path)
+    assert.equal(visitor.requests.length, 0, path)
+    assert.deepEqual(visitor.redirects, [], path)
+    const signedIn = articleApp(path, 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastapi}/api/me`, path)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    await signedIn.page.loadContent()
+    assert.equal(signedIn.requests.length, 1, path)
+    assert.deepEqual(signedIn.redirects, [], path)
+  }
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fme%2Farticles', false, auth.BACKENDS.fastapi)
+  t.after(login.close)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const submit = login.page.submitLogin()
+  await respond(login.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'fastapi-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+  await submit
+  assert.deepEqual(login.redirects, ['/vue/me/articles'])
+  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
+  assert.match(descriptor.template.content, /v-if="unsupportedFastapiPage"[^>]*><h1[^>]*>此後端尚未提供此頁/)
+  assert.match(descriptor.template.content, /<template v-if="!fastapiBackend"><a href="\/vue\/articles\/new"/)
 })
 
 // Flask 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在同一作者頁發文。

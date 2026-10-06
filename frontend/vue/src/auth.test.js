@@ -68,7 +68,7 @@ test('Django session selection is exact and fails closed', () => {
   assert.equal(readSession(s), null)
   saveSession(s, 'django-jwt', '2026-09-24 18:00:00')
   assert.deepEqual(readSession(s), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
-  assert.equal(selectBackend(s, 'http://localhost:8086'), false)
+  assert.equal(selectBackend(s, 'http://localhost:8087'), false)
   assert.equal(readSession(s).accessToken, 'django-jwt')
   assert.equal(selectBackend(s, BACKENDS.laravel), true)
   assert.equal(readSession(s), null)
@@ -86,6 +86,21 @@ test('Flask session selection keeps backend-bound JWT isolated', () => {
   assert.equal(selectBackend(s, BACKENDS.laravel), true)
   assert.equal(readSession(s), null)
   s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.flask, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+})
+
+// FastAPI 只接受固定 8086；切入、切出與壞儲存狀態都不能重用其他後端 JWT。
+test('FastAPI session selection keeps backend-bound JWT isolated', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.fastapi, 'http://localhost:8086')
+  assert.equal(selectBackend(s, BACKENDS.fastapi), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'fastapi-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.fastapi, accessToken: 'fastapi-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.flask), true)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.fastapi, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
   assert.equal(readSession(s), null)
 })
 

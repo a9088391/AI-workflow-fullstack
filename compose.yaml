@@ -170,6 +170,31 @@ services:
       timeout: 3s
       retries: 20
 
+  fastapi:
+    # 舊票隔離 fixture 不載入此服務；一般啟動腳本明確指定。
+    profiles: ["fastapi"]
+    build:
+      context: .
+      dockerfile: backends/fastapi/Dockerfile
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
+    volumes:
+      - ./.local/keys/fastapi.key:/run/secrets/fastapi-jwt.key:ro
+    ports:
+      - "127.0.0.1:8086:8000"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/up', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   frontend-vue:
     build:
       context: ./frontend/vue

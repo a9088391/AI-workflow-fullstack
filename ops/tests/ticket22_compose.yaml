@@ -1,0 +1,12 @@
+services:
+  fastapi:
+    ports: !override
+      - "127.0.0.1:8086:8000"
+    volumes:
+      - ./.local/ticket20-backend/fastapi.key:/run/secrets/fastapi-jwt.key:ro
+      - ./ops/tests/ticket22_http.py:/srv/tests/ticket22_http.py:ro
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:?ticket20_test required}
+      DB_OWNER_USER: articles_owner
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?run ops/setup.sh first}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
