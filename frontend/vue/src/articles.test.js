@@ -561,7 +561,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="!fastapiBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -640,9 +640,9 @@ test('FastAPI registration, lockout, reading and logout use approved endpoints',
   assert.equal(detail.requests[2].url, `${auth.BACKENDS.fastapi}/api/articles/7/comments?page=1&per_page=20`)
   await respond(detail.requests[2], 200, { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } })
   assert.equal(detail.page.commentList.value?.list.length, 0)
-  assert.equal(detail.page.canComment.value, false)
-  assert.equal(detail.page.canEdit.value, false)
-  assert.equal(detail.page.canManageVisibility.value, false)
+  assert.equal(detail.page.canComment.value, true)
+  assert.equal(detail.page.canEdit.value, true)
+  assert.equal(detail.page.canManageVisibility.value, true)
   const logout = detail.page.submitLogout()
   assert.equal(detail.requests[3].url, `${auth.BACKENDS.fastapi}/api/auth/logout`)
   await respond(detail.requests[3], 200, { success: true, message: 'OK', data: {} })
@@ -656,10 +656,34 @@ test('FastAPI registration, lockout, reading and logout use approved endpoints',
   assert.equal(visitor.requests[0].headers.Authorization, undefined)
 })
 
-// FastAPI 作者／管理深連結不導向登入，登入返回目標亦只呈現未提供狀態。
-test('FastAPI unsupported routes never request unimplemented endpoints', async (t) => {
-  const paths = ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/comments/9/edit', '/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']
-  for (const path of paths) {
+// FastAPI 作者深連結先驗權才讀取；管理深連結維持未提供且不呼叫管理 API。
+test('FastAPI author routes verify identity and admin routes make no unsupported requests', async (t) => {
+  const authorRoutes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+  ])
+  for (const [path, endpoint] of authorRoutes) {
+    const visitor = articleApp(path, null, '', false, auth.BACKENDS.fastapi)
+    t.after(visitor.close)
+    assert.equal(visitor.page.unsupportedFastapiPage.value, false, path)
+    assert.equal(visitor.requests.length, 0, path)
+    assert.deepEqual(visitor.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    const signedIn = articleApp(path, 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastapi}/api/me`, path)
+    assert.equal(signedIn.requests.length, 1, path)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) {
+      assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.fastapi}${endpoint}`, path)
+      assert.equal(signedIn.requests[1].headers.Authorization, 'Bearer fastapi-jwt', path)
+    }
+  }
+  for (const path of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
     const visitor = articleApp(path, null, '', false, auth.BACKENDS.fastapi)
     t.after(visitor.close)
     assert.equal(visitor.page.unsupportedFastapiPage.value, true, path)
@@ -668,7 +692,7 @@ test('FastAPI unsupported routes never request unimplemented endpoints', async (
     const signedIn = articleApp(path, 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
     t.after(signedIn.close)
     assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastapi}/api/me`, path)
-    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
     await signedIn.page.loadContent()
     assert.equal(signedIn.requests.length, 1, path)
     assert.deepEqual(signedIn.redirects, [], path)
@@ -684,21 +708,23 @@ test('FastAPI unsupported routes never request unimplemented endpoints', async (
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /v-if="unsupportedFastapiPage"[^>]*><h1[^>]*>此後端尚未提供此頁/)
-  assert.match(descriptor.template.content, /<template v-if="!fastapiBackend"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /account\.role === 'admin' && !fastapiBackend/)
 })
 
-// Flask 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在同一作者頁發文。
-test('Flask member and admin publish to the first my articles page', async (t) => {
-  for (const actor of [member, { ...member, role: 'admin' }]) {
-    const app = articleApp('/vue/articles/new', 'flask-jwt', '', false, auth.BACKENDS.flask)
+// Flask 與 FastAPI 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
+test('Flask and FastAPI member and admin publish to the first my articles page', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi]) for (const actor of [member, { ...member, role: 'admin' }]) {
+    const app = articleApp('/vue/articles/new', 'author-jwt', '', false, selectedBackend)
     t.after(app.close)
     await respond(app.requests[0], 200, { success: true, message: 'OK', data: actor })
-    app.page.articleTitle.value = 'Flask 標題'
+    app.page.articleTitle.value = '作者標題'
     app.page.articleBody.value = '原文\r\n第二行'
     const write = app.page.submitArticle()
-    assert.equal(app.requests[1].url, `${auth.BACKENDS.flask}/api/articles`)
+    assert.equal(app.requests[1].url, `${selectedBackend}/api/articles`)
     assert.equal(app.requests[1].method, 'POST')
-    assert.deepEqual(JSON.parse(app.requests[1].body), { title: 'Flask 標題', body: '原文\r\n第二行' })
+    assert.equal(app.requests[1].headers.Authorization, 'Bearer author-jwt')
+    assert.deepEqual(JSON.parse(app.requests[1].body), { title: '作者標題', body: '原文\r\n第二行' })
     await respond(app.requests[1], 201, { success: true, message: 'OK', data: {} })
     await write
     assert.deepEqual(app.redirects, ['/vue/me/articles?published=1'])

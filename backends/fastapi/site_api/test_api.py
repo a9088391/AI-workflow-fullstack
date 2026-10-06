@@ -111,6 +111,7 @@ class ApiTests(unittest.TestCase):
                       response[0]["headers"])
         options = asyncio.run(call("OPTIONS", "/api/articles"))
         self.assertEqual(options[0]["status"], 204)
+        self.assertIn((b"access-control-allow-methods", b"GET, POST, OPTIONS"), options[0]["headers"])
         missing = asyncio.run(call("GET", "/api/articles/"))
         self.assertEqual(missing[0]["status"], 404)
         self.assertEqual(json.loads(missing[1]["body"])["error_code"], "E0004")
@@ -133,6 +134,42 @@ class ApiTests(unittest.TestCase):
         with self.assertRaises(core.ApiError) as body:
             list_input(Request(query=b"page=1&per_page=20", body=b"{}"))
         self.assertEqual(body.exception.errors["_body"], ["此 API 不接受 Request Body"])
+
+    # 內容欄位採 Unicode 碼點與固定空白集合；版本保持 JSON 整數型態。
+    def test_content_input_boundaries(self):
+        fields = ("title", "body", "version")
+        limits = {"title": 200, "body": 20000, "version": 0}
+        valid = {"title": "😀" * 200, "body": "\r\n保留\r原文", "version": 1}
+        self.assertEqual(json_body(Request(body=json.dumps(valid).encode()), fields, content_limits=limits), valid)
+        for value, error in ((True, core.TYPE), ("1", core.TYPE), (0, core.INVALID),
+                             (9007199254740992, core.INVALID)):
+            invalid = valid | {"version": value}
+            with self.subTest(value=value), self.assertRaises(core.ApiError) as failure:
+                json_body(Request(body=json.dumps(invalid).encode()), fields, content_limits=limits)
+            self.assertEqual(failure.exception.errors["version"], [error])
+        for title in (" 　\r\n", "x" * 201, "a\0b"):
+            with self.subTest(title=title), self.assertRaises(core.ApiError) as failure:
+                json_body(Request(body=json.dumps(valid | {"title": title}).encode()),
+                          fields, content_limits=limits)
+            self.assertEqual(failure.exception.errors["title"], [core.INVALID])
+
+    # 同值更新不得觸發 SQL；過期同值仍須先回衝突。
+    def test_version_and_restore_control(self):
+        row = {"id": 3, "author_id": 1, "title": "原題", "body": "原文", "version": 2,
+               "visibility": "hidden", "restore_control": "author"}
+        connection = Connection([])
+        app.save_content(connection, "articles", row, 2, {"title": "原題", "body": "原文"})
+        self.assertEqual(connection.queries, [])
+        with self.assertRaises(core.ApiError) as stale:
+            app.save_content(connection, "articles", row, 1, {"title": "原題", "body": "原文"})
+        self.assertEqual(stale.exception.code, "E0201")
+        admin = {"id": 9, "role": "admin"}
+        self.assertEqual(app.visibility_changes(row, admin, "hidden"),
+                         {"visibility": "hidden", "restore_control": "admin"})
+        with self.assertRaises(core.ApiError) as forbidden:
+            app.visibility_changes(row | {"restore_control": "admin"},
+                                   {"id": 1, "role": "member"}, "visible")
+        self.assertEqual(forbidden.exception.code, "E0003")
 
     # 門檻當次應在回 429 前提交失敗事件，且視窗排除左邊界。
     def test_lockout_threshold_commits_before_429(self):

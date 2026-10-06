@@ -4,7 +4,8 @@ import re
 from urllib.parse import unquote_plus
 
 from .core import (ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, TYPE,
-                   normalize_email, reject_non_json_number, valid_email, valid_nickname)
+                   SPACE, normalize_email, reject_non_json_number, valid_email,
+                   valid_nickname)
 
 # 解析原始 Query 鍵與值，保留重複、陣列形式及非法 UTF-8 的錯誤。
 def query_values(request, allowed):
@@ -84,7 +85,7 @@ def parse_json_integer(value):
 
 
 # 直接解析 UTF-8 JSON，依共用順序驗證帳號、內容與設定欄位型態。
-def json_body(request, fields, empty_allowed=False):
+def json_body(request, fields, empty_allowed=False, content_limits=None):
     raw = request.get_data(cache=True)
     if empty_allowed and not raw:
         return {}
@@ -124,7 +125,9 @@ def json_body(request, fields, empty_allowed=False):
             errors[field] = [REQUIRED]
         elif body[field] is None:
             errors[field] = [NULL]
-        elif type(body[field]) is not str:
+        elif type(body[field]) is OversizedJsonInteger:
+            errors[field] = [INVALID if field == "version" else TYPE]
+        elif type(body[field]) is not (int if field == "version" and content_limits is not None else str):
             errors[field] = [TYPE]
     for field in body:
         if field not in fields:
@@ -137,6 +140,20 @@ def json_body(request, fields, empty_allowed=False):
         errors["password"] = [INVALID]
     if "nickname" in fields and "nickname" not in errors and not valid_nickname(body["nickname"]):
         errors["nickname"] = [INVALID]
+    # 內容原樣保存；只依已核准的碼點、NUL 與空白集合判斷是否合法。
+    if content_limits is not None:
+        for field, limit in content_limits.items():
+            if field in errors:
+                continue
+            value = body[field]
+            if field == "version":
+                valid = 1 <= value <= 9007199254740991
+            elif field == "visibility":
+                valid = value in ("visible", "hidden")
+            else:
+                valid = 1 <= len(value) <= limit and "\0" not in value and any(char not in SPACE for char in value)
+            if not valid:
+                errors[field] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
     return body

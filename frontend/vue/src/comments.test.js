@@ -286,36 +286,57 @@ test('Django comment creation and own detail use author endpoints', async (t) =>
   assert.match(await renderedPage(own.page), />恢復<\/button>/)
 })
 
-// Flask 新留言成功後只重讀原文章第一頁；自己的單則詳情即使父文章不可讀仍保留本文。
-test('Flask comment creation and own detail preserve author flow', async (t) => {
-  const instance = await writableArticle(t, '?page=2', auth.BACKENDS.flask)
-  assert.equal(instance.page.canComment.value, true)
-  assert.match(await renderedPage(instance.page), /發表留言/)
-  instance.page.commentBody.value = 'Flask 留言\r\n第二行'
-  const write = instance.page.submitComment()
-  assert.equal(instance.requests[3].url, `${auth.BACKENDS.flask}/api/articles/7/comments`)
-  assert.deepEqual(JSON.parse(instance.requests[3].body), { body: 'Flask 留言\r\n第二行' })
-  await respond(instance.requests[3], 201, success({}))
-  await write
-  assert.equal(instance.requests[4].url, `${auth.BACKENDS.flask}/api/articles/7/comments?page=1&per_page=20`)
-  assert.deepEqual(instance.history, ['/vue/articles/7#comments'])
-  await respond(instance.requests[4], 200, list([{ ...comment, visibility: 'visible' }]))
-  assert.match(await renderedPage(instance.page), /href="\/vue\/comments\/9"/)
+// Flask 與 FastAPI 新留言只重讀原文章第一頁；自己的單則詳情即使父文章不可讀仍保留本文。
+test('Flask and FastAPI comment creation and own detail preserve author flow', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
+    const instance = await writableArticle(t, '?page=2', selectedBackend)
+    assert.equal(instance.page.canComment.value, true)
+    assert.match(await renderedPage(instance.page), /發表留言/)
+    instance.page.commentBody.value = '作者留言\r\n第二行'
+    const write = instance.page.submitComment()
+    assert.equal(instance.requests[3].url, `${selectedBackend}/api/articles/7/comments`)
+    assert.equal(instance.requests[3].method, 'POST')
+    assert.deepEqual(JSON.parse(instance.requests[3].body), { body: '作者留言\r\n第二行' })
+    await respond(instance.requests[3], 201, success({}))
+    await write
+    assert.equal(instance.requests[4].url, `${selectedBackend}/api/articles/7/comments?page=1&per_page=20`)
+    assert.deepEqual(instance.history, ['/vue/articles/7#comments'])
+    await respond(instance.requests[4], 200, list([{ ...comment, visibility: 'visible' }]))
+    assert.match(await renderedPage(instance.page), /href="\/vue\/comments\/9"/)
 
-  const own = app('/vue/comments/9', 'saved-token', '', auth.BACKENDS.flask)
-  t.after(own.close)
-  await respond(own.requests[0], 200, success(member))
-  assert.equal(own.requests[1].url, `${auth.BACKENDS.flask}/api/comments/9`)
-  await respond(own.requests[1], 200, success(comment))
-  assert.equal(own.requests[2].url, `${auth.BACKENDS.flask}/api/articles/7`)
-  await respond(own.requests[2], 404, { success: false, error_code: 'E0004', data: { title: '不得顯示' } })
-  assert.equal(own.page.commentData.value.body, comment.body)
-  assert.equal(own.page.parentArticle.value, null)
-  assert.equal(own.page.canManageVisibility.value, true)
-  assert.equal(own.page.canEdit.value, false)
-  const html = await renderedPage(own.page)
-  assert.match(html, /所屬文章目前無法讀取/)
-  assert.doesNotMatch(html, /不得顯示/)
+    const own = app('/vue/comments/9', 'saved-token', '', selectedBackend)
+    t.after(own.close)
+    await respond(own.requests[0], 200, success(member))
+    assert.equal(own.requests[1].url, `${selectedBackend}/api/comments/9`)
+    await respond(own.requests[1], 200, success(comment))
+    assert.equal(own.requests[2].url, `${selectedBackend}/api/articles/7`)
+    await respond(own.requests[2], 404, { success: false, error_code: 'E0004', data: { title: '不得顯示' } })
+    assert.equal(own.page.commentData.value.body, comment.body)
+    assert.equal(own.page.parentArticle.value, null)
+    assert.equal(own.page.canManageVisibility.value, true)
+    assert.equal(own.page.canEdit.value, false)
+    const html = await renderedPage(own.page)
+    assert.match(html, /所屬文章目前無法讀取/)
+    assert.doesNotMatch(html, /不得顯示/)
+  }
+})
+
+// FastAPI 發文表單只在目前帳號已驗證時出現；重驗期間撤下寫入入口。
+test('FastAPI article form waits for verified author state', async (t) => {
+  const visitor = app('/vue/articles/new', null, '', auth.BACKENDS.fastapi)
+  const author = app('/vue/articles/new', 'fastapi-jwt', '', auth.BACKENDS.fastapi)
+  t.after(visitor.close)
+  t.after(author.close)
+  assert.deepEqual(visitor.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2Fnew'])
+  assert.doesNotMatch(await renderedPage(visitor.page), /<form[^>]*><div class="field"><label for="title">/)
+  assert.doesNotMatch(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  await respond(author.requests[0], 200, success(member))
+  assert.match(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  const recheck = author.page.verifyAccount()
+  assert.doesNotMatch(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  await respond(author.requests[1], 200, success(member))
+  await recheck
+  assert.match(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
 })
 
 // 格式與後端 422 都保留草稿，欄位明細留在原表單且不產生額外送出。
@@ -751,9 +772,9 @@ test('edit conflict requires a fresh comparison and explicit merge or discard be
   assert.equal(instance.requests.length, 6)
 })
 
-// Django 與 Flask 編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
-test('Django and Flask edit conflict keeps draft until explicit latest-version comparison', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask]) {
+// Django、Flask 與 FastAPI 編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
+test('Django, Flask and FastAPI edit conflict keeps draft until explicit latest-version comparison', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
     const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, selectedBackend)
     instance.page.articleTitle.value = '我的 Django 標題'
     instance.page.articleBody.value = '我的 Django 內文'
@@ -783,9 +804,9 @@ test('Django and Flask edit conflict keeps draft until explicit latest-version c
   }
 })
 
-// Django 與 Flask 的作者留言編修須先確認父文章公開；成功後依原 ID 重讀。
-test('Django and Flask own comment edit rereads the same detail after success', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask]) {
+// Django、Flask 與 FastAPI 的作者留言編修須先確認父文章公開；成功後依原 ID 重讀。
+test('Django, Flask and FastAPI own comment edit rereads the same detail after success', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
     const instance = await resourcePage(t, '/vue/comments/9/edit', { ...comment, visibility: 'visible' }, member, article, selectedBackend)
     assert.equal(instance.page.canEdit.value, true)
     instance.page.commentBody.value = '編修後留言'
@@ -802,9 +823,9 @@ test('Django and Flask own comment edit rereads the same detail after success', 
   }
 })
 
-// Django 與 Flask 下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
-test('Django and Flask article visibility change uses version and server readback', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask]) {
+// Django、Flask 與 FastAPI 下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
+test('Django, Flask and FastAPI article visibility change uses version and server readback', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
     const instance = await resourcePage(t, '/vue/articles/7', article, member, article, selectedBackend)
     assert.equal(instance.page.canManageVisibility.value, true)
     const hide = instance.page.submitVisibility('hidden')
@@ -824,6 +845,28 @@ test('Django and Flask article visibility change uses version and server readbac
     await respond(instance.requests[8], 200, list([]))
     assert.equal(instance.page.articleData.value.visibility, 'visible')
   }
+})
+
+// FastAPI 留言恢復依後端 can_restore 與目前版本；無資格時不能發出 PUT。
+test('FastAPI own comment visibility uses current version and restore eligibility', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9', { ...comment, can_restore: false }, member, article, auth.BACKENDS.fastapi)
+  await instance.page.submitVisibility('visible')
+  assert.equal(instance.requests.length, 3)
+  const read = instance.page.loadContent()
+  await respond(instance.requests[3], 200, success({ ...comment, can_restore: true, version: 2 }))
+  await read
+  await respond(instance.requests[4], 200, success(article))
+  assert.match(await renderedPage(instance.page), />恢復<\/button>/)
+  const restore = instance.page.submitVisibility('visible')
+  assert.equal(instance.requests[5].url, `${auth.BACKENDS.fastapi}/api/comments/9/visibility`)
+  assert.equal(instance.requests[5].method, 'PUT')
+  assert.deepEqual(JSON.parse(instance.requests[5].body), { visibility: 'visible', version: 2 })
+  await respond(instance.requests[5], 200, success({}))
+  await restore
+  assert.equal(instance.requests[6].url, `${auth.BACKENDS.fastapi}/api/comments/9`)
+  await respond(instance.requests[6], 200, success({ ...comment, visibility: 'visible', can_restore: false, version: 3 }))
+  await respond(instance.requests[7], 200, success(article))
+  assert.equal(instance.page.commentData.value.visibility, 'visible')
 })
 
 // 管理員接管他人自行下架內容仍送 hidden；自己的下架不可借管理員身分取得接管控制。
