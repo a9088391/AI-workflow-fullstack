@@ -127,8 +127,15 @@ class LoginLockoutSettingsController extends Controller
                 $errors[$name] = ['此欄位為必填'];
             } elseif ($body->$name === null) {
                 $errors[$name] = ['此欄位不可為 null'];
-            } elseif ($max === null ? ! is_bool($body->$name) : ! is_int($body->$name)) {
+            } elseif ($max === null && ! is_bool($body->$name)) {
                 $errors[$name] = ['欄位型態不正確'];
+            } elseif ($max !== null && ! is_int($body->$name)) {
+                // 原生解碼會把超大 JSON 整數轉成 float；重解碼只將該整數判為範圍錯誤，小數與指數仍屬型態錯誤。
+                $bigIntegerBody = is_float($body->$name)
+                    ? json_decode($raw, false, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING)
+                    : null;
+                $errors[$name] = [is_string($bigIntegerBody->$name ?? null)
+                    ? '欄位格式或範圍不正確' : '欄位型態不正確'];
             } elseif ($max !== null && ($body->$name < 1 || $max < $body->$name)) {
                 $errors[$name] = ['欄位格式或範圍不正確'];
             }

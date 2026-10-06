@@ -89,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, commentList, account, credential, backend, backendLabel, flaskBackend, fastapiBackend, unsupportedFastapiPage, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, commentList, account, credential, backend, backendLabel, flaskBackend, fastapiBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -656,8 +656,8 @@ test('FastAPI registration, lockout, reading and logout use approved endpoints',
   assert.equal(visitor.requests[0].headers.Authorization, undefined)
 })
 
-// FastAPI 作者深連結先驗權才讀取；管理深連結維持未提供且不呼叫管理 API。
-test('FastAPI author routes verify identity and admin routes make no unsupported requests', async (t) => {
+// FastAPI 作者深連結先驗權才讀取；管理入口由獨立管理測試驗證。
+test('FastAPI author routes verify identity before protected reads', async (t) => {
   const authorRoutes = new Map([
     ['/vue/articles/new', null],
     ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
@@ -669,7 +669,6 @@ test('FastAPI author routes verify identity and admin routes make no unsupported
   for (const [path, endpoint] of authorRoutes) {
     const visitor = articleApp(path, null, '', false, auth.BACKENDS.fastapi)
     t.after(visitor.close)
-    assert.equal(visitor.page.unsupportedFastapiPage.value, false, path)
     assert.equal(visitor.requests.length, 0, path)
     assert.deepEqual(visitor.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
     const signedIn = articleApp(path, 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
@@ -683,20 +682,6 @@ test('FastAPI author routes verify identity and admin routes make no unsupported
       assert.equal(signedIn.requests[1].headers.Authorization, 'Bearer fastapi-jwt', path)
     }
   }
-  for (const path of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
-    const visitor = articleApp(path, null, '', false, auth.BACKENDS.fastapi)
-    t.after(visitor.close)
-    assert.equal(visitor.page.unsupportedFastapiPage.value, true, path)
-    assert.equal(visitor.requests.length, 0, path)
-    assert.deepEqual(visitor.redirects, [], path)
-    const signedIn = articleApp(path, 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
-    t.after(signedIn.close)
-    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastapi}/api/me`, path)
-    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
-    await signedIn.page.loadContent()
-    assert.equal(signedIn.requests.length, 1, path)
-    assert.deepEqual(signedIn.redirects, [], path)
-  }
   const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fme%2Farticles', false, auth.BACKENDS.fastapi)
   t.after(login.close)
   login.page.email.value = member.email
@@ -707,9 +692,7 @@ test('FastAPI author routes verify identity and admin routes make no unsupported
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /v-if="unsupportedFastapiPage"[^>]*><h1[^>]*>此後端尚未提供此頁/)
   assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
-  assert.match(descriptor.template.content, /account\.role === 'admin' && !fastapiBackend/)
 })
 
 // Flask 與 FastAPI 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。

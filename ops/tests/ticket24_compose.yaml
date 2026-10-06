@@ -1,0 +1,23 @@
+services:
+  laravel:
+    ports: !override
+      - "127.0.0.1:8181:8000"
+    volumes:
+      - ./.local/ticket24-backend/laravel-logs:/srv/laravel/storage/logs
+      - ./.local/ticket24-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+  fastapi:
+    ports: !override
+      - "127.0.0.1:8186:8000"
+    volumes:
+      - ./.local/ticket24-backend/fastapi.key:/run/secrets/fastapi-jwt.key:ro
+      - ./ops/tests/ticket22_http.py:/srv/tests/ticket22_http.py:ro
+      - ./ops/tests/ticket24_http.py:/srv/tests/ticket24_http.py:ro
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:?ticket24_test required}
+      TICKET24_FIXTURE: isolated-ticket24
+      DB_OWNER_USER: articles_owner
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?isolated fixture required}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?isolated fixture required}
+  sql:
+    volumes:
+      - ./.local/ticket24-backend/backups:/backups

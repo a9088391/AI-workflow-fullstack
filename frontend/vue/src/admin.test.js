@@ -36,7 +36,7 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
     // 記錄失效或登出撤銷，避免測試憑證殘留。
     removeItem(key) { storage.delete(key) },
   }
-  // 渲染前先寫入同分頁選擇，讓測試涵蓋 Django 與原 Laravel 文案。
+  // 渲染前先寫入同分頁選擇，驗證各後端都沿用目前選取的 API。
   if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
@@ -314,6 +314,111 @@ test('Django lockout settings authorize and read back full update', async (t) =>
   await respond(settings.requests[3], 200, success({ ...lockout, window_minutes: 10 }))
   await write
   assert.match(await rendered(settings.page), /已重新讀取並顯示目前伺服器設定/)
+})
+
+// FastAPI 管理深連結先驗登入與角色，五個入口才可讀共同 API。
+test('FastAPI management routes require verified admin and expose all entries', async (t) => {
+  const routes = new Map([
+    ['/vue/admin/members', '/api/members?page=1&per_page=20'],
+    ['/vue/admin/members/2', '/api/members/2'],
+    ['/vue/admin/articles', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management'],
+    ['/vue/admin/comments', '/api/comments?page=1&per_page=20'],
+    ['/vue/admin/settings/login-lockout', '/api/settings/login-lockout'],
+  ])
+  for (const [path, endpoint] of routes) {
+    const guest = app(path, '', null, auth.BACKENDS.fastapi)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
+    const signedIn = app(path, '', 'fastapi-token', auth.BACKENDS.fastapi)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastapi}/api/me`, path)
+    assert.equal(signedIn.requests.length, 1, path)
+    await respond(signedIn.requests[0], 200, success(administrator))
+    assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.fastapi}${endpoint}`, path)
+    assert.equal(signedIn.requests[1].headers.Authorization, 'Bearer fastapi-token', path)
+  }
+  const denied = app('/vue/admin/members', '', 'member-token', auth.BACKENDS.fastapi)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  const deniedHtml = await rendered(denied.page)
+  assert.match(deniedHtml, /沒有權限使用此功能/)
+  assert.doesNotMatch(deniedHtml, /href="\/vue\/admin\/|member@example.test/)
+
+  const hiddenAdmin = app('/vue/admin/members/1', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(hiddenAdmin.close)
+  await respond(hiddenAdmin.requests[0], 200, success(administrator))
+  await respond(hiddenAdmin.requests[1], 404, { success: false, error_code: 'E0004' })
+  assert.match(await rendered(hiddenAdmin.page), /找不到指定資料或 API/)
+  assert.doesNotMatch(await rendered(hiddenAdmin.page), /停用會員|恢復會員/)
+
+  const menu = app('/vue/', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(menu.close)
+  await respond(menu.requests[0], 200, success(administrator))
+  const menuHtml = await rendered(menu.page)
+  for (const href of routes.keys()) if (!href.includes('/2')) assert.match(menuHtml, new RegExp(`href="${href}"`))
+  assert.doesNotMatch(menuHtml, /此後端尚未提供此頁/)
+})
+
+// FastAPI 管理內容共用既有列表與詳情，隱藏項仍須有詳情及返回管理入口。
+test('FastAPI management lists and hidden content links', async (t) => {
+  const content = { id: 7, title: '下架文章', body: '原文', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'fastapi', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }
+  const articlesPage = app('/vue/admin/articles', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(articlesPage.close)
+  await respond(articlesPage.requests[0], 200, success(administrator))
+  await respond(articlesPage.requests[1], 200, list([content]))
+  assert.match(await rendered(articlesPage.page), /href="\/vue\/articles\/7"/)
+  const commentsPage = app('/vue/admin/comments', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(commentsPage.close)
+  await respond(commentsPage.requests[0], 200, success(administrator))
+  await respond(commentsPage.requests[1], 200, list([{ ...content, id: 9, article_id: 7 }]))
+  assert.match(await rendered(commentsPage.page), /href="\/vue\/comments\/9"/)
+  const article = app('/vue/articles/7', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(article.close)
+  await respond(article.requests[0], 200, success(administrator))
+  await respond(article.requests[1], 200, success(content))
+  assert.match(await rendered(article.page), /href="\/vue\/admin\/articles"[^>]*>返回文章管理<\/a>/)
+  const comment = app('/vue/comments/9', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(comment.close)
+  await respond(comment.requests[0], 200, success(administrator))
+  await respond(comment.requests[1], 200, success({ ...content, id: 9, article_id: 7 }))
+  assert.match(await rendered(comment.page), /href="\/vue\/admin\/comments"[^>]*>返回留言管理<\/a>/)
+})
+
+// FastAPI 狀態與完整設定寫入後都重讀同後端，畫面只顯示已確認的伺服器值。
+test('FastAPI member status and lockout update use same-backend readback', async (t) => {
+  const detail = app('/vue/admin/members/2', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(detail.close)
+  await respond(detail.requests[0], 200, success(administrator))
+  await respond(detail.requests[1], 200, success(member))
+  const disable = detail.page.submitMemberStatus()
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.fastapi}/api/members/2/status`)
+  assert.equal(detail.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(detail.requests[2].body), { status: 'disabled' })
+  await respond(detail.requests[2], 200, success({}))
+  assert.equal(detail.requests[3].url, `${auth.BACKENDS.fastapi}/api/members/2`)
+  assert.equal(detail.page.memberData.value, null, 'PUT 成功後先隱藏舊狀態，等 GET 確認')
+  await respond(detail.requests[3], 200, success({ ...member, status: 'disabled' }))
+  await disable
+  assert.equal(detail.page.memberData.value.status, 'disabled')
+  assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
+
+  const settings = app('/vue/admin/settings/login-lockout', '', 'fastapi-token', auth.BACKENDS.fastapi)
+  t.after(settings.close)
+  await respond(settings.requests[0], 200, success(administrator))
+  await respond(settings.requests[1], 200, success(lockout))
+  settings.page.lockoutDraft.value.window_minutes = 10
+  const save = settings.page.submitLockoutSettings()
+  assert.equal(settings.requests[2].url, `${auth.BACKENDS.fastapi}/api/settings/login-lockout`)
+  assert.equal(settings.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(settings.requests[2].body), { ...lockout, window_minutes: 10 })
+  await respond(settings.requests[2], 200, success({}))
+  assert.equal(settings.requests[3].url, `${auth.BACKENDS.fastapi}/api/settings/login-lockout`)
+  await respond(settings.requests[3], 200, success({ ...lockout, window_minutes: 10 }))
+  await save
+  assert.deepEqual(settings.page.lockoutData.value, { ...lockout, window_minutes: 10 })
+  assert.match(await rendered(settings.page), /value="10"/)
 })
 
 // 使用 Vue 正式模板條件產生 HTML，驗證提示和導覽是否真的出現在畫面。

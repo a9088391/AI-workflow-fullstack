@@ -85,7 +85,7 @@ def parse_json_integer(value):
 
 
 # 直接解析 UTF-8 JSON，依共用順序驗證帳號、內容與設定欄位型態。
-def json_body(request, fields, empty_allowed=False, content_limits=None):
+def json_body(request, fields, empty_allowed=False, content_limits=None, field_types=None, numeric_limits=None):
     raw = request.get_data(cache=True)
     if empty_allowed and not raw:
         return {}
@@ -126,8 +126,11 @@ def json_body(request, fields, empty_allowed=False, content_limits=None):
         elif body[field] is None:
             errors[field] = [NULL]
         elif type(body[field]) is OversizedJsonInteger:
-            errors[field] = [INVALID if field == "version" else TYPE]
-        elif type(body[field]) is not (int if field == "version" and content_limits is not None else str):
+            errors[field] = [INVALID if field == "version" or numeric_limits and field in numeric_limits else TYPE]
+        elif type(body[field]) is not (
+            field_types[field] if field_types and field in field_types
+            else int if field == "version" and content_limits is not None else str
+        ):
             errors[field] = [TYPE]
     for field in body:
         if field not in fields:
@@ -140,6 +143,9 @@ def json_body(request, fields, empty_allowed=False, content_limits=None):
         errors["password"] = [INVALID]
     if "nickname" in fields and "nickname" not in errors and not valid_nickname(body["nickname"]):
         errors["nickname"] = [INVALID]
+    # 會員狀態與其他欄位一起彙整錯誤，避免未知欄位遮蔽狀態格式錯誤。
+    if "status" in fields and "status" not in errors and body["status"] not in ("active", "disabled"):
+        errors["status"] = [INVALID]
     # 內容原樣保存；只依已核准的碼點、NUL 與空白集合判斷是否合法。
     if content_limits is not None:
         for field, limit in content_limits.items():
@@ -154,17 +160,24 @@ def json_body(request, fields, empty_allowed=False, content_limits=None):
                 valid = 1 <= len(value) <= limit and "\0" not in value and any(char not in SPACE for char in value)
             if not valid:
                 errors[field] = [INVALID]
+    # 設定整數與 JSON boolean 分開驗型，避免 Python 把 true 當成 1 接受。
+    if numeric_limits is not None:
+        for field, maximum in numeric_limits.items():
+            if field not in errors and not 1 <= body[field] <= maximum:
+                errors[field] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
     return body
 
 
 # 列表欄位先驗證完整，再將安全整數傳入分頁 SQL。
-def list_input(request, allow_scope=False):
+def list_input(request, allow_scope=False, allow_keyword=False):
     no_get_body(request)
     allowed = {"page", "per_page"}
     if allow_scope:
         allowed.add("filters[scope]")
+    if allow_keyword:
+        allowed.add("filters[keyword]")
     values, errors = query_values(request, allowed)
     numbers = {}
     for name in ("page", "per_page"):
@@ -182,10 +195,13 @@ def list_input(request, allow_scope=False):
                     numbers[name] = number
     if allow_scope and "filters[scope]" in values and "filters.scope" not in errors and values["filters[scope]"] != "management":
         errors["filters.scope"] = [INVALID]
+    keyword = values.get("filters[keyword]", "").strip(" ")
+    if allow_keyword and "filters[keyword]" in values and "filters.keyword" not in errors and len(keyword) > 254:
+        errors["filters.keyword"] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
     # 沿用已驗證數值，避免大量前導零在原字串二次轉換時觸發 Python 上限。
-    return numbers["page"], numbers["per_page"], values.get("filters[scope]")
+    return numbers["page"], numbers["per_page"], keyword if allow_keyword else values.get("filters[scope]")
 
 
 # 精確總數與原頁碼組成共同分頁格式，超頁仍保留 total。

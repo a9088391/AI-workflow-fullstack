@@ -100,10 +100,8 @@ const backend = ref(API_BASE)
 const backendLabel = computed(() => backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
 // Flask 的共用後端 key 尚未供 Nuxt 切換使用。
 const flaskBackend = computed(() => backend.value === BACKENDS.flask)
-// FastAPI 已提供作者操作；管理頁及 Nuxt 仍須等待各自端點與前端支援。
+// FastAPI 的管理頁沿用共用流程；後端 key 仍用於限制尚未支援的 Nuxt 切換。
 const fastapiBackend = computed(() => backend.value === BACKENDS.fastapi)
-// FastAPI 管理端點尚未提供，深連結不可發出管理請求。
-const unsupportedFastapiPage = computed(() => fastapiBackend.value && adminPage)
 // Nuxt 尚未認得 Flask 與 FastAPI 的共用後端 key；避免跨前端誤用目前 JWT。
 const canSwitchNuxt = computed(() => !flaskBackend.value && !fastapiBackend.value && canSwitchNuxtPage)
 const account = ref(null)
@@ -316,8 +314,7 @@ async function copyRelatedLogId() {
 
 // 內容列表、詳情與管理設定沿同一讀取流程；管理資料只在目前角色驗證為管理員後讀取。
 async function loadContent() {
-  // FastAPI 管理頁尚無端點；作者頁仍須先通過登入重驗。
-  if (unsupportedFastapiPage.value) return
+  // 管理頁先通過下方角色檢查，再由已選後端讀取共用端點。
   if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
     || contentLoading.value || contentPending.value || statusPending.value || lockoutPending.value || authChecking.value
     || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value
@@ -1261,9 +1258,9 @@ onMounted(() => {
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('pageshow', onPageShow)
   try { backend.value = readBackend(window.sessionStorage); credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
-  // 有憑證先重驗目前角色；訪客直達已支援的受保護頁才前往登入。
+  // 有憑證先重驗目前角色；訪客直達受保護頁先登入再返回原路徑。
   if (credential.value) verifyAccount()
-  else if (protectedPage && !unsupportedFastapiPage.value) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
+  else if (protectedPage) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
   else loadContent()
 })
 
@@ -1301,7 +1298,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin' && !fastapiBackend"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1321,9 +1318,7 @@ onBeforeUnmount(() => {
     </header>
 
     <main id="main-content" class="main-content">
-      <!-- FastAPI 管理端點尚未提供，管理深連結不進入登入循環。 -->
-      <section v-if="unsupportedFastapiPage" class="message-page" aria-labelledby="page-title"><h1 id="page-title">此後端尚未提供此頁</h1><p>FastAPI 目前提供公開閱讀、登入與作者內容操作；管理功能尚未提供。</p><a class="text-link" href="/vue/">返回文章列表</a></section>
-      <section v-else-if="page === 'register'" class="form-page" aria-labelledby="page-title">
+      <section v-if="page === 'register'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
         <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
@@ -1359,7 +1354,7 @@ onBeforeUnmount(() => {
           <div v-if="articleList && contentReady" class="article-results"><p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁<span v-if="articleList.pagination.total_pages">／共 {{ articleList.pagination.total_pages }} 頁</span></p><p v-if="!articleList.list.length" role="status">{{ articleList.pagination.total && listPage > articleList.pagination.total_pages ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。' }}</p><ol v-else class="article-list"><li v-for="item in articleList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><h2><a :href="`/vue/articles/${item.id}`">{{ item.title }}</a></h2><p class="article-excerpt">{{ item.body }}</p><a class="read-link" :href="`/vue/articles/${item.id}`">閱讀全文</a></li></ol><nav v-if="articleList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="文章分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < articleList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="articleList.pagination.total && listPage > articleList.pagination.total_pages" :href="path">回第一頁</a></nav></div>
           <button v-else-if="!contentLoading && !authChecking && !reLogin && !disabledAccount && summaryCode !== 'E0002' && (!protectedPage || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button>
         </template>
-        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p class="detail-return-links"><a class="text-link" href="/vue/">返回文章列表</a><a v-if="account?.role === 'admin' && !fastapiBackend" class="text-link" href="/vue/admin/articles">返回文章管理</a></p></template>
+        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p class="detail-return-links"><a class="text-link" href="/vue/">返回文章列表</a><a v-if="account?.role === 'admin'" class="text-link" href="/vue/admin/articles">返回文章管理</a></p></template>
         <template v-else-if="page === 'my-comments'">
           <div v-if="commentList && contentReady" class="article-results">
             <p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p>

@@ -280,6 +280,9 @@ def json_body(request, fields, empty_allowed=False, content_limits=None, field_t
         errors["password"] = [INVALID]
     if "nickname" in fields and "nickname" not in errors and not valid_nickname(body["nickname"]):
         errors["nickname"] = [INVALID]
+    # 會員狀態與其他欄位一起彙整錯誤，避免未知欄位遮蔽狀態格式錯誤。
+    if "status" in fields and "status" not in errors and body["status"] not in ("active", "disabled"):
+        errors["status"] = [INVALID]
     # 內容保留原文字與換行，只拒絕超界、NUL 及固定集合的全空白。
     if content_limits is not None:
         for field, limit in content_limits.items():
@@ -800,8 +803,6 @@ def member_status(request, member_id):
     no_query(request)
     account_id = url_integer(member_id, "member_id")
     body = json_body(request, ("status",))
-    if body["status"] not in ("active", "disabled"):
-        raise ApiError("E0001", {"status": [INVALID]})
     with connect() as connection:
         locked = connection.execute(
             "SELECT id, role, status FROM accounts WHERE id IN (%s, %s) ORDER BY id FOR UPDATE",
