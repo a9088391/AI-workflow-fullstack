@@ -89,7 +89,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, flaskBackend, unsupportedOnBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, account, credential, backend, backendLabel, flaskBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
@@ -537,8 +537,8 @@ test('Flask public reading and logout use only approved endpoints', async (t) =>
   assert.equal(authorDetail.page.canManageVisibility.value, true)
 })
 
-// Flask 作者深連結須先登入；管理深連結仍不呼叫尚未實作的 API。
-test('Flask author routes verify identity while management remains unavailable', async (t) => {
+// Flask 作者深連結先依共同權限流程驗證；管理路由與權限由 admin.test.js 覆蓋。
+test('Flask author routes verify identity', async (t) => {
   const authorRoutes = new Map([
     ['/vue/articles/new', null],
     ['/vue/articles/7/edit', '/api/articles/7'],
@@ -550,7 +550,6 @@ test('Flask author routes verify identity while management remains unavailable',
   for (const [path, endpoint] of authorRoutes) {
     const app = articleApp(path, null, '', false, auth.BACKENDS.flask)
     t.after(app.close)
-    assert.equal(app.page.unsupportedOnBackend.value, false, path)
     assert.equal(app.requests.length, 0, path)
     assert.deepEqual(app.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
     const signedIn = articleApp(path, 'flask-jwt', '', false, auth.BACKENDS.flask)
@@ -560,24 +559,8 @@ test('Flask author routes verify identity while management remains unavailable',
     assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
     if (endpoint) assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.flask}${endpoint}`, path)
   }
-  // 所有管理語意頁仍維持門禁；已有管理員 JWT 也不能讀取 Ticket 21 API。
-  for (const path of ['/vue/admin/members', '/vue/admin/members/9', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
-    const adminGuest = articleApp(path, null, '', false, auth.BACKENDS.flask)
-    t.after(adminGuest.close)
-    assert.equal(adminGuest.page.unsupportedOnBackend.value, true, path)
-    assert.equal(adminGuest.requests.length, 0, path)
-    assert.deepEqual(adminGuest.redirects, [], path)
-    const signedIn = articleApp(path, 'flask-jwt', '', false, auth.BACKENDS.flask)
-    t.after(signedIn.close)
-    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.flask}/api/me`, path)
-    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
-    assert.equal(signedIn.requests.length, 1, path)
-    assert.equal(signedIn.page.unsupportedOnBackend.value, true, path)
-  }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="unsupportedOnBackend"[^>]*>.*此後端尚未提供此頁/s)
-  assert.match(descriptor.template.content, /account\.role === 'admin' && !flaskBackend/)
   assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 

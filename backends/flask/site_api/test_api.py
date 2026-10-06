@@ -20,6 +20,276 @@ class FlaskContractTests(unittest.TestCase):
     def setUp(self):
         self.client = create_app().test_client()
 
+    # 管理專用端點先驗角色，非法參數不得先觸發管理資料查詢。
+    def test_management_role_precedes_validation(self):
+        paths = (
+            ("get", "/api/members?x=1", None),
+            ("get", "/api/members/bad?x=1", None),
+            ("put", "/api/members/bad/status?x=1", {"status": "invalid"}),
+            ("get", "/api/comments?x=1", None),
+            ("get", "/api/settings/login-lockout?x=1", None),
+            ("put", "/api/settings/login-lockout?x=1", {}),
+        )
+        for method, path, body in paths:
+            with self.subTest(path=path), patch("site_api.views.connect") as connect, patch(
+                "site_api.views.authenticate", return_value=({"id": 1, "role": "member"}, {"jti": "j"})
+            ):
+                response = getattr(self.client, method)(path, json=body)
+                self.assertEqual((response.status_code, response.json["error_code"]), (403, "E0003"))
+                connect.return_value.__enter__.return_value.execute.assert_not_called()
+
+    # 操作 05 的管理範圍也先驗角色，成功時不套用公開文章可見性條件。
+    def test_article_management_scope(self):
+        with patch("site_api.views.connect") as connect, patch(
+            "site_api.views.authenticate", return_value=({"id": 1, "role": "member"}, {"jti": "j"})
+        ):
+            response = self.client.get("/api/articles?page=1&per_page=20&filters%5Bscope%5D=management")
+            self.assertEqual((response.status_code, response.json["error_code"]), (403, "E0003"))
+            connect.return_value.__enter__.return_value.execute.assert_not_called()
+        with patch("site_api.views.connect") as connect, patch(
+            "site_api.views.authenticate", return_value=({"id": 9, "role": "admin"}, {"jti": "j"})
+        ):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = {"count": 0}
+            response = self.client.get("/api/articles?page=1&per_page=20&filters%5Bscope%5D=management")
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("visibility = 'visible'", connection.execute.call_args.args[0])
+
+    # 搜尋保留特殊字元為字面值，NUL 不送入 PostgreSQL，深頁仍回精確總數。
+    def test_member_search_sql_and_pagination(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = {"count": 3}
+            connection.execute.return_value.fetchall.return_value = []
+            response = self.client.get("/api/members?page=99&per_page=2&filters%5Bkeyword%5D=+A%25_%5C+")
+            self.assertEqual((response.status_code, response.json["data"]["pagination"]),
+                             (200, {"page": 99, "per_page": 2, "total": 3, "total_pages": 2}))
+            self.assertEqual(response.json["data"]["list"], [])
+            statements = connection.execute.call_args_list
+            self.assertEqual(len(statements), 1)
+            self.assertIn("role = 'member'", statements[0].args[0])
+            self.assertIn("strpos(translate", statements[0].args[0])
+            self.assertEqual(statements[0].args[1], ("a%_\\", "a%_\\"))
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%00")
+            self.assertEqual((response.status_code, response.json["data"]["pagination"]["total"]), (200, 0))
+            connect.return_value.__enter__.return_value.execute.assert_not_called()
+
+    # 非空結果只執行計數與列表兩個業務 SQL，暱稱與 Email 均由同一條查詢提供。
+    def test_member_search_page_uses_two_queries(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        account = {"id": 4, "email": "a@example.test", "nickname": "A君", "role": "member",
+                   "status": "disabled", "created_at": datetime.now(timezone.utc)}
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            count = MagicMock()
+            count.fetchone.return_value = {"count": 1}
+            listing = MagicMock()
+            listing.fetchall.return_value = [account]
+            connection.execute.side_effect = (count, listing)
+            response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=a")
+            self.assertEqual((response.status_code, response.json["data"]["list"][0]["status"]), (200, "disabled"))
+            self.assertEqual(len(connection.execute.call_args_list), 2)
+            self.assertIn("ORDER BY created_at DESC, id DESC", connection.execute.call_args_list[1].args[0])
+            self.assertEqual(connection.execute.call_args_list[1].args[1], ("a", "a", 20, 0))
+
+    # 254 碼依 trim 後長度；只裁 U+0020，Tab 留在搜尋字面值中。
+    def test_member_keyword_codepoint_boundary(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=" + "界" * 255)
+            self.assertEqual((response.status_code, response.json["errors"]["filters.keyword"]),
+                             (422, ["欄位格式或範圍不正確"]))
+            connect.return_value.__enter__.return_value.execute.assert_not_called()
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = {"count": 0}
+            response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=+%09A+%C3%89+")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(connection.execute.call_args_list[0].args[1], ("\ta É", "\ta É"))
+
+    # 管理員帳號與不存在 ID 均隱藏，且詳情只輸出公開的會員欄位。
+    def test_member_detail_hides_admin(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = None
+            response = self.client.get("/api/members/4")
+            self.assertEqual((response.status_code, response.json["error_code"]), (404, "E0004"))
+            self.assertIn("role = 'member'", connection.execute.call_args.args[0])
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = {
+                "id": 4, "email": "reader@example.test", "nickname": "讀者", "role": "member",
+                "status": "active", "created_at": datetime.now(timezone.utc), "password_hash": "secret",
+            }
+            response = self.client.get("/api/members/4")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(set(response.json["data"]), {"id", "email", "nickname", "role", "status", "created_at"})
+
+    # 狀態同值不撤銷 session；實際停用則在同一交易先改帳號再撤銷全部舊登入。
+    def test_member_status_noop_and_disable(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        for current, expected_updates in (("disabled", 0), ("active", 2)):
+            with self.subTest(current=current), patch("site_api.views.connect") as connect, patch(
+                "site_api.views.authenticate", return_value=admin
+            ):
+                connection = connect.return_value.__enter__.return_value
+                connection.execute.return_value.fetchall.return_value = [
+                    {"id": 4, "role": "member", "status": current}, {"id": 9, "role": "admin", "status": "active"},
+                ]
+                response = self.client.put("/api/members/4/status", json={"status": "disabled"})
+                self.assertEqual((response.status_code, response.json["data"]), (200, {}))
+                sql = [call.args[0] for call in connection.execute.call_args_list]
+                updates = [statement for statement in sql if statement.startswith("UPDATE ")]
+                self.assertEqual(len(updates), expected_updates)
+                if expected_updates:
+                    self.assertIn("UPDATE accounts SET status", updates[0])
+                    self.assertIn("UPDATE login_sessions SET revoked_at", updates[1])
+
+    # 恢復只改狀態，不改 locked_until、失敗世代或已撤銷的登入。
+    def test_member_status_restore_and_admin_target(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        for target_role, expected in (("member", 200), ("admin", 404)):
+            with self.subTest(target_role=target_role), patch("site_api.views.connect") as connect, patch(
+                "site_api.views.authenticate", return_value=admin
+            ):
+                connection = connect.return_value.__enter__.return_value
+                connection.execute.return_value.fetchall.return_value = [
+                    {"id": 4, "role": target_role, "status": "disabled"},
+                    {"id": 9, "role": "admin", "status": "active"},
+                ]
+                response = self.client.put("/api/members/4/status", json={"status": "active"})
+                self.assertEqual(response.status_code, expected)
+                updates = [call.args[0] for call in connection.execute.call_args_list if call.args[0].startswith("UPDATE ")]
+                self.assertEqual(updates, ["UPDATE accounts SET status = %s WHERE id = %s"] if expected == 200 else [])
+
+    # 預驗後若管理員 session 或角色失效，交易內重驗必須阻止狀態變更。
+    def test_member_status_rechecks_identity_after_locks(self):
+        initial = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        with patch("site_api.views.connect") as connect, patch(
+            "site_api.views.authenticate", side_effect=(initial, ApiError("E0002"))
+        ):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchall.return_value = [
+                {"id": 4, "role": "member", "status": "active"}, {"id": 9, "role": "admin", "status": "active"},
+            ]
+            response = self.client.put("/api/members/4/status", json={"status": "disabled"})
+            self.assertEqual((response.status_code, response.json["error_code"]), (401, "E0002"))
+            self.assertFalse(any(call.args[0].startswith("UPDATE ") for call in connection.execute.call_args_list))
+
+    # 管理留言包含下架內容，以 JOIN 一次取作者並計算管理員可恢復資格。
+    def test_management_comments_include_hidden(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        now = datetime.now(timezone.utc)
+        row = {"id": 8, "author_id": 4, "article_id": 3, "body": "內容", "visibility": "hidden",
+               "restore_control": "admin", "version": 2, "created_backend": "flask",
+               "created_at": now, "updated_at": now, "nickname": "作者"}
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            count = MagicMock()
+            count.fetchone.return_value = {"count": 1}
+            listing = MagicMock()
+            listing.fetchall.return_value = [row]
+            connection.execute.side_effect = (count, listing)
+            response = self.client.get("/api/comments?page=1&per_page=20")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual((response.json["data"]["list"][0]["visibility"],
+                              response.json["data"]["list"][0]["can_restore"]), ("hidden", True))
+            self.assertEqual(len(connection.execute.call_args_list), 2)
+            self.assertNotIn("visibility = 'visible'", connection.execute.call_args_list[0].args[0])
+
+    # 設定完整型態與上限逐欄驗證，布林不能冒充整數且無效請求無寫入。
+    def test_lockout_settings_validation(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        cases = (
+            ({}, "enabled", "此欄位為必填"),
+            ({"enabled": None, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}, "enabled", "此欄位不可為 null"),
+            ({"enabled": 1, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}, "enabled", "欄位型態不正確"),
+            ({"enabled": True, "window_minutes": True, "failure_threshold": 5, "lock_seconds": 300}, "window_minutes", "欄位型態不正確"),
+            ({"enabled": True, "window_minutes": 61, "failure_threshold": 5, "lock_seconds": 300}, "window_minutes", "欄位格式或範圍不正確"),
+            ({"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300, "extra": 1}, "extra", "不支援此欄位"),
+        )
+        for body, field, expected in cases:
+            with self.subTest(body=body), patch("site_api.views.connect") as connect, patch(
+                "site_api.views.authenticate", return_value=admin
+            ):
+                response = self.client.put("/api/settings/login-lockout", json=body)
+                self.assertEqual((response.status_code, response.json["errors"][field]), (422, [expected]))
+                connect.return_value.__enter__.return_value.execute.assert_not_called()
+
+    # 關閉設定時依設定、帳號 ID、session 鎖序清鎖與計數世代；數值修改不清鎖。
+    def test_lockout_settings_disable_side_effects(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        original = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
+        next_values = original | {"enabled": False}
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = original
+            response = self.client.put("/api/settings/login-lockout", json=next_values)
+            self.assertEqual((response.status_code, response.json["data"]), (200, {}))
+            sql = [call.args[0] for call in connection.execute.call_args_list]
+            self.assertIn("login_lockout_settings", sql[0])
+            self.assertIn("ORDER BY id FOR UPDATE", sql[1])
+            self.assertIn("login_sessions", sql[2])
+            self.assertTrue(any("failure_epoch = failure_epoch + 1" in statement for statement in sql))
+            self.assertFalse(any("UPDATE login_sessions" in statement for statement in sql))
+
+    # 只修改數值或提交同值都不清除現有鎖；讀取結果限四欄。
+    def test_lockout_settings_numeric_update_and_read(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        original = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
+        for body, expected_updates in ((original, 0), (original | {"lock_seconds": 600}, 1)):
+            with self.subTest(body=body), patch("site_api.views.connect") as connect, patch(
+                "site_api.views.authenticate", return_value=admin
+            ):
+                connection = connect.return_value.__enter__.return_value
+                connection.execute.return_value.fetchone.return_value = original
+                response = self.client.put("/api/settings/login-lockout", json=body)
+                self.assertEqual(response.status_code, 200)
+                updates = [call.args[0] for call in connection.execute.call_args_list if call.args[0].startswith("UPDATE ")]
+                self.assertEqual(len(updates), expected_updates)
+                self.assertFalse(any("locked_until" in statement for statement in updates))
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = original | {"id": 1}
+            response = self.client.get("/api/settings/login-lockout")
+            self.assertEqual((response.status_code, response.json["data"]), (200, original))
+
+    # 設定列已鎖住後若管理員失去權限，所有四欄與清鎖副作用都不得寫入。
+    def test_lockout_settings_rechecks_identity_after_locks(self):
+        initial = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        body = {"enabled": False, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
+        with patch("site_api.views.connect") as connect, patch(
+            "site_api.views.authenticate", side_effect=(initial, ({"id": 9, "role": "member"}, {"jti": "j"}))
+        ):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = body | {"enabled": True}
+            response = self.client.put("/api/settings/login-lockout", json=body)
+            self.assertEqual((response.status_code, response.json["error_code"]), (403, "E0003"))
+            self.assertFalse(any(call.args[0].startswith("UPDATE ") for call in connection.execute.call_args_list))
+
+    # Flask 自動提供 HEAD；帶完整設定 Body 也須依 GET 規則拒絕，且不能寫入。
+    def test_lockout_settings_head_never_writes(self):
+        admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        settings = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = settings
+            response = self.client.open("/api/settings/login-lockout", method="HEAD",
+                                        data=json.dumps(settings | {"enabled": False}),
+                                        content_type="application/json")
+            self.assertEqual(response.status_code, 422)
+            connection.execute.assert_not_called()
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.return_value.fetchone.return_value = settings
+            response = self.client.open("/api/settings/login-lockout", method="HEAD")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(connection.execute.call_args_list), 1)
+            self.assertTrue(connection.execute.call_args.args[0].startswith("SELECT "))
+
     # 4／16 碼接受且 3／17 碼拒絕，確認格式錯誤不進入 DB。
     def test_password_boundaries(self):
         for password in ("abc", "a" * 17, "測試1234", "ab c"):

@@ -111,15 +111,83 @@ test('Flask auth copy offers publishing', async (t) => {
   assert.match(registrationHtml, /會顯示在您日後發表的內容旁/)
 })
 
-// Flask 管理員可使用自己的作者導覽，管理選單仍不連到尚未實作的端點。
-test('Flask admin navigation offers author links without management links', async (t) => {
+// Flask 管理員的共用導覽同時提供作者與四個管理入口。
+test('Flask admin navigation offers author and management links', async (t) => {
   const flask = app('/vue/', '', 'flask-token', auth.BACKENDS.flask)
   t.after(flask.close)
   await respond(flask.requests[0], 200, success(administrator))
   assert.equal(flask.requests[1].url, `${auth.BACKENDS.flask}/api/articles?page=1&per_page=20`)
   const html = await rendered(flask.page)
   for (const href of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments']) assert.match(html, new RegExp(`href="${href}"`))
-  for (const href of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) assert.doesNotMatch(html, new RegExp(`href="${href}"`))
+  for (const href of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) assert.match(html, new RegExp(`href="${href}"`))
+})
+
+// Flask 管理頁先驗目前角色，再按路由讀共用 API；會員及管理員 ID 不得露出會員資料。
+test('Flask management routes enforce role and admin target boundaries', async (t) => {
+  const routes = new Map([
+    ['/vue/admin/members', '/api/members?page=1&per_page=20'],
+    ['/vue/admin/members/2', '/api/members/2'],
+    ['/vue/admin/articles', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management'],
+    ['/vue/admin/comments', '/api/comments?page=1&per_page=20'],
+    ['/vue/admin/settings/login-lockout', '/api/settings/login-lockout'],
+  ])
+  for (const [path, endpoint] of routes) {
+    const guest = app(path, '', null, auth.BACKENDS.flask)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    const adminPage = app(path, '', 'flask-token', auth.BACKENDS.flask)
+    t.after(adminPage.close)
+    assert.equal(adminPage.requests[0].url, `${auth.BACKENDS.flask}/api/me`, path)
+    await respond(adminPage.requests[0], 200, success(administrator))
+    assert.equal(adminPage.requests[1].url, `${auth.BACKENDS.flask}${endpoint}`, path)
+  }
+  const denied = app('/vue/admin/members', '', 'flask-token', auth.BACKENDS.flask)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  assert.match(await rendered(denied.page), /此頁僅供管理員使用/)
+  const forbidden = app('/vue/admin/members/2', '', 'flask-token', auth.BACKENDS.flask)
+  t.after(forbidden.close)
+  await respond(forbidden.requests[0], 200, success(administrator))
+  await respond(forbidden.requests[1], 403, { success: false, error_code: 'E0003' })
+  assert.match(await rendered(forbidden.page), /沒有權限使用此功能/)
+  assert.doesNotMatch(await rendered(forbidden.page), /停用會員|恢復會員/)
+  const hiddenAdmin = app('/vue/admin/members/1', '', 'flask-token', auth.BACKENDS.flask)
+  t.after(hiddenAdmin.close)
+  await respond(hiddenAdmin.requests[0], 200, success(administrator))
+  await respond(hiddenAdmin.requests[1], 404, { success: false, error_code: 'E0004' })
+  const html = await rendered(hiddenAdmin.page)
+  assert.match(html, /找不到指定資料或 API/)
+  assert.doesNotMatch(html, /停用會員|恢復會員/)
+})
+
+// Flask 設定及停用使用現有讀回流程，顯示伺服器提交後的值。
+test('Flask lockout and member status show confirmed readback', async (t) => {
+  const settings = app('/vue/admin/settings/login-lockout', '', 'flask-token', auth.BACKENDS.flask)
+  t.after(settings.close)
+  await respond(settings.requests[0], 200, success(administrator))
+  await respond(settings.requests[1], 200, success(lockout))
+  settings.page.lockoutDraft.value.failure_threshold = 8
+  const save = settings.page.submitLockoutSettings()
+  assert.equal(settings.requests[2].url, `${auth.BACKENDS.flask}/api/settings/login-lockout`)
+  assert.equal(settings.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(settings.requests[2].body), { ...lockout, failure_threshold: 8 })
+  await respond(settings.requests[2], 200, success({}))
+  await respond(settings.requests[3], 200, success({ ...lockout, failure_threshold: 8 }))
+  await save
+  assert.match(await rendered(settings.page), /value="8"/)
+
+  const detail = app('/vue/admin/members/2', '', 'flask-token', auth.BACKENDS.flask)
+  t.after(detail.close)
+  await respond(detail.requests[0], 200, success(administrator))
+  await respond(detail.requests[1], 200, success(member))
+  const disable = detail.page.submitMemberStatus()
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.flask}/api/members/2/status`)
+  assert.deepEqual(JSON.parse(detail.requests[2].body), { status: 'disabled' })
+  await respond(detail.requests[2], 200, success({}))
+  await respond(detail.requests[3], 200, success({ ...member, status: 'disabled' }))
+  await disable
+  assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
 })
 
 // Django 管理端點啟用後，管理員導覽需保留作者與全部管理入口。
