@@ -195,6 +195,31 @@ services:
       timeout: 3s
       retries: 20
 
+  gin:
+    # 舊票隔離 fixture 不載入此服務；一般啟動腳本會明確指定。
+    profiles: ["gin"]
+    build:
+      context: .
+      dockerfile: backends/gin/Dockerfile
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
+    volumes:
+      - ./.local/keys/gin.key:/run/secrets/gin-jwt.key:ro
+    ports:
+      - "127.0.0.1:8087:8000"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/up"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   frontend-vue:
     build:
       context: ./frontend/vue

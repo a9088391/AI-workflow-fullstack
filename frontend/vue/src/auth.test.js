@@ -68,7 +68,7 @@ test('Django session selection is exact and fails closed', () => {
   assert.equal(readSession(s), null)
   saveSession(s, 'django-jwt', '2026-09-24 18:00:00')
   assert.deepEqual(readSession(s), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
-  assert.equal(selectBackend(s, 'http://localhost:8087'), false)
+  assert.equal(selectBackend(s, 'http://localhost:8093'), false)
   assert.equal(readSession(s).accessToken, 'django-jwt')
   assert.equal(selectBackend(s, BACKENDS.laravel), true)
   assert.equal(readSession(s), null)
@@ -101,6 +101,21 @@ test('FastAPI session selection keeps backend-bound JWT isolated', () => {
   assert.equal(selectBackend(s, BACKENDS.flask), true)
   assert.equal(readSession(s), null)
   s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.fastapi, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+})
+
+// Gin 必須使用固定 8087；選擇前後的 JWT 只屬於原後端，不能跨框架沿用。
+test('Gin selection preserves only Gin-bound sessions', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.gin, 'http://localhost:8087')
+  assert.equal(selectBackend(s, BACKENDS.gin), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'gin-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.gin, accessToken: 'gin-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.gin, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
   assert.equal(readSession(s), null)
 })
 

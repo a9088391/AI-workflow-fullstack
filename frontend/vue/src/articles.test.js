@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { setImmediate } from 'node:timers/promises'
 import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
+import { renderToString } from '@vue/server-renderer'
 import * as auth from './auth.js'
 import * as registration from './registration.js'
 import * as articles from './articles.js'
@@ -89,12 +90,23 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
-  const page = scope.run(() => runInNewContext(`${script}\n;({ articleTitle, articleBody, articleList, articleData, commentList, account, credential, backend, backendLabel, flaskBackend, fastapiBackend, canSwitchNuxt, canComment, canEdit, canManageVisibility, locked, lockText, lockDeadline, tickLock, hasDraft, reLogin, disabledAccount, contentPending, contentReady, writeUnknown, summary, summaryCode, published, listPage, submitArticle, submitRegistration, submitLogin, submitLogout, verifyAccount, loadContent, onPageHide, chooseFrontend, chooseBackend, email, password, nickname })`, context))
+  // 收集頂層綁定，讓渲染檢查與事件測試都使用實際 script setup 狀態。
+  const bindings = [...script.matchAll(/^(?:const|let|function|async function) ([A-Za-z_$][\w$]*)/gm)].map(function bindingName(match) { return match[1] })
+  const page = scope.run(() => runInNewContext(`${script}\n;({ ${bindings.join(', ')} })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
     close() { lifecycle.unmount(); scope.stop() },
   }
+}
+
+// 用 Vue 正式編譯與 SSR 渲染目前元件模板，檢查控制與提示實際是否出現在畫面。
+async function renderArticleApp(app) {
+  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
+  const render = vue.compile(descriptor.template.content)
+  // 模板使用 script setup 與既有匯入的純函式；測試提供相同的公開綁定。
+  function renderBindings() { return { ...auth, ...registration, ...articles, ...comments, ...admin, ...app.page } }
+  return renderToString(vue.h({ setup: renderBindings, render }))
 }
 
 // 等待回應及 Vue 微任務；可指定 Retry-After 等標頭檢查登入互動。
@@ -446,7 +458,7 @@ test('Flask selection keeps Nuxt switch unavailable', (t) => {
   assert.deepEqual(app.redirects, [])
   assert.equal(auth.readSession(app.sessionStorage).accessToken, 'flask-jwt')
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /flaskBackend \? '（此後端尚未提供）'/)
+  assert.match(descriptor.template.content, /flaskBackend \|\| fastapiBackend \|\| ginBackend \? '（此後端尚未提供）'/)
 })
 
 // Flask 註冊與登入沿用共用路徑，429 倒數期間阻擋送出，成功後只保存原 JWT 期限。
@@ -561,7 +573,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="!ginBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -656,6 +668,121 @@ test('FastAPI registration, lockout, reading and logout use approved endpoints',
   assert.equal(visitor.requests[0].headers.Authorization, undefined)
 })
 
+// Gin 選擇會撤銷舊 JWT；註冊、鎖定登入、重載驗權及閱讀均走固定 8087。
+test('Gin uses its own session and ordered public auth and reading requests', async (t) => {
+  const switched = articleApp('/vue/', 'laravel-jwt')
+  t.after(switched.close)
+  const choice = { target: { value: auth.BACKENDS.gin } }
+  await switched.page.chooseBackend(choice)
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.gin)
+  t.after(registration.close)
+  // Gin 的註冊說明只提目前可用的帳號資訊，不暗示本票能發文。
+  const registrationView = await renderArticleApp(registration)
+  assert.match(registrationView, /會顯示在您的帳號資訊中/)
+  assert.doesNotMatch(registrationView, /會顯示在您日後發表的內容旁/)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const register = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.gin}/api/auth/register`)
+  await respond(registration.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await register
+  assert.deepEqual(registration.redirects, ['/vue/login?registered=1'])
+
+  const login = articleApp('/vue/login', null, '', false, auth.BACKENDS.gin)
+  t.after(login.close)
+  // 使用實際渲染結果確認 Gin 登入導引不宣稱尚未提供的作者功能。
+  const loginView = await renderArticleApp(login)
+  assert.match(loginView, /登入後可閱讀文章與留言/)
+  assert.doesNotMatch(loginView, /登入後即可發表文章與查看自己的文章/)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const first = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.gin}/api/auth/login`)
+  assert.equal(login.requests[0].headers.Authorization, undefined)
+  await respond(login.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await first
+  assert.equal(login.page.locked.value, true)
+  assert.match(await renderArticleApp(login), /登入暫時鎖定，約剩 0[01]:[0-5][0-9]/)
+  await login.page.submitLogin()
+  assert.equal(login.requests.length, 1)
+  login.page.lockDeadline.value = performance.now() - 1
+  login.page.tickLock()
+  const second = login.page.submitLogin()
+  await respond(login.requests[1], 200, { success: true, message: 'OK', data: { access_token: 'gin-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+  await second
+  assert.deepEqual(auth.readSession(login.sessionStorage), { backend: auth.BACKENDS.gin, accessToken: 'gin-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.deepEqual(login.redirects, ['/vue/'])
+
+  const detail = articleApp('/vue/articles/7', 'gin-jwt', '', false, auth.BACKENDS.gin)
+  t.after(detail.close)
+  assert.equal(detail.requests[0].url, `${auth.BACKENDS.gin}/api/me`)
+  assert.equal(detail.requests[0].headers.Authorization, 'Bearer gin-jwt')
+  await respond(detail.requests[0], 200, { success: true, message: 'OK', data: member })
+  assert.equal(detail.requests[1].url, `${auth.BACKENDS.gin}/api/articles/7`)
+  await respond(detail.requests[1], 200, { success: true, message: 'OK', data: sample })
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.gin}/api/articles/7/comments?page=1&per_page=20`)
+  await respond(detail.requests[2], 200, { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } })
+  assert.equal(detail.page.canComment.value, false)
+  assert.equal(detail.page.canEdit.value, false)
+  assert.equal(detail.page.canManageVisibility.value, false)
+  const rendered = await renderArticleApp(detail)
+  assert.match(rendered, /閱讀文章/)
+  assert.doesNotMatch(rendered, /發表留言|編輯文章|下架|我的文章/)
+  const logout = detail.page.submitLogout()
+  assert.equal(detail.requests[3].url, `${auth.BACKENDS.gin}/api/auth/logout`)
+  assert.equal(detail.requests[3].headers.Authorization, 'Bearer gin-jwt')
+  await respond(detail.requests[3], 200, { success: true, message: 'OK', data: {} })
+  await logout
+  assert.equal(auth.readSession(detail.sessionStorage), null)
+
+  const visitor = articleApp('/vue/', null, '', false, auth.BACKENDS.gin)
+  t.after(visitor.close)
+  assert.equal(visitor.requests[0].url, `${auth.BACKENDS.gin}/api/articles?page=1&per_page=20`)
+  assert.equal(visitor.requests[0].headers.Authorization, undefined)
+  await respond(visitor.requests[0], 200, { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
+  assert.match(await renderArticleApp(visitor), /閱讀全文/)
+
+  const guestDetail = articleApp('/vue/articles/7', null, '', false, auth.BACKENDS.gin)
+  t.after(guestDetail.close)
+  assert.equal(guestDetail.requests[0].url, `${auth.BACKENDS.gin}/api/articles/7`)
+  assert.equal(guestDetail.requests[0].headers.Authorization, undefined)
+  await respond(guestDetail.requests[0], 200, { success: true, message: 'OK', data: sample })
+  assert.equal(guestDetail.requests[1].url, `${auth.BACKENDS.gin}/api/articles/7/comments?page=1&per_page=20`)
+  assert.equal(guestDetail.requests[1].headers.Authorization, undefined)
+  await respond(guestDetail.requests[1], 200, { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } })
+  assert.match(await renderArticleApp(guestDetail), /目前尚無留言/)
+})
+
+// Gin 未支援的直接路徑應顯示可返回畫面；登入重驗只可呼叫已支援的 /api/me。
+test('Gin unsupported deep links never request unsupported endpoints or loop through login', async (t) => {
+  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/admin/members', '/vue/admin/settings/login-lockout']) {
+    const guest = articleApp(path, null, '', false, auth.BACKENDS.gin)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [], path)
+    assert.equal(guest.requests.length, 0, path)
+    assert.match(await renderArticleApp(guest), /此功能尚未提供/)
+    const signedIn = articleApp(path, 'gin-jwt', '', false, auth.BACKENDS.gin)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.gin}/api/me`, path)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    assert.equal(signedIn.requests.length, 1, path)
+    assert.match(await renderArticleApp(signedIn), /此功能尚未提供/)
+  }
+  const app = articleApp('/vue/', 'gin-jwt', '', false, auth.BACKENDS.gin)
+  t.after(app.close)
+  assert.equal(app.page.canSwitchNuxt.value, false)
+  const choice = { target: { value: 'nuxt' } }
+  app.page.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'vue')
+  app.page.versionsOpen.value = true
+  assert.match(await renderArticleApp(app), /Nuxt 尚未支援目前選擇的 Gin 後端/)
+})
+
 // FastAPI 作者深連結先驗權才讀取；管理入口由獨立管理測試驗證。
 test('FastAPI author routes verify identity before protected reads', async (t) => {
   const authorRoutes = new Map([
@@ -692,7 +819,7 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><template v-if="!ginBackend"><a href="\/vue\/articles\/new"/)
 })
 
 // Flask 與 FastAPI 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。

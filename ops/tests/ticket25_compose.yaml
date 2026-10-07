@@ -1,0 +1,24 @@
+# 此 fixture 僅在 ticket25_test 專案使用，保留獨立資料卷與測試金鑰。
+services:
+  db:
+    environment:
+      TICKET25_FIXTURE: isolated-ticket25
+  sql:
+    volumes:
+      - ./.local/ticket25-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:8091:8000"
+    volumes:
+      - ./.local/ticket25-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket25-backend/laravel-logs:/srv/laravel/storage/logs
+  gin:
+    environment:
+      CORS_ORIGIN: http://localhost:8090
+    ports: !override
+      - "127.0.0.1:8087:8000"
+    volumes:
+      - ./.local/ticket25-backend/gin.key:/run/secrets/gin-jwt.key:ro
+  nginx:
+    ports: !override
+      - "127.0.0.1:8090:80"
