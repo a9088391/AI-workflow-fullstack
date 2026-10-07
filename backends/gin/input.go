@@ -20,6 +20,7 @@ const wrongType = "欄位型態不正確"
 var emailPattern = regexp.MustCompile(`^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$`)
 var passwordPattern = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
 var decimalPattern = regexp.MustCompile(`^[0-9]+$`)
+var jsonIntegerPattern = regexp.MustCompile(`^-?[0-9]+$`)
 
 // apiError 保存固定錯誤碼及欄位細節，讓各端點共用相同回應。
 type apiError struct {
@@ -243,6 +244,15 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			errors[key] = []string{nullValue}
 			continue
 		}
+		if key == "version" {
+			// JSON 版本必須是真正的十進位整數，不能把字串、小數或指數當成同一型態。
+			if len(value) == 0 || !jsonIntegerPattern.Match(value) {
+				errors[key] = []string{wrongType}
+			} else {
+				values[key] = string(value)
+			}
+			continue
+		}
 		if len(value) == 0 || value[0] != '"' {
 			errors[key] = []string{wrongType}
 			continue
@@ -286,6 +296,34 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			}
 		case "nickname":
 			if utf8.RuneCountInString(value) < 1 || utf8.RuneCountInString(value) > 30 || strings.ContainsRune(value, 0) || allSpace(value) {
+				errors[field] = []string{invalid}
+			}
+		case "title", "body":
+			// 欄位組含 title 時是文章內文上限 20,000；不含 title 時是留言內文上限 2,000。
+			limit := 20000
+			if field == "title" {
+				limit = 200
+			} else {
+				articleBody := false
+				for _, candidate := range fields {
+					if candidate == "title" {
+						articleBody = true
+					}
+				}
+				if !articleBody {
+					limit = 2000
+				}
+			}
+			length := utf8.RuneCountInString(value)
+			if length < 1 || length > limit || strings.ContainsRune(value, 0) || allSpace(value) {
+				errors[field] = []string{invalid}
+			}
+		case "visibility":
+			if value != "visible" && value != "hidden" {
+				errors[field] = []string{invalid}
+			}
+		case "version":
+			if _, e := urlID(value, field); e != nil {
 				errors[field] = []string{invalid}
 			}
 		}

@@ -21,7 +21,7 @@ var messages = map[string]struct {
 	status  int
 	message string
 }{
-	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
+	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E0201": {409, "內容已更新，請確認最新內容後再送出"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
 }
 
 // server 持有唯一資料庫池與 Gin 專屬金鑰，避免請求間共用可變身分。
@@ -431,8 +431,17 @@ func run() error {
 	router.POST("/api/auth/logout", s.logout)
 	router.GET("/api/me", s.me)
 	router.GET("/api/articles", s.articles)
+	router.POST("/api/articles", s.createArticle)
 	router.GET("/api/articles/:article_id", s.article)
+	router.PUT("/api/articles/:article_id", s.editArticle)
+	router.PUT("/api/articles/:article_id/visibility", s.setArticleVisibility)
 	router.GET("/api/articles/:article_id/comments", s.comments)
+	router.POST("/api/articles/:article_id/comments", s.createComment)
+	router.GET("/api/me/articles", s.myArticles)
+	router.GET("/api/me/comments", s.myComments)
+	router.GET("/api/comments/:comment_id", s.commentDetail)
+	router.PUT("/api/comments/:comment_id", s.editComment)
+	router.PUT("/api/comments/:comment_id/visibility", s.setCommentVisibility)
 	router.GET("/up", s.health)
 	// 未知路徑也使用可追查的共同錯誤 envelope。
 	router.NoRoute(func(c *gin.Context) { respondError(c, &apiError{code: "E0004"}) })

@@ -286,9 +286,9 @@ test('Django comment creation and own detail use author endpoints', async (t) =>
   assert.match(await renderedPage(own.page), />恢復<\/button>/)
 })
 
-// Flask 與 FastAPI 新留言只重讀原文章第一頁；自己的單則詳情即使父文章不可讀仍保留本文。
-test('Flask and FastAPI comment creation and own detail preserve author flow', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
+// Flask、FastAPI 與 Gin 新留言重讀原文章第一頁；父文章不可讀時仍保留自己的留言詳情。
+test('Flask, FastAPI and Gin comment creation and own detail preserve author flow', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
     const instance = await writableArticle(t, '?page=2', selectedBackend)
     assert.equal(instance.page.canComment.value, true)
     assert.match(await renderedPage(instance.page), /發表留言/)
@@ -727,6 +727,21 @@ test('ownership limits editors while administrators retain permitted detail acti
   assert.doesNotMatch(await renderedPage(ownComment.page), /href="[^\"]*\/edit"/)
 })
 
+// Gin 管理員自己的內容仍走作者操作；管理頁連結不能導向尚未開放的 Gin API。
+test('Gin administrator can edit and hide own content without management links', async (t) => {
+  const own = await resourcePage(t, '/vue/articles/7', article, { ...member, role: 'admin' }, article, auth.BACKENDS.gin)
+  assert.equal(own.page.canEdit.value, true)
+  assert.equal(own.page.canManageVisibility.value, true)
+  const html = await renderedPage(own.page)
+  assert.match(html, /href="\/vue\/articles\/7\/edit"/)
+  assert.match(html, />下架<\/button>/)
+  assert.doesNotMatch(html, /href="\/vue\/admin\//)
+  const ownComment = await resourcePage(t, '/vue/comments/9', { ...comment, visibility: 'visible' }, { ...member, role: 'admin' }, article, auth.BACKENDS.gin)
+  assert.equal(ownComment.page.canEdit.value, true)
+  assert.equal(ownComment.page.canManageVisibility.value, true)
+  assert.doesNotMatch(await renderedPage(ownComment.page), /href="\/vue\/admin\//)
+})
+
 // 409 保留文字及舊 version；GET 只提供比較，確認整合／捨棄後才可手動使用新 version。
 test('edit conflict requires a fresh comparison and explicit merge or discard before manual PUT', async (t) => {
   const instance = await resourcePage(t, '/vue/articles/7/edit')
@@ -772,9 +787,9 @@ test('edit conflict requires a fresh comparison and explicit merge or discard be
   assert.equal(instance.requests.length, 6)
 })
 
-// Django、Flask 與 FastAPI 編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
-test('Django, Flask and FastAPI edit conflict keeps draft until explicit latest-version comparison', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
+// 各作者後端編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
+test('author backends keep edit conflict draft until explicit latest-version comparison', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
     const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, selectedBackend)
     instance.page.articleTitle.value = '我的 Django 標題'
     instance.page.articleBody.value = '我的 Django 內文'
@@ -804,9 +819,9 @@ test('Django, Flask and FastAPI edit conflict keeps draft until explicit latest-
   }
 })
 
-// Django、Flask 與 FastAPI 的作者留言編修須先確認父文章公開；成功後依原 ID 重讀。
-test('Django, Flask and FastAPI own comment edit rereads the same detail after success', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
+// 各作者後端編修留言須先確認父文章公開；成功後依原 ID 重讀。
+test('author backends reread own comment detail after edit success', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
     const instance = await resourcePage(t, '/vue/comments/9/edit', { ...comment, visibility: 'visible' }, member, article, selectedBackend)
     assert.equal(instance.page.canEdit.value, true)
     instance.page.commentBody.value = '編修後留言'
@@ -823,9 +838,9 @@ test('Django, Flask and FastAPI own comment edit rereads the same detail after s
   }
 })
 
-// Django、Flask 與 FastAPI 下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
-test('Django, Flask and FastAPI article visibility change uses version and server readback', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi]) {
+// 各作者後端下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
+test('author backends change article visibility with version and server readback', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
     const instance = await resourcePage(t, '/vue/articles/7', article, member, article, selectedBackend)
     assert.equal(instance.page.canManageVisibility.value, true)
     const hide = instance.page.submitVisibility('hidden')

@@ -36,7 +36,7 @@ COMPOSE_PROJECT_NAME=ticket16_test COMPOSE_FILE=compose.yaml:ops/tests/ticket16_
 
 FastAPI 固定於 `http://localhost:8086`，提供全部 22 項共用操作；Vue 可選用 FastAPI 完成作者、管理及登入鎖定設定流程。Nuxt 尚未支援切換至 FastAPI。FastAPI 使用獨立的 `.local/keys/fastapi.key`，讀寫同一 PostgreSQL 資料；一般 `ops/start.sh` 會啟動它。Ticket 24 的管理 API 真實 HTTP 驗證使用隔離的 `ticket24_test` 專案、`ops/tests/ticket24_compose.yaml` 與 `ops/tests/ticket24_http.py`；腳本會先核對專案及資料庫身分，不能對展示資料執行。
 
-Gin API 固定於 `http://localhost:8087`，目前提供註冊、登入、登出、`/api/me`、公開文章列表／詳情與文章留言列表；作者及管理寫入仍須選用已實作該操作的後端。Gin 使用獨立 `.local/keys/gin.key`，與其他後端讀寫同一 PostgreSQL，日常 `ops/start.sh` 會啟動。Ticket 25 的真實 HTTP 驗證使用隔離 `ticket25_test` 資料卷、`ops/tests/ticket25_compose.yaml`、測試專用金鑰及 `ops/tests/ticket25_http.py`；測試入口為 Vue `http://localhost:8090/vue/`、Laravel `http://localhost:8091` 與 Gin `http://localhost:8087`，腳本在寫入前核對專案和實際資料卷。
+Gin API 固定於 `http://localhost:8087`，提供註冊、登入、登出、`/api/me`、公開文章列表／詳情與文章留言列表，以及作者發文、留言、個人列表、編修、下架與恢復；管理介面仍須選用已實作該操作的後端。Vue 可選用 Gin 完成這些作者流程。Gin 使用獨立 `.local/keys/gin.key`，與其他後端讀寫同一 PostgreSQL，日常 `ops/start.sh` 會啟動。Ticket 25／26 的真實 HTTP 驗證使用隔離 `ticket25_test` 資料卷、`ops/tests/ticket25_compose.yaml`、測試專用金鑰及 `ops/tests/ticket25_http.py`、`ops/tests/ticket26_http.py`；測試入口為 Vue `http://localhost:8090/vue/`、Laravel `http://localhost:8091` 與 Gin `http://localhost:8087`，腳本在寫入前核對專案、實際資料卷及入口埠。
 
 Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
 
