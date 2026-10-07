@@ -49,7 +49,7 @@ func oneQuery(r *http.Request, allowed map[string]bool) (map[string]string, map[
 			name = parts[0]
 		}
 		canonical := name
-		for _, key := range []string{"page", "per_page", "filters[scope]"} {
+		for _, key := range []string{"page", "per_page", "filters[scope]", "filters[keyword]"} {
 			if strings.HasPrefix(name, key+"[") {
 				canonical = key
 				break
@@ -112,14 +112,14 @@ func urlID(value, name string) (int64, *apiError) {
 	return n, nil
 }
 
-// pageInput 收集所有 Query 錯誤後才查詢資料，合法超頁仍保留原頁碼。
-func pageInput(r *http.Request, scope bool) (int64, int64, string, *apiError) {
+// pageInput 收集列表 Query 錯誤；filter 僅允許已核准的 scope 或 keyword。
+func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError) {
 	if e := noGetBody(r); e != nil {
 		return 0, 0, "", e
 	}
 	allowed := map[string]bool{"page": true, "per_page": true}
-	if scope {
-		allowed["filters[scope]"] = true
+	if filter != "" {
+		allowed["filters["+filter+"]"] = true
 	}
 	values, errors := oneQuery(r, allowed)
 	numbers := map[string]int64{}
@@ -139,10 +139,18 @@ func pageInput(r *http.Request, scope bool) (int64, int64, string, *apiError) {
 	if value, ok := values["filters[scope]"]; ok && len(errors["filters.scope"]) == 0 && value != "management" {
 		errors["filters.scope"] = []string{invalid}
 	}
+	if value, ok := values["filters[keyword]"]; ok && len(errors["filters.keyword"]) == 0 && utf8.RuneCountInString(strings.Trim(value, " ")) > 254 {
+		errors["filters.keyword"] = []string{invalid}
+	}
 	if len(errors) > 0 {
 		return 0, 0, "", &apiError{code: "E0001", fields: errors}
 	}
-	return numbers["page"], numbers["per_page"], values["filters[scope]"], nil
+	value := values["filters["+filter+"]"]
+	if filter == "keyword" {
+		// 只有會員搜尋關鍵字去除前後 U+0020；管理範圍須精確等於 management。
+		value = strings.Trim(value, " ")
+	}
+	return numbers["page"], numbers["per_page"], value, nil
 }
 
 // validSurrogates 拒絕未配對的 JSON UTF-16 escape，避免悄悄改成替代字元。
@@ -320,6 +328,10 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			}
 		case "visibility":
 			if value != "visible" && value != "hidden" {
+				errors[field] = []string{invalid}
+			}
+		case "status":
+			if value != "active" && value != "disabled" {
 				errors[field] = []string{invalid}
 			}
 		case "version":

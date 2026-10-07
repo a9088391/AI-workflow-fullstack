@@ -109,7 +109,7 @@ func (s *server) myArticles(c *gin.Context) {
 	if !ok {
 		return
 	}
-	page, perPage, _, e := pageInput(c.Request, false)
+	page, perPage, _, e := pageInput(c.Request, "")
 	if e != nil {
 		respondError(c, e)
 		return
@@ -123,7 +123,7 @@ func (s *server) myComments(c *gin.Context) {
 	if !ok {
 		return
 	}
-	page, perPage, _, e := pageInput(c.Request, false)
+	page, perPage, _, e := pageInput(c.Request, "")
 	if e != nil {
 		respondError(c, e)
 		return

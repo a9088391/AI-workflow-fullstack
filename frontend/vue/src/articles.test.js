@@ -758,21 +758,8 @@ test('Gin uses its own session and ordered public auth and reading requests', as
   assert.match(await renderArticleApp(guestDetail), /目前尚無留言/)
 })
 
-// Gin 管理頁仍未開放；直達時只驗證登入，不向管理 API 發請求。
-test('Gin unsupported management deep links never request unsupported endpoints or loop through login', async (t) => {
-  for (const path of ['/vue/admin/members', '/vue/admin/settings/login-lockout']) {
-    const guest = articleApp(path, null, '', false, auth.BACKENDS.gin)
-    t.after(guest.close)
-    assert.deepEqual(guest.redirects, [], path)
-    assert.equal(guest.requests.length, 0, path)
-    assert.match(await renderArticleApp(guest), /此功能尚未提供/)
-    const signedIn = articleApp(path, 'gin-jwt', '', false, auth.BACKENDS.gin)
-    t.after(signedIn.close)
-    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.gin}/api/me`, path)
-    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
-    assert.equal(signedIn.requests.length, 1, path)
-    assert.match(await renderArticleApp(signedIn), /此功能尚未提供/)
-  }
+// Nuxt 尚未支援 Gin 後端；切換控制保留目前 Vue 與原登入憑證。
+test('Gin frontend switch keeps the selected backend in Vue', async (t) => {
   const app = articleApp('/vue/', 'gin-jwt', '', false, auth.BACKENDS.gin)
   t.after(app.close)
   assert.equal(app.page.canSwitchNuxt.value, false)

@@ -71,7 +71,7 @@ func (s *server) articles(c *gin.Context) {
 		respondError(c, &apiError{code: "E0003"})
 		return
 	}
-	page, perPage, scope, e := pageInput(c.Request, true)
+	page, perPage, scope, e := pageInput(c.Request, "scope")
 	if e != nil {
 		respondError(c, e)
 		return
@@ -156,7 +156,7 @@ func (s *server) comments(c *gin.Context) {
 	if !ok {
 		return
 	}
-	page, perPage, _, e := pageInput(c.Request, false)
+	page, perPage, _, e := pageInput(c.Request, "")
 	if e != nil {
 		respondError(c, e)
 		return

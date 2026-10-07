@@ -190,6 +190,73 @@ test('Flask lockout and member status show confirmed readback', async (t) => {
   assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
 })
 
+// Gin 管理頁沿用共用驗權與端點；訪客返回原頁，會員不得先讀取管理資料。
+test('Gin management routes require verified admin and expose all management links', async (t) => {
+  const content = { id: 7, body: '管理留言內容', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'gin', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }
+  const routes = new Map([
+    ['/vue/admin/members', ['/api/members?page=1&per_page=20', list([member]), member.email]],
+    ['/vue/admin/members/2', ['/api/members/2', success(member), member.email]],
+    ['/vue/admin/articles', ['/api/articles?page=1&per_page=20&filters%5Bscope%5D=management', list([{ ...content, title: '管理文章標題' }]), '管理文章標題']],
+    ['/vue/admin/comments', ['/api/comments?page=1&per_page=20', list([{ ...content, article_id: 7 }]), '管理留言內容']],
+    ['/vue/admin/settings/login-lockout', ['/api/settings/login-lockout', success(lockout), '目前伺服器值：啟用']],
+  ])
+  for (const [path, [endpoint, response, visibleText]] of routes) {
+    const guest = app(path, '', null, auth.BACKENDS.gin)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
+    const instance = app(path, '', 'gin-token', auth.BACKENDS.gin)
+    t.after(instance.close)
+    assert.equal(instance.requests[0].url, `${auth.BACKENDS.gin}/api/me`, path)
+    assert.equal(instance.requests.length, 1, path)
+    await respond(instance.requests[0], 200, success(administrator))
+    assert.equal(instance.requests[1].url, `${auth.BACKENDS.gin}${endpoint}`, path)
+    await respond(instance.requests[1], 200, response)
+    const html = await rendered(instance.page)
+    assert.match(html, new RegExp(visibleText), path)
+    assert.doesNotMatch(html, /Gin 的管理頁尚未提供/)
+  }
+  const denied = app('/vue/admin/members', '', 'gin-token', auth.BACKENDS.gin)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  assert.doesNotMatch(await rendered(denied.page), /href="\/vue\/admin\/members"/)
+  const home = app('/vue/', '', 'gin-token', auth.BACKENDS.gin)
+  t.after(home.close)
+  await respond(home.requests[0], 200, success(administrator))
+  const html = await rendered(home.page)
+  for (const href of routes.keys()) if (href !== '/vue/admin/members/2') assert.match(html, new RegExp(`href="${href}"`))
+})
+
+// Gin 的管理狀態與完整鎖定設定寫入後均讀回伺服器值，不用本機草稿冒充成功。
+test('Gin member status and lockout settings use confirmed readback', async (t) => {
+  const detail = app('/vue/admin/members/2', '', 'gin-token', auth.BACKENDS.gin)
+  t.after(detail.close)
+  await respond(detail.requests[0], 200, success(administrator))
+  await respond(detail.requests[1], 200, success(member))
+  const disable = detail.page.submitMemberStatus()
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.gin}/api/members/2/status`)
+  assert.deepEqual(JSON.parse(detail.requests[2].body), { status: 'disabled' })
+  await respond(detail.requests[2], 200, success({}))
+  await respond(detail.requests[3], 200, success({ ...member, status: 'disabled' }))
+  await disable
+  assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
+
+  const settings = app('/vue/admin/settings/login-lockout', '', 'gin-token', auth.BACKENDS.gin)
+  t.after(settings.close)
+  await respond(settings.requests[0], 200, success(administrator))
+  await respond(settings.requests[1], 200, success(lockout))
+  settings.page.lockoutDraft.value.failure_threshold = 8
+  const save = settings.page.submitLockoutSettings()
+  assert.equal(settings.requests[2].url, `${auth.BACKENDS.gin}/api/settings/login-lockout`)
+  assert.equal(settings.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(settings.requests[2].body), { ...lockout, failure_threshold: 8 })
+  await respond(settings.requests[2], 200, success({}))
+  await respond(settings.requests[3], 200, success({ ...lockout, failure_threshold: 9 }))
+  await save
+  assert.match(await rendered(settings.page), /目前伺服器值：啟用；5 分鐘內失敗 9 次/)
+})
+
 // Django 管理端點啟用後，管理員導覽需保留作者與全部管理入口。
 test('Django admin navigation shows author and management links', async (t) => {
   const django = app('/vue/', '', 'django-token', auth.BACKENDS.django)

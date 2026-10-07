@@ -727,19 +727,19 @@ test('ownership limits editors while administrators retain permitted detail acti
   assert.doesNotMatch(await renderedPage(ownComment.page), /href="[^\"]*\/edit"/)
 })
 
-// Gin 管理員自己的內容仍走作者操作；管理頁連結不能導向尚未開放的 Gin API。
-test('Gin administrator can edit and hide own content without management links', async (t) => {
+// Gin 管理員自己的內容仍走作者操作；詳情同時保留返回管理列表的入口。
+test('Gin administrator can edit own content and return to management lists', async (t) => {
   const own = await resourcePage(t, '/vue/articles/7', article, { ...member, role: 'admin' }, article, auth.BACKENDS.gin)
   assert.equal(own.page.canEdit.value, true)
   assert.equal(own.page.canManageVisibility.value, true)
   const html = await renderedPage(own.page)
   assert.match(html, /href="\/vue\/articles\/7\/edit"/)
   assert.match(html, />下架<\/button>/)
-  assert.doesNotMatch(html, /href="\/vue\/admin\//)
+  assert.match(html, /href="\/vue\/admin\/articles"/)
   const ownComment = await resourcePage(t, '/vue/comments/9', { ...comment, visibility: 'visible' }, { ...member, role: 'admin' }, article, auth.BACKENDS.gin)
   assert.equal(ownComment.page.canEdit.value, true)
   assert.equal(ownComment.page.canManageVisibility.value, true)
-  assert.doesNotMatch(await renderedPage(ownComment.page), /href="\/vue\/admin\//)
+  assert.match(await renderedPage(ownComment.page), /href="\/vue\/admin\/comments"/)
 })
 
 // 409 保留文字及舊 version；GET 只提供比較，確認整合／捨棄後才可手動使用新 version。

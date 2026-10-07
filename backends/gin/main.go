@@ -442,6 +442,12 @@ func run() error {
 	router.GET("/api/comments/:comment_id", s.commentDetail)
 	router.PUT("/api/comments/:comment_id", s.editComment)
 	router.PUT("/api/comments/:comment_id/visibility", s.setCommentVisibility)
+	router.GET("/api/members", s.members)
+	router.GET("/api/members/:member_id", s.member)
+	router.PUT("/api/members/:member_id/status", s.memberStatus)
+	router.GET("/api/comments", s.adminComments)
+	router.GET("/api/settings/login-lockout", s.loginLockoutSettings)
+	router.PUT("/api/settings/login-lockout", s.updateLoginLockoutSettings)
 	router.GET("/up", s.health)
 	// 未知路徑也使用可追查的共同錯誤 envelope。
 	router.NoRoute(func(c *gin.Context) { respondError(c, &apiError{code: "E0004"}) })
