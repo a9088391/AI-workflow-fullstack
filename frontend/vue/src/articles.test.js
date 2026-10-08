@@ -770,8 +770,8 @@ test('Gin frontend switch keeps the selected backend in Vue', async (t) => {
   assert.match(await renderArticleApp(app), /Nuxt 尚未支援目前選擇的 Gin 後端/)
 })
 
-// Echo 切換先清舊 JWT，作者目標保留，管理目標回公開入口。
-test('Echo selection and login return preserve author routes and sanitize management', async (t) => {
+// Echo 切換先清舊 JWT，再保留合法作者與管理目標供新後端重新驗權。
+test('Echo selection and login return preserve protected routes', async (t) => {
   const switched = articleApp('/vue/me/articles', 'laravel-jwt')
   t.after(switched.close)
   await switched.page.chooseBackend({ target: { value: auth.BACKENDS.echo } })
@@ -795,7 +795,8 @@ test('Echo selection and login return preserve author routes and sanitize manage
   const adminSwitch = articleApp('/vue/admin/members', 'laravel-jwt')
   t.after(adminSwitch.close)
   await adminSwitch.page.chooseBackend({ target: { value: auth.BACKENDS.echo } })
-  assert.deepEqual(adminSwitch.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.equal(auth.readSession(adminSwitch.sessionStorage), null)
+  assert.deepEqual(adminSwitch.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
   const adminLogin = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Farticles', false, auth.BACKENDS.echo)
   t.after(adminLogin.close)
   adminLogin.page.email.value = member.email
@@ -804,7 +805,7 @@ test('Echo selection and login return preserve author routes and sanitize manage
   const login = adminLogin.page.submitLogin()
   await respond(adminLogin.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'echo-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
   await login
-  assert.deepEqual(adminLogin.redirects, ['/vue/'])
+  assert.deepEqual(adminLogin.redirects, ['/vue/admin/articles'])
 
   // Nuxt 尚未接入 Echo，切換前端仍保留原憑證和 Vue 畫面。
   const frontend = articleApp('/vue/', 'echo-jwt', '', false, auth.BACKENDS.echo)
@@ -818,25 +819,11 @@ test('Echo selection and login return preserve author routes and sanitize manage
   frontend.page.versionsOpen.value = true
   assert.match(await renderArticleApp(frontend), /Nuxt 尚未支援目前選擇的 Echo 後端/)
 
-  // 已保存的 Echo JWT 在登入頁重驗後，也不能返回未實作的管理頁。
+  // 已保存的 Echo JWT 在登入頁重驗後，仍保留合法管理目標供該頁驗權。
   const restored = articleApp('/vue/login', 'echo-jwt', '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.echo)
   t.after(restored.close)
   await respond(restored.requests[0], 200, { success: true, message: 'OK', data: member })
-  assert.deepEqual(restored.redirects, ['/vue/'])
-})
-
-// 管理深連結不驗權、不讀取未實作端點；一般會員與管理員都看不到管理入口。
-test('Echo management routes stay unsupported without API requests', async (t) => {
-  for (const path of ['/vue/admin/members', '/vue/admin/members/9', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
-    const app = articleApp(path, 'echo-jwt', '', false, auth.BACKENDS.echo)
-    t.after(app.close)
-    assert.equal(app.requests.length, 0, path)
-    assert.equal(app.redirects.length, 0, path)
-    const view = await renderArticleApp(app)
-    assert.match(view, /此頁尚未提供/, path)
-    assert.match(view, /返回文章列表/, path)
-    assert.doesNotMatch(view, /<form|href="\/vue\/(?:articles\/new|me\/|admin\/)/, path)
-  }
+  assert.deepEqual(restored.redirects, ['/vue/admin/members'])
 })
 
 // 作者深連結先驗身分；沒有登入的導向與已登入的 API 讀取沿用共用路由。
@@ -865,7 +852,7 @@ test('Echo author routes verify identity before protected reads', async (t) => {
 })
 
 // Echo 沿用完整註冊與鎖定登入，重載先驗 JWT 再讀文章並提供作者入口。
-test('Echo auth and public reading expose author controls without management', async (t) => {
+test('Echo auth and public reading expose author controls', async (t) => {
   const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.echo)
   t.after(registration.close)
   assert.match(await renderArticleApp(registration), /建立帳號後即可登入並發表文章/)
@@ -927,7 +914,7 @@ test('Echo auth and public reading expose author controls without management', a
   assert.equal(detail.page.canEdit.value, true)
   assert.equal(detail.page.canManageVisibility.value, true)
 
-  // Echo 管理員可用作者操作，但不能進入尚未實作的管理列表。
+  // Echo 管理員從內容詳情可返回管理列表；角色仍由目前後端驗證。
   const adminDetail = articleApp('/vue/articles/7', 'echo-admin-jwt', '', false, auth.BACKENDS.echo)
   t.after(adminDetail.close)
   await respond(adminDetail.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
@@ -936,10 +923,10 @@ test('Echo auth and public reading expose author controls without management', a
   const adminView = await renderArticleApp(adminDetail)
   assert.match(adminView, /本人留言/)
   assert.match(adminView, /閱讀留言詳情/)
-  assert.doesNotMatch(adminView, /返回文章管理|href="\/vue\/admin\//)
+  assert.match(adminView, /href="\/vue\/admin\/articles"[^>]*>返回文章管理<\/a>/)
 })
 
-// Echo 在錯誤或已失效 JWT 時保留重試／重新登入提示，不發出未實作端點。
+// Echo 在錯誤或已失效 JWT 時保留重試／重新登入提示。
 test('Echo public read errors preserve recovery and reject stale sessions', async (t) => {
   const stale = articleApp('/vue/articles/7', 'stale-jwt', '', false, auth.BACKENDS.echo)
   t.after(stale.close)

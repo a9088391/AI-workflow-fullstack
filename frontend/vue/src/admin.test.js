@@ -190,6 +190,52 @@ test('Flask lockout and member status show confirmed readback', async (t) => {
   assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
 })
 
+// Echo 五種管理頁沿用共用驗權及固定端點；未驗權不得讀取資料。
+test('Echo management routes require verified admin and show all management entries', async (t) => {
+  const routes = new Map([
+    ['/vue/admin/members', ['/api/members?page=1&per_page=20', list([member]), member.email]],
+    ['/vue/admin/members/2', ['/api/members/2', success(member), member.email]],
+    ['/vue/admin/articles', ['/api/articles?page=1&per_page=20&filters%5Bscope%5D=management', list([{ id: 7, title: '管理文章', body: '內容', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'echo', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }]), '管理文章']],
+    ['/vue/admin/comments', ['/api/comments?page=1&per_page=20', list([{ id: 9, article_id: 7, body: '管理留言', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'echo', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }]), '管理留言']],
+    ['/vue/admin/settings/login-lockout', ['/api/settings/login-lockout', success(lockout), '目前伺服器值：啟用']],
+  ])
+  // 每個深連結先測訪客返回，再以目前 Echo 管理員身分確認讀取與畫面。
+  for (const [path, [endpoint, response, visibleText]] of routes) {
+    const guest = app(path, '', null, auth.BACKENDS.echo)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
+    const instance = app(path, '', 'echo-token', auth.BACKENDS.echo)
+    t.after(instance.close)
+    assert.equal(instance.requests[0].url, `${auth.BACKENDS.echo}/api/me`, path)
+    assert.equal(instance.requests.length, 1, path)
+    await respond(instance.requests[0], 200, success(administrator))
+    assert.equal(instance.requests[1].url, `${auth.BACKENDS.echo}${endpoint}`, path)
+    await respond(instance.requests[1], 200, response)
+    assert.match(await rendered(instance.page), new RegExp(visibleText), path)
+  }
+  const denied = app('/vue/admin/members', '', 'member-token', auth.BACKENDS.echo)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  assert.match(await rendered(denied.page), /此頁僅供管理員使用/)
+  assert.doesNotMatch(await rendered(denied.page), /href="\/vue\/admin\//)
+
+  const hiddenAdmin = app('/vue/admin/members/1', '', 'echo-token', auth.BACKENDS.echo)
+  t.after(hiddenAdmin.close)
+  await respond(hiddenAdmin.requests[0], 200, success(administrator))
+  await respond(hiddenAdmin.requests[1], 404, { success: false, error_code: 'E0004' })
+  const missing = await rendered(hiddenAdmin.page)
+  assert.match(missing, /找不到指定資料或 API/)
+  assert.doesNotMatch(missing, /停用會員|恢復會員/)
+
+  const home = app('/vue/', '', 'echo-token', auth.BACKENDS.echo)
+  t.after(home.close)
+  await respond(home.requests[0], 200, success(administrator))
+  const navigation = await rendered(home.page)
+  for (const href of routes.keys()) if (href !== '/vue/admin/members/2') assert.match(navigation, new RegExp(`href="${href}"`))
+})
+
 // Gin 管理頁沿用共用驗權與端點；訪客返回原頁，會員不得先讀取管理資料。
 test('Gin management routes require verified admin and expose all management links', async (t) => {
   const content = { id: 7, body: '管理留言內容', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'gin', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }

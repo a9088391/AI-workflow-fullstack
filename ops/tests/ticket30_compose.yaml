@@ -1,0 +1,31 @@
+# Ticket 30 僅使用獨立資料卷、金鑰與 loopback 埠，避免動到既有展示資料。
+services:
+  db:
+    environment:
+      TICKET30_FIXTURE: isolated-ticket30
+    # 僅隔離資料庫記錄實際執行語句，供列表／搜尋查詢次數驗證。
+    command: ["postgres", "-c", "log_min_duration_statement=0", "-c", "log_line_prefix=%m [%p] %u@%d "]
+  sql:
+    volumes:
+      - ./.local/ticket30-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:18093:8000"
+    volumes:
+      # 隔離瀏覽器入口使用不同 origin；正式 Laravel CORS 設定保持原樣。
+      - ./.local/ticket30-backend/cors.php:/srv/laravel/config/cors.php:ro
+      - ./.local/ticket30-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket30-backend/laravel-logs:/srv/laravel/storage/logs
+  echo:
+    environment:
+      CORS_ORIGIN: http://localhost:18092
+    ports: !override
+      - "127.0.0.1:18094:8000"
+    volumes:
+      - ./.local/ticket30-backend/echo.key:/run/secrets/echo-jwt.key:ro
+  frontend-vue:
+    build:
+      context: ./.local/ticket30-frontend
+  nginx:
+    ports: !override
+      - "127.0.0.1:18092:80"

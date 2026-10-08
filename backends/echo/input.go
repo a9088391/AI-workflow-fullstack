@@ -112,7 +112,7 @@ func urlID(value, name string) (int64, *apiError) {
 	return n, nil
 }
 
-// pageInput 收集列表 Query 錯誤；filter 只在文章列表允許 scope。
+// pageInput 收集列表 Query 錯誤；文章可用 scope，會員可用 keyword，其餘列表不接受篩選。
 func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError) {
 	if e := noGetBody(r); e != nil {
 		return 0, 0, "", e
@@ -138,6 +138,14 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 	}
 	if value, ok := values["filters[scope]"]; ok && len(errors["filters.scope"]) == 0 && value != "management" {
 		errors["filters.scope"] = []string{invalid}
+	}
+	if value, ok := values["filters[keyword]"]; ok && len(errors["filters.keyword"]) == 0 {
+		// 會員搜尋只去除 U+0020，保留其他 Unicode 與字面符號。
+		value = strings.Trim(value, " ")
+		if utf8.RuneCountInString(value) > 254 {
+			errors["filters.keyword"] = []string{invalid}
+		}
+		values["filters[keyword]"] = value
 	}
 	if len(errors) > 0 {
 		return 0, 0, "", &apiError{code: "E0001", fields: errors}
@@ -244,8 +252,17 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			errors[key] = []string{nullValue}
 			continue
 		}
-		if key == "version" {
-			// JSON 版本只接受數字整數，避免字串或小數在寫入時被隱式轉型。
+		if key == "enabled" {
+			// 設定開關必須保留 JSON boolean 型態，不能接受字串。
+			if bytes.Equal(value, []byte("true")) || bytes.Equal(value, []byte("false")) {
+				values[key] = string(value)
+			} else {
+				errors[key] = []string{wrongType}
+			}
+			continue
+		}
+		if key == "version" || key == "window_minutes" || key == "failure_threshold" || key == "lock_seconds" {
+			// JSON 整數保留詞法；超大整數是範圍錯誤，小數與字串是型態錯誤。
 			if !jsonIntegerPattern.Match(value) {
 				errors[key] = []string{wrongType}
 			} else {
@@ -321,6 +338,21 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			}
 		case "version":
 			if _, e := urlID(value, field); e != nil {
+				errors[field] = []string{invalid}
+			}
+		case "status":
+			if value != "active" && value != "disabled" {
+				errors[field] = []string{invalid}
+			}
+		case "window_minutes", "failure_threshold", "lock_seconds":
+			limit := int64(86400)
+			if field == "window_minutes" {
+				limit = 60
+			} else if field == "failure_threshold" {
+				limit = 100
+			}
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || n < 1 || n > limit {
 				errors[field] = []string{invalid}
 			}
 		}

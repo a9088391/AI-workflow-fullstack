@@ -415,7 +415,7 @@ func asHandler(handle func(*echo.Context)) echo.HandlerFunc {
 	}
 }
 
-// run 註冊 Echo 已實作的共同內容操作，未知路由與方法仍走共同錯誤格式。
+// run 註冊 Echo 的 22 個共同操作，未知路由與方法仍走共同錯誤格式。
 func run() error {
 	key, err := loadKey()
 	if err != nil {
@@ -471,6 +471,12 @@ func run() error {
 	router.GET("/api/comments/:comment_id", asHandler(s.commentDetail))
 	router.PUT("/api/comments/:comment_id", asHandler(s.editComment))
 	router.PUT("/api/comments/:comment_id/visibility", asHandler(s.setCommentVisibility))
+	router.GET("/api/members", asHandler(s.members))
+	router.GET("/api/members/:member_id", asHandler(s.memberDetail))
+	router.PUT("/api/members/:member_id/status", asHandler(s.memberStatus))
+	router.GET("/api/comments", asHandler(s.managementComments))
+	router.GET("/api/settings/login-lockout", asHandler(s.lockoutSettings))
+	router.PUT("/api/settings/login-lockout", asHandler(s.updateLockoutSettings))
 	router.GET("/up", asHandler(s.health))
 	return router.Start(":8000")
 }
