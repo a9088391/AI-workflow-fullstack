@@ -1,4 +1,4 @@
-# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin
+# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin／Echo
 
 目前 Vue 提供註冊、登入、文章／留言閱讀與會員及管理頁；Nuxt 提供註冊、登入、公開文章列表與詳情。共同頁面可在同一分頁切換 Vue／Nuxt；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 可發表、編修、下架與恢復文章／留言；送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
@@ -38,9 +38,11 @@ FastAPI 固定於 `http://localhost:8086`，提供全部 22 項共用操作；Vu
 
 Gin API 固定於 `http://localhost:8087`，提供全部 22 項共用操作，包括公開與作者文章／留言、會員管理及登入鎖定設定；Vue 可選用 Gin 完成作者與管理流程。Gin 使用獨立 `.local/keys/gin.key`，與其他後端讀寫同一 PostgreSQL，日常 `ops/start.sh` 會啟動。Ticket 25–27 的真實 HTTP 驗證使用隔離 `ticket25_test` 資料卷、`ops/tests/ticket25_compose.yaml`、測試專用金鑰及 `ops/tests/ticket25_http.py`、`ops/tests/ticket26_http.py`、`ops/tests/ticket27_http.py`；測試入口為 Vue `http://localhost:8090/vue/`、Laravel `http://localhost:8091` 與 Gin `http://localhost:8087`，腳本在寫入前核對專案、實際資料卷及入口埠。
 
-Echo API 固定於 `http://localhost:8088`，目前提供註冊、登入、登出、本人資料及公開文章／留言讀取（操作 01–05、07、12）。它使用獨立 `.local/keys/echo.key` 與共用 PostgreSQL；作者寫入及管理端點尚未提供。Ticket 28 的隔離驗證使用 `ticket28_test` 資料卷、`ops/tests/ticket28_compose.yaml`、測試專用金鑰及 `ops/tests/ticket28_http.py`，隔離 Vue 入口為 `http://localhost:18090/vue/`、Laravel API 為 `http://localhost:18091`。先在 `.local/ticket28-backend/` 準備獨立的 `laravel.key`、`echo.key`、`laravel-logs/` 與 `backups/`，再以 `COMPOSE_PROJECT_NAME=ticket28_test COMPOSE_FILE=compose.yaml:ops/tests/ticket28_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，並以相同 Compose 環境執行 `python3 ops/tests/ticket28_http.py`；腳本會在寫入前核對專案、金鑰掛載、資料卷和實際埠。
+Echo API 固定於 `http://localhost:8088`，目前提供註冊、登入、登出、本人資料、公開閱讀及作者文章／留言操作（操作 01–16）。Vue 可選用 Echo 完成作者流程；管理端點與 Echo 模式的管理頁尚未提供。它使用獨立 `.local/keys/echo.key` 與共用 PostgreSQL。Ticket 28／29 的隔離驗證使用 `ticket28_test` 資料卷、`ops/tests/ticket28_compose.yaml`、測試專用金鑰及 `ops/tests/ticket28_http.py`、`ops/tests/ticket29_http.py`，隔離 Vue 入口為 `http://localhost:18090/vue/`、Laravel API 為 `http://localhost:18091`。先在 `.local/ticket28-backend/` 準備獨立的 `laravel.key`、`echo.key`、`laravel-logs/` 與 `backups/`，再以 `COMPOSE_PROJECT_NAME=ticket28_test COMPOSE_FILE=compose.yaml:ops/tests/ticket28_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，並以相同 Compose 環境執行 `python3 -B ops/tests/ticket28_http.py` 與 `python3 -B ops/tests/ticket29_http.py`；腳本會在寫入前核對專案、金鑰掛載、資料卷和實際埠。
 
 同一隔離 Compose 環境可執行 `python3 -B ops/tests/ticket28_query_count.py`，暫開 PostgreSQL 應用角色日誌，量測 Echo 文章與留言列表的實際 SQL 次數；腳本結束時會重設日誌設定並重啟隔離 Echo。
+
+`python3 -B ops/tests/ticket29_query_count.py` 以同一隔離環境量測 Echo 個人文章與留言列表的實際 SQL 次數，並於結束時重設日誌設定與確認 Echo 健康。
 
 Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
 

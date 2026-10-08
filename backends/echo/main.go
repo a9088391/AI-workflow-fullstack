@@ -22,7 +22,7 @@ var messages = map[string]struct {
 	status  int
 	message string
 }{
-	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
+	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E0201": {409, "內容已更新，請確認最新內容後再送出"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
 }
 
 // server 持有唯一資料庫池與 Echo 專屬金鑰，避免請求間共用可變身分。
@@ -415,7 +415,7 @@ func asHandler(handle func(*echo.Context)) echo.HandlerFunc {
 	}
 }
 
-// run 僅註冊本票七個操作，未知路由與方法仍走共同錯誤格式。
+// run 註冊 Echo 已實作的共同內容操作，未知路由與方法仍走共同錯誤格式。
 func run() error {
 	key, err := loadKey()
 	if err != nil {
@@ -460,8 +460,17 @@ func run() error {
 	router.POST("/api/auth/logout", asHandler(s.logout))
 	router.GET("/api/me", asHandler(s.me))
 	router.GET("/api/articles", asHandler(s.articles))
+	router.POST("/api/articles", asHandler(s.createArticle))
 	router.GET("/api/articles/:article_id", asHandler(s.article))
+	router.PUT("/api/articles/:article_id", asHandler(s.editArticle))
+	router.PUT("/api/articles/:article_id/visibility", asHandler(s.setArticleVisibility))
 	router.GET("/api/articles/:article_id/comments", asHandler(s.comments))
+	router.POST("/api/articles/:article_id/comments", asHandler(s.createComment))
+	router.GET("/api/me/articles", asHandler(s.myArticles))
+	router.GET("/api/me/comments", asHandler(s.myComments))
+	router.GET("/api/comments/:comment_id", asHandler(s.commentDetail))
+	router.PUT("/api/comments/:comment_id", asHandler(s.editComment))
+	router.PUT("/api/comments/:comment_id/visibility", asHandler(s.setCommentVisibility))
 	router.GET("/up", asHandler(s.health))
 	return router.Start(":8000")
 }

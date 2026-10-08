@@ -286,9 +286,9 @@ test('Django comment creation and own detail use author endpoints', async (t) =>
   assert.match(await renderedPage(own.page), />恢復<\/button>/)
 })
 
-// Flask、FastAPI 與 Gin 新留言重讀原文章第一頁；父文章不可讀時仍保留自己的留言詳情。
-test('Flask, FastAPI and Gin comment creation and own detail preserve author flow', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
+// Flask、FastAPI、Gin 與 Echo 新留言重讀原文章第一頁；父文章不可讀時仍保留自己的留言詳情。
+test('Flask, FastAPI, Gin and Echo comment creation and own detail preserve author flow', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo]) {
     const instance = await writableArticle(t, '?page=2', selectedBackend)
     assert.equal(instance.page.canComment.value, true)
     assert.match(await renderedPage(instance.page), /發表留言/)
@@ -789,7 +789,7 @@ test('edit conflict requires a fresh comparison and explicit merge or discard be
 
 // 各作者後端編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
 test('author backends keep edit conflict draft until explicit latest-version comparison', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo]) {
     const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, selectedBackend)
     instance.page.articleTitle.value = '我的 Django 標題'
     instance.page.articleBody.value = '我的 Django 內文'
@@ -821,7 +821,7 @@ test('author backends keep edit conflict draft until explicit latest-version com
 
 // 各作者後端編修留言須先確認父文章公開；成功後依原 ID 重讀。
 test('author backends reread own comment detail after edit success', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo]) {
     const instance = await resourcePage(t, '/vue/comments/9/edit', { ...comment, visibility: 'visible' }, member, article, selectedBackend)
     assert.equal(instance.page.canEdit.value, true)
     instance.page.commentBody.value = '編修後留言'
@@ -840,7 +840,7 @@ test('author backends reread own comment detail after edit success', async (t) =
 
 // 各作者後端下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
 test('author backends change article visibility with version and server readback', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo]) {
     const instance = await resourcePage(t, '/vue/articles/7', article, member, article, selectedBackend)
     assert.equal(instance.page.canManageVisibility.value, true)
     const hide = instance.page.submitVisibility('hidden')
@@ -912,33 +912,35 @@ test('visibility uses server restoration rights and confirms administrator takeo
   assert.equal(ownAdmin.requests.length, 3)
 })
 
-// 狀態衝突先阻止重送；手動 GET 後再次確認操作，使用最新詳情版本而非隱藏自動重試。
+// Laravel 與 Echo 狀態衝突先阻止重送；手動 GET 後再次確認操作，使用最新詳情版本而非隱藏自動重試。
 test('visibility conflict rereads and reconfirms the operation before sending a new version', async (t) => {
-  const instance = await resourcePage(t, '/vue/comments/9', comment)
-  const restore = instance.page.submitVisibility('visible')
-  await respond(instance.requests[3], 409, { success: false, error_code: 'E0201' })
-  await restore
-  await instance.page.submitVisibility('visible')
-  assert.equal(instance.requests.length, 4)
-  assert.equal(instance.confirmations.length, 1)
-  const read = instance.page.loadContent()
-  await respond(instance.requests[4], 200, success({ ...comment, version: 4 }))
-  await read
-  await respond(instance.requests[5], 404, { success: false, error_code: 'E0004' })
-  instance.approve(false)
-  await instance.page.submitVisibility('visible')
-  assert.equal(instance.requests.length, 6)
-  instance.approve(true)
-  const retried = instance.page.submitVisibility('visible')
-  assert.deepEqual(JSON.parse(instance.requests[6].body), { visibility: 'visible', version: 4 })
-  await respond(instance.requests[6], 200, success({}))
-  await retried
-  assert.equal(instance.requests[7].url, `${auth.API_BASE}/api/comments/9`)
-  await respond(instance.requests[7], 200, success({ ...comment, visibility: 'visible', can_restore: false, version: 5 }))
-  await respond(instance.requests[8], 404, { success: false, error_code: 'E0004' })
-  assert.equal(instance.page.commentData.value.visibility, 'visible')
-  assert.equal(instance.page.canEdit.value, false)
-  assert.equal(instance.page.conflict.value, false)
+  for (const selectedBackend of [auth.API_BASE, auth.BACKENDS.echo]) {
+    const instance = await resourcePage(t, '/vue/comments/9', comment, member, article, selectedBackend)
+    const restore = instance.page.submitVisibility('visible')
+    await respond(instance.requests[3], 409, { success: false, error_code: 'E0201' })
+    await restore
+    await instance.page.submitVisibility('visible')
+    assert.equal(instance.requests.length, 4)
+    assert.equal(instance.confirmations.length, 1)
+    const read = instance.page.loadContent()
+    await respond(instance.requests[4], 200, success({ ...comment, version: 4 }))
+    await read
+    await respond(instance.requests[5], 404, { success: false, error_code: 'E0004' })
+    instance.approve(false)
+    await instance.page.submitVisibility('visible')
+    assert.equal(instance.requests.length, 6)
+    instance.approve(true)
+    const retried = instance.page.submitVisibility('visible')
+    assert.deepEqual(JSON.parse(instance.requests[6].body), { visibility: 'visible', version: 4 })
+    await respond(instance.requests[6], 200, success({}))
+    await retried
+    assert.equal(instance.requests[7].url, `${selectedBackend}/api/comments/9`)
+    await respond(instance.requests[7], 200, success({ ...comment, visibility: 'visible', can_restore: false, version: 5 }))
+    await respond(instance.requests[8], 404, { success: false, error_code: 'E0004' })
+    assert.equal(instance.page.commentData.value.visibility, 'visible')
+    assert.equal(instance.page.canEdit.value, false)
+    assert.equal(instance.page.conflict.value, false)
+  }
 })
 
 // PUT 等待中不可重讀／重驗；送出前的舊父文章回應和離頁後的成功均由 epoch 擋住。

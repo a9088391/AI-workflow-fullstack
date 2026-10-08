@@ -573,7 +573,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="!echoBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -770,61 +770,64 @@ test('Gin frontend switch keeps the selected backend in Vue', async (t) => {
   assert.match(await renderArticleApp(app), /Nuxt 尚未支援目前選擇的 Gin 後端/)
 })
 
-// Echo 切換先清舊 JWT，從尚未支援的作者頁與登入返回目標只能前往公開入口。
-test('Echo selection and login return avoid unsupported routes', async (t) => {
+// Echo 切換先清舊 JWT，作者目標保留，管理目標回公開入口。
+test('Echo selection and login return preserve author routes and sanitize management', async (t) => {
   const switched = articleApp('/vue/me/articles', 'laravel-jwt')
   t.after(switched.close)
   await switched.page.chooseBackend({ target: { value: auth.BACKENDS.echo } })
   assert.equal(auth.readSession(switched.sessionStorage), null)
-  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Fme%2Farticles'])
   await respond(switched.requests[0], 200, { success: true, message: 'OK', data: member })
   assert.equal(switched.requests.length, 1)
 
-  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fme%2Farticles', false, auth.BACKENDS.echo)
-  t.after(login.close)
-  login.page.email.value = member.email
-  login.page.password.value = 'abcd'
-  await vue.nextTick()
-  const submit = login.page.submitLogin()
-  assert.equal(login.requests[0].url, `${auth.BACKENDS.echo}/api/auth/login`)
-  await respond(login.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'echo-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
-  await submit
-  assert.deepEqual(login.redirects, ['/vue/'])
-  assert.deepEqual(auth.readSession(login.sessionStorage), { backend: auth.BACKENDS.echo, accessToken: 'echo-jwt', expiresAt: '2026-09-24 18:00:00' })
+  for (const destination of ['/vue/me/articles', '/vue/articles/new', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/comments/9/edit', '/vue/articles/007']) {
+    const login = articleApp('/vue/login', null, `?return_to=${encodeURIComponent(destination)}`, false, auth.BACKENDS.echo)
+    t.after(login.close)
+    login.page.email.value = member.email
+    login.page.password.value = 'abcd'
+    await vue.nextTick()
+    const submit = login.page.submitLogin()
+    await respond(login.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'echo-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+    await submit
+    assert.deepEqual(login.redirects, [destination])
+  }
 
-  const detail = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F007', false, auth.BACKENDS.echo)
-  t.after(detail.close)
-  detail.page.email.value = member.email
-  detail.page.password.value = 'abcd'
+  const adminSwitch = articleApp('/vue/admin/members', 'laravel-jwt')
+  t.after(adminSwitch.close)
+  await adminSwitch.page.chooseBackend({ target: { value: auth.BACKENDS.echo } })
+  assert.deepEqual(adminSwitch.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  const adminLogin = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Farticles', false, auth.BACKENDS.echo)
+  t.after(adminLogin.close)
+  adminLogin.page.email.value = member.email
+  adminLogin.page.password.value = 'abcd'
   await vue.nextTick()
-  const detailLogin = detail.page.submitLogin()
-  await respond(detail.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'echo-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
-  await detailLogin
-  assert.deepEqual(detail.redirects, ['/vue/articles/007'])
+  const login = adminLogin.page.submitLogin()
+  await respond(adminLogin.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'echo-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+  await login
+  assert.deepEqual(adminLogin.redirects, ['/vue/'])
 
-  // Echo 未接入 Nuxt；即使觸發 change，也不能清除原憑證或離開 Vue。
+  // Nuxt 尚未接入 Echo，切換前端仍保留原憑證和 Vue 畫面。
   const frontend = articleApp('/vue/', 'echo-jwt', '', false, auth.BACKENDS.echo)
   t.after(frontend.close)
-  const frontendChoice = { target: { value: 'nuxt' } }
-  frontend.page.chooseFrontend(frontendChoice)
-  assert.equal(frontendChoice.target.value, 'vue')
+  const choice = { target: { value: 'nuxt' } }
+  frontend.page.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'vue')
   assert.equal(frontend.page.canSwitchNuxt.value, false)
   assert.equal(auth.readSession(frontend.sessionStorage).accessToken, 'echo-jwt')
   assert.deepEqual(frontend.redirects, [])
   frontend.page.versionsOpen.value = true
   assert.match(await renderArticleApp(frontend), /Nuxt 尚未支援目前選擇的 Echo 後端/)
 
-  // 登入頁已有 Echo JWT 時先 GET /api/me，完成後仍校正未支援的返回目標。
+  // 已保存的 Echo JWT 在登入頁重驗後，也不能返回未實作的管理頁。
   const restored = articleApp('/vue/login', 'echo-jwt', '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.echo)
   t.after(restored.close)
-  assert.equal(restored.requests[0].url, `${auth.BACKENDS.echo}/api/me`)
   await respond(restored.requests[0], 200, { success: true, message: 'OK', data: member })
   assert.deepEqual(restored.redirects, ['/vue/'])
 })
 
-// Echo 的深連結不應觸發作者、留言寫入或管理請求，也不顯示可提交表單。
-test('Echo unsupported routes render a safe explanation without API requests', async (t) => {
-  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/comments/9/edit', '/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
+// 管理深連結不驗權、不讀取未實作端點；一般會員與管理員都看不到管理入口。
+test('Echo management routes stay unsupported without API requests', async (t) => {
+  for (const path of ['/vue/admin/members', '/vue/admin/members/9', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
     const app = articleApp(path, 'echo-jwt', '', false, auth.BACKENDS.echo)
     t.after(app.close)
     assert.equal(app.requests.length, 0, path)
@@ -836,11 +839,36 @@ test('Echo unsupported routes render a safe explanation without API requests', a
   }
 })
 
-// Echo 沿用完整註冊與鎖定登入，重載先驗 JWT 再讀文章；詳情只讀文章和留言。
-test('Echo auth and public reading use its fixed API without write controls', async (t) => {
+// 作者深連結先驗身分；沒有登入的導向與已登入的 API 讀取沿用共用路由。
+test('Echo author routes verify identity before protected reads', async (t) => {
+  const routes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+  ])
+  for (const [path, endpoint] of routes) {
+    const visitor = articleApp(path, null, '', false, auth.BACKENDS.echo)
+    t.after(visitor.close)
+    assert.equal(visitor.requests.length, 0, path)
+    assert.deepEqual(visitor.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    const signedIn = articleApp(path, 'echo-jwt', '', false, auth.BACKENDS.echo)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.echo}/api/me`, path)
+    await respond(signedIn.requests[0], 200, { success: true, message: 'OK', data: member })
+    assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.echo}${endpoint}`, path)
+    assert.doesNotMatch(await renderArticleApp(signedIn), /此頁尚未提供/, path)
+  }
+})
+
+// Echo 沿用完整註冊與鎖定登入，重載先驗 JWT 再讀文章並提供作者入口。
+test('Echo auth and public reading expose author controls without management', async (t) => {
   const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.echo)
   t.after(registration.close)
-  assert.match(await renderArticleApp(registration), /建立帳號後即可登入並閱讀文章/)
+  assert.match(await renderArticleApp(registration), /建立帳號後即可登入並發表文章/)
   registration.page.email.value = 'new@example.test'
   registration.page.password.value = 'abcd'
   registration.page.nickname.value = '新會員'
@@ -852,7 +880,7 @@ test('Echo auth and public reading use its fixed API without write controls', as
 
   const locked = articleApp('/vue/login', null, '', false, auth.BACKENDS.echo)
   t.after(locked.close)
-  assert.match(await renderArticleApp(locked), /登入後可閱讀您有權查看的文章與留言/)
+  assert.match(await renderArticleApp(locked), /登入後即可發表文章與查看自己的文章/)
   locked.page.email.value = member.email
   locked.page.password.value = 'abcd'
   await vue.nextTick()
@@ -872,7 +900,10 @@ test('Echo auth and public reading use its fixed API without write controls', as
   await respond(list.requests[1], 200, { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
   const listView = await renderArticleApp(list)
   assert.match(listView, /標題/)
-  assert.doesNotMatch(listView, /href="\/vue\/articles\/new"|href="\/vue\/me\/|href="\/vue\/admin\//)
+  assert.match(listView, /href="\/vue\/articles\/new"/)
+  assert.match(listView, /href="\/vue\/me\/articles"/)
+  assert.match(listView, /href="\/vue\/me\/comments"/)
+  assert.doesNotMatch(listView, /href="\/vue\/admin\//)
   const logout = list.page.submitLogout()
   assert.equal(list.requests[2].url, `${auth.BACKENDS.echo}/api/auth/logout`)
   await respond(list.requests[2], 200, { success: true, message: 'OK', data: {} })
@@ -890,13 +921,13 @@ test('Echo auth and public reading use its fixed API without write controls', as
   const detailView = await renderArticleApp(detail)
   assert.match(detailView, /第一行/)
   assert.match(detailView, /本人留言/)
-  assert.doesNotMatch(detailView, /href="\/vue\/comments\/9"/)
-  assert.doesNotMatch(detailView, /發表留言|編輯文章|>下架<|>恢復</)
-  assert.equal(detail.page.canComment.value, false)
-  assert.equal(detail.page.canEdit.value, false)
-  assert.equal(detail.page.canManageVisibility.value, false)
+  assert.match(detailView, /href="\/vue\/comments\/9"/)
+  assert.match(detailView, /發表留言|編輯文章|>下架</)
+  assert.equal(detail.page.canComment.value, true)
+  assert.equal(detail.page.canEdit.value, true)
+  assert.equal(detail.page.canManageVisibility.value, true)
 
-  // 管理員在 Echo 公開詳情仍只可閱讀，不顯示管理返回連結或單則留言入口。
+  // Echo 管理員可用作者操作，但不能進入尚未實作的管理列表。
   const adminDetail = articleApp('/vue/articles/7', 'echo-admin-jwt', '', false, auth.BACKENDS.echo)
   t.after(adminDetail.close)
   await respond(adminDetail.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
@@ -904,7 +935,8 @@ test('Echo auth and public reading use its fixed API without write controls', as
   await respond(adminDetail.requests[2], 200, { success: true, message: 'OK', data: { list: [ownComment], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
   const adminView = await renderArticleApp(adminDetail)
   assert.match(adminView, /本人留言/)
-  assert.doesNotMatch(adminView, /返回文章管理|閱讀留言詳情|href="\/vue\/admin\//)
+  assert.match(adminView, /閱讀留言詳情/)
+  assert.doesNotMatch(adminView, /返回文章管理|href="\/vue\/admin\//)
 })
 
 // Echo 在錯誤或已失效 JWT 時保留重試／重新登入提示，不發出未實作端點。
@@ -997,12 +1029,12 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><template v-if="!echoBackend"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
 })
 
-// Flask 與 FastAPI 發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
-test('Flask, FastAPI and Gin member and admin publish to the first my articles page', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin]) for (const actor of [member, { ...member, role: 'admin' }]) {
+// 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
+test('author backends publish member and admin articles to the first my articles page', async (t) => {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo]) for (const actor of [member, { ...member, role: 'admin' }]) {
     const app = articleApp('/vue/articles/new', 'author-jwt', '', false, selectedBackend)
     t.after(app.close)
     await respond(app.requests[0], 200, { success: true, message: 'OK', data: actor })
