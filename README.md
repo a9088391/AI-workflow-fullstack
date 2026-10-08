@@ -10,7 +10,7 @@
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫 `http://localhost:8081/api/...`、`http://localhost:8082/api/...`、`http://localhost:8083/api/...`、`http://localhost:8084/api/...`、`http://localhost:8085/api/...`、`http://localhost:8086/api/...` 或 `http://localhost:8087/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫 `http://localhost:8081/api/...`、`http://localhost:8082/api/...`、`http://localhost:8083/api/...`、`http://localhost:8084/api/...`、`http://localhost:8085/api/...`、`http://localhost:8086/api/...`、`http://localhost:8087/api/...` 或 `http://localhost:8088/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
 Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。切換後端會清除原登入並轉到登入頁，重新登入後返回合法的本機頁面；不會把舊 JWT 送給新後端。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
 
@@ -37,6 +37,10 @@ COMPOSE_PROJECT_NAME=ticket16_test COMPOSE_FILE=compose.yaml:ops/tests/ticket16_
 FastAPI 固定於 `http://localhost:8086`，提供全部 22 項共用操作；Vue 可選用 FastAPI 完成作者、管理及登入鎖定設定流程。Nuxt 尚未支援切換至 FastAPI。FastAPI 使用獨立的 `.local/keys/fastapi.key`，讀寫同一 PostgreSQL 資料；一般 `ops/start.sh` 會啟動它。Ticket 24 的管理 API 真實 HTTP 驗證使用隔離的 `ticket24_test` 專案、`ops/tests/ticket24_compose.yaml` 與 `ops/tests/ticket24_http.py`；腳本會先核對專案及資料庫身分，不能對展示資料執行。
 
 Gin API 固定於 `http://localhost:8087`，提供全部 22 項共用操作，包括公開與作者文章／留言、會員管理及登入鎖定設定；Vue 可選用 Gin 完成作者與管理流程。Gin 使用獨立 `.local/keys/gin.key`，與其他後端讀寫同一 PostgreSQL，日常 `ops/start.sh` 會啟動。Ticket 25–27 的真實 HTTP 驗證使用隔離 `ticket25_test` 資料卷、`ops/tests/ticket25_compose.yaml`、測試專用金鑰及 `ops/tests/ticket25_http.py`、`ops/tests/ticket26_http.py`、`ops/tests/ticket27_http.py`；測試入口為 Vue `http://localhost:8090/vue/`、Laravel `http://localhost:8091` 與 Gin `http://localhost:8087`，腳本在寫入前核對專案、實際資料卷及入口埠。
+
+Echo API 固定於 `http://localhost:8088`，目前提供註冊、登入、登出、本人資料及公開文章／留言讀取（操作 01–05、07、12）。它使用獨立 `.local/keys/echo.key` 與共用 PostgreSQL；作者寫入及管理端點尚未提供。Ticket 28 的隔離驗證使用 `ticket28_test` 資料卷、`ops/tests/ticket28_compose.yaml`、測試專用金鑰及 `ops/tests/ticket28_http.py`，隔離 Vue 入口為 `http://localhost:18090/vue/`、Laravel API 為 `http://localhost:18091`。先在 `.local/ticket28-backend/` 準備獨立的 `laravel.key`、`echo.key`、`laravel-logs/` 與 `backups/`，再以 `COMPOSE_PROJECT_NAME=ticket28_test COMPOSE_FILE=compose.yaml:ops/tests/ticket28_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，並以相同 Compose 環境執行 `python3 ops/tests/ticket28_http.py`；腳本會在寫入前核對專案、金鑰掛載、資料卷和實際埠。
+
+同一隔離 Compose 環境可執行 `python3 -B ops/tests/ticket28_query_count.py`，暫開 PostgreSQL 應用角色日誌，量測 Echo 文章與留言列表的實際 SQL 次數；腳本結束時會重設日誌設定並重啟隔離 Echo。
 
 Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
 

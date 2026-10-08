@@ -119,6 +119,21 @@ test('Gin selection preserves only Gin-bound sessions', () => {
   assert.equal(readSession(s), null)
 })
 
+// Echo 只接受固定 8088；切入與切出都清掉舊 JWT，重新載入只恢復 Echo 自己的憑證。
+test('Echo selection keeps backend-bound JWT isolated', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.echo, 'http://localhost:8088')
+  assert.equal(selectBackend(s, BACKENDS.echo), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'echo-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.echo, accessToken: 'echo-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.gin), true)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.echo, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+})
+
 // 瀏覽器拒絕清除 JWT 時，失敗切換不可把舊 JWT 配給新後端。
 test('backend selection fails closed when token removal throws', () => {
   const s = storage()

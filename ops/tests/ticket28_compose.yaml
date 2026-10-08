@@ -1,0 +1,24 @@
+# 此 fixture 僅在 ticket28_test 專案使用，保留獨立資料卷與測試金鑰。
+services:
+  db:
+    environment:
+      TICKET28_FIXTURE: isolated-ticket28
+  sql:
+    volumes:
+      - ./.local/ticket28-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:18091:8000"
+    volumes:
+      - ./.local/ticket28-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket28-backend/laravel-logs:/srv/laravel/storage/logs
+  echo:
+    environment:
+      CORS_ORIGIN: http://localhost:18090
+    ports: !override
+      - "127.0.0.1:8088:8000"
+    volumes:
+      - ./.local/ticket28-backend/echo.key:/run/secrets/echo-jwt.key:ro
+  nginx:
+    ports: !override
+      - "127.0.0.1:18090:80"
