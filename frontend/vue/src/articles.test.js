@@ -573,7 +573,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="!fiberBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -826,6 +826,120 @@ test('Echo selection and login return preserve protected routes', async (t) => {
   assert.deepEqual(restored.redirects, ['/vue/admin/members'])
 })
 
+// Fiber 只提供公開閱讀與帳號端點；切換時保留可讀的同頁目標並清除舊 JWT。
+test('Fiber switch preserves supported page and blocks unsupported return targets', async (t) => {
+  const supported = articleApp('/vue/articles/7', 'laravel-jwt')
+  t.after(supported.close)
+  await supported.page.chooseBackend({ target: { value: auth.BACKENDS.fiber } })
+  assert.equal(auth.readSession(supported.sessionStorage), null)
+  assert.deepEqual(supported.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F7'])
+
+  const unsupported = articleApp('/vue/me/articles', 'laravel-jwt')
+  t.after(unsupported.close)
+  await unsupported.page.chooseBackend({ target: { value: auth.BACKENDS.fiber } })
+  assert.equal(auth.readSession(unsupported.sessionStorage), null)
+  assert.deepEqual(unsupported.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+
+  for (const target of ['/vue/articles/7', '/vue/me/articles', '/vue/comments/9', '/vue/admin/members']) {
+    const loginPage = articleApp('/vue/login', null, `?return_to=${encodeURIComponent(target)}`, false, auth.BACKENDS.fiber)
+    t.after(loginPage.close)
+    loginPage.page.email.value = member.email
+    loginPage.page.password.value = 'abcd'
+    await vue.nextTick()
+    const login = loginPage.page.submitLogin()
+    assert.equal(loginPage.requests[0].url, `${auth.BACKENDS.fiber}/api/auth/login`)
+    await respond(loginPage.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'fiber-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
+    await login
+    assert.deepEqual(loginPage.redirects, [target === '/vue/articles/7' ? target : '/vue/'])
+  }
+})
+
+// 受保護深連結在 Fiber 顯示未提供說明，不應先查 /me 或不存在的作者與管理 API。
+test('Fiber protected deep links never call unavailable endpoints', async (t) => {
+  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/comments/9/edit', '/vue/admin/members', '/vue/admin/settings/login-lockout']) {
+    const app = articleApp(path, 'fiber-jwt', '', false, auth.BACKENDS.fiber)
+    t.after(app.close)
+    assert.equal(app.requests.length, 0, path)
+    assert.deepEqual(app.redirects, [], path)
+    assert.match(await renderArticleApp(app), /此頁尚未提供/, path)
+  }
+})
+
+// Fiber 公開詳情仍讀取留言；已驗證會員可登出，但畫面不提供本票缺少的寫入與詳情入口。
+test('Fiber reads public content and keeps unsupported controls hidden', async (t) => {
+  const app = articleApp('/vue/articles/7', 'fiber-jwt', '', false, auth.BACKENDS.fiber)
+  t.after(app.close)
+  assert.equal(app.page.backendLabel.value, 'Fiber')
+  assert.equal(app.requests[0].url, `${auth.BACKENDS.fiber}/api/me`)
+  await respond(app.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
+  assert.equal(app.requests[1].url, `${auth.BACKENDS.fiber}/api/articles/7`)
+  await respond(app.requests[1], 200, { success: true, message: 'OK', data: { ...sample, created_backend: 'fiber', author: { id: member.id, nickname: member.nickname }, can_restore: true } })
+  assert.equal(app.requests[2].url, `${auth.BACKENDS.fiber}/api/articles/7/comments?page=1&per_page=20`)
+  await respond(app.requests[2], 200, { success: true, message: 'OK', data: { list: [{ id: 9, article_id: 7, body: '既有留言', author: { id: member.id, nickname: member.nickname }, version: 1, created_backend: 'fiber', created_at: sample.created_at, updated_at: sample.updated_at, visibility: 'visible', can_restore: false }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
+  const html = await renderArticleApp(app)
+  assert.match(html, /既有留言/)
+  assert.match(html, /建立於 Fiber/)
+  assert.doesNotMatch(html, /href="\/vue\/(?:comments|me\/|admin\/|articles\/new)/)
+  assert.doesNotMatch(html, /發表留言|編輯文章|>下架</)
+  assert.equal(app.page.canSwitchNuxt.value, false)
+  assert.equal(app.page.canComment.value, false)
+  assert.equal(app.page.canEdit.value, false)
+  assert.equal(app.page.canManageVisibility.value, false)
+  app.page.versionsOpen.value = true
+  assert.match(await renderArticleApp(app), /Nuxt 尚未支援目前選擇的 Fiber 後端/)
+  const frontendChoice = { target: { value: 'nuxt' } }
+  app.page.chooseFrontend(frontendChoice)
+  assert.equal(frontendChoice.target.value, 'vue')
+  assert.equal(auth.readSession(app.sessionStorage).accessToken, 'fiber-jwt')
+  const logout = app.page.submitLogout()
+  assert.equal(app.requests[3].url, `${auth.BACKENDS.fiber}/api/auth/logout`)
+  await respond(app.requests[3], 200, { success: true, message: 'OK', data: {} })
+  await logout
+  assert.equal(auth.readSession(app.sessionStorage), null)
+})
+
+// Fiber 註冊、鎖定登入與訪客閱讀均走既有契約；失效 JWT 不應被當成訪客靜默略過。
+test('Fiber registration lockout and guest reading use shared flows', async (t) => {
+  const registrationPage = articleApp('/vue/register', null, '', false, auth.BACKENDS.fiber)
+  t.after(registrationPage.close)
+  assert.match(await renderArticleApp(registrationPage), /建立帳號後即可登入並閱讀文章/)
+  registrationPage.page.email.value = 'new@example.test'
+  registrationPage.page.password.value = 'abcd'
+  registrationPage.page.nickname.value = '新會員'
+  const registration = registrationPage.page.submitRegistration()
+  assert.equal(registrationPage.requests[0].url, `${auth.BACKENDS.fiber}/api/auth/register`)
+  await respond(registrationPage.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await registration
+  assert.deepEqual(registrationPage.redirects, ['/vue/login?registered=1'])
+
+  const locked = articleApp('/vue/login', null, '', false, auth.BACKENDS.fiber)
+  t.after(locked.close)
+  locked.page.email.value = member.email
+  locked.page.password.value = 'abcd'
+  await vue.nextTick()
+  const first = locked.page.submitLogin()
+  await respond(locked.requests[0], 429, { success: false, error_code: 'E0105', message: '登入失敗次數過多，請稍後再試' }, { 'Retry-After': '300' })
+  await first
+  assert.equal(locked.page.locked.value, true)
+  assert.match(await renderArticleApp(locked), /登入暫時鎖定/)
+  await locked.page.submitLogin()
+  assert.equal(locked.requests.length, 1)
+
+  const guest = articleApp('/vue/', null, '', false, auth.BACKENDS.fiber)
+  t.after(guest.close)
+  assert.equal(guest.requests[0].url, `${auth.BACKENDS.fiber}/api/articles?page=1&per_page=20`)
+  assert.equal(guest.requests[0].headers.Authorization, undefined)
+  await respond(guest.requests[0], 200, { success: true, message: 'OK', data: { list: [{ ...sample, created_backend: 'fiber' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
+  assert.match(await renderArticleApp(guest), /建立於 Fiber/)
+
+  const stale = articleApp('/vue/articles/7', 'expired-jwt', '', false, auth.BACKENDS.fiber)
+  t.after(stale.close)
+  await respond(stale.requests[0], 401, { success: false, error_code: 'E0002', message: '登入已逾期，請重新登入' })
+  assert.equal(stale.requests.length, 1)
+  assert.equal(auth.readSession(stale.sessionStorage), null)
+  assert.match(await renderArticleApp(stale), /重新登入/)
+})
+
 // 作者深連結先驗身分；沒有登入的導向與已登入的 API 讀取沿用共用路由。
 test('Echo author routes verify identity before protected reads', async (t) => {
   const routes = new Map([
@@ -1016,7 +1130,7 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><template v-if="!fiberBackend"><a href="\/vue\/articles\/new"/)
 })
 
 // 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。

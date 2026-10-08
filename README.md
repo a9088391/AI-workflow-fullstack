@@ -40,6 +40,8 @@ Gin API 固定於 `http://localhost:8087`，提供全部 22 項共用操作，�
 
 Echo API 固定於 `http://localhost:8088`，提供全部 22 項共用操作，包含作者內容、會員與內容管理及登入鎖定設定。Vue 可選用 Echo 完成作者與管理流程；它使用獨立 `.local/keys/echo.key` 與共用 PostgreSQL。Ticket 28／29 的隔離驗證使用 `ticket28_test` 資料卷、`ops/tests/ticket28_compose.yaml`、測試專用金鑰及 `ops/tests/ticket28_http.py`、`ops/tests/ticket29_http.py`，隔離 Vue 入口為 `http://localhost:18090/vue/`、Laravel API 為 `http://localhost:18091`。先在 `.local/ticket28-backend/` 準備獨立的 `laravel.key`、`echo.key`、`laravel-logs/` 與 `backups/`，再以 `COMPOSE_PROJECT_NAME=ticket28_test COMPOSE_FILE=compose.yaml:ops/tests/ticket28_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，並以相同 Compose 環境執行 `python3 -B ops/tests/ticket28_http.py` 與 `python3 -B ops/tests/ticket29_http.py`；腳本會在寫入前核對專案、金鑰掛載、資料卷和實際埠。
 
+Fiber API 固定於 `http://localhost:8089`，目前提供註冊、登入、登出、目前使用者、公開文章列表／詳情及文章留言列表（操作 01–05、07、12）；使用獨立 `.local/keys/fiber.key` 與共用 PostgreSQL。Ticket 31 隔離測試使用 `ticket31_test` 專用資料卷、`ops/tests/ticket31_compose.yaml`、`.local/ticket31-backend/` 的測試金鑰及 CORS 設定；隔離入口為 Vue `http://localhost:18311/vue/`、Laravel API `http://localhost:18312`、Fiber API `http://localhost:8089`。
+
 同一隔離 Compose 環境可執行 `python3 -B ops/tests/ticket28_query_count.py`，暫開 PostgreSQL 應用角色日誌，量測 Echo 文章與留言列表的實際 SQL 次數；腳本結束時會重設日誌設定並重啟隔離 Echo。
 
 `python3 -B ops/tests/ticket29_query_count.py` 以同一隔離環境量測 Echo 個人文章與留言列表的實際 SQL 次數，並於結束時重設日誌設定與確認 Echo 健康。

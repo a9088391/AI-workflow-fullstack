@@ -1,0 +1,25 @@
+# Ticket 31 使用獨立專案、資料卷、金鑰與 loopback 埠，保留原展示狀態。
+services:
+  db:
+    environment:
+      TICKET31_FIXTURE: isolated-ticket31
+  sql:
+    volumes:
+      - ./.local/ticket31-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:18312:8000"
+    volumes:
+      - ./.local/ticket31-backend/cors.php:/srv/laravel/config/cors.php:ro
+      - ./.local/ticket31-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket31-backend/laravel-logs:/srv/laravel/storage/logs
+  fiber:
+    environment:
+      CORS_ORIGIN: http://localhost:18311
+    ports: !override
+      - "127.0.0.1:8089:8000"
+    volumes:
+      - ./.local/ticket31-backend/fiber.key:/run/secrets/fiber-jwt.key:ro
+  nginx:
+    ports: !override
+      - "127.0.0.1:18311:80"
