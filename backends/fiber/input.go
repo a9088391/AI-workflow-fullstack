@@ -243,6 +243,19 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			errors[key] = []string{nullValue}
 			continue
 		}
+		// version 必須是 JSON 整數；超出安全整數範圍與非整數型態分開回覆。
+		if key == "version" {
+			if !decimalPattern.Match(value) {
+				if len(value) > 0 && (value[0] >= '0' && value[0] <= '9' || value[0] == '-' && decimalPattern.Match(value[1:])) && bytes.IndexAny(value, ".eE") < 0 {
+					errors[key] = []string{invalid}
+				} else {
+					errors[key] = []string{wrongType}
+				}
+				continue
+			}
+			values[key] = string(value)
+			continue
+		}
 		if len(value) == 0 || value[0] != '"' {
 			errors[key] = []string{wrongType}
 			continue
@@ -286,6 +299,25 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			}
 		case "nickname":
 			if utf8.RuneCountInString(value) < 1 || utf8.RuneCountInString(value) > 30 || strings.ContainsRune(value, 0) || allSpace(value) {
+				errors[field] = []string{invalid}
+			}
+		case "title", "body":
+			limit := 20000
+			if field == "title" {
+				limit = 200
+			} else if !allowed["title"] {
+				// 文章需要 title；留言只有 body，欄位順序不能改變長度契約。
+				limit = 2000
+			}
+			if utf8.RuneCountInString(value) < 1 || utf8.RuneCountInString(value) > limit || strings.ContainsRune(value, 0) || allSpace(value) {
+				errors[field] = []string{invalid}
+			}
+		case "visibility":
+			if value != "visible" && value != "hidden" {
+				errors[field] = []string{invalid}
+			}
+		case "version":
+			if _, e := urlID(value, field); e != nil {
 				errors[field] = []string{invalid}
 			}
 		}

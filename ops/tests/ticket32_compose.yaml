@@ -1,0 +1,22 @@
+# Ticket 32 僅使用獨立資料卷、金鑰與 loopback 埠驗證作者操作。
+services:
+  db:
+    environment:
+      TICKET32_FIXTURE: isolated-ticket32
+    command: ["postgres", "-c", "log_min_duration_statement=0", "-c", "log_line_prefix=%m [%p] %u@%d "]
+  sql:
+    volumes:
+      - ./.local/ticket32-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:18322:8000"
+    volumes:
+      - ./.local/ticket32-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket32-backend/laravel-logs:/srv/laravel/storage/logs
+  fiber:
+    environment:
+      CORS_ORIGIN: http://localhost:18320
+    ports: !override
+      - "127.0.0.1:18321:8000"
+    volumes:
+      - ./.local/ticket32-backend/fiber.key:/run/secrets/fiber-jwt.key:ro

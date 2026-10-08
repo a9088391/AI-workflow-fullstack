@@ -22,6 +22,7 @@ var messages = map[string]struct {
 	message string
 }{
 	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
+	"E0201": {409, "內容已更新，請確認最新內容後再送出"},
 }
 
 // server 持有唯一資料庫池與 Fiber 專屬金鑰，避免請求間共用可變身分。
@@ -384,12 +385,21 @@ func newApp(s *server) *fiber.App {
 	app.Post("/api/auth/login", asHandler(s.login))
 	app.Post("/api/auth/logout", asHandler(s.logout))
 	app.Get("/api/me", asHandler(s.me))
+	app.Get("/api/me/articles", asHandler(s.myArticles))
+	app.Get("/api/me/comments", asHandler(s.myComments))
 	app.Get("/api/articles", asHandler(s.articles))
+	app.Post("/api/articles", asHandler(s.createArticle))
 	app.Get("/api/articles/:article_id", asHandler(s.article))
+	app.Put("/api/articles/:article_id", asHandler(s.updateArticle))
+	app.Put("/api/articles/:article_id/visibility", asHandler(s.articleVisibility))
 	app.Get("/api/articles/:article_id/comments", asHandler(s.comments))
+	app.Post("/api/articles/:article_id/comments", asHandler(s.createComment))
+	app.Get("/api/comments/:comment_id", asHandler(s.commentDetail))
+	app.Put("/api/comments/:comment_id", asHandler(s.updateComment))
+	app.Put("/api/comments/:comment_id/visibility", asHandler(s.commentVisibility))
 	app.Get("/up", asHandler(s.health))
 	// 既有路徑使用其他方法時回 405；未知路徑交由共同 404 處理。
-	for _, path := range []string{"/api/auth/register", "/api/auth/login", "/api/auth/logout", "/api/me", "/api/articles", "/api/articles/:article_id", "/api/articles/:article_id/comments", "/up"} {
+	for _, path := range []string{"/api/auth/register", "/api/auth/login", "/api/auth/logout", "/api/me", "/api/me/articles", "/api/me/comments", "/api/articles", "/api/articles/:article_id", "/api/articles/:article_id/visibility", "/api/articles/:article_id/comments", "/api/comments/:comment_id", "/api/comments/:comment_id/visibility", "/up"} {
 		// 只攔同一資源路徑的錯誤方法，不替未實作操作提供假成功。
 		app.All(path, func(c fiber.Ctx) error {
 			respondError(&requestContext{c: c}, &apiError{code: "E0005", status: 405})
