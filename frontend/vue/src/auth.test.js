@@ -134,6 +134,21 @@ test('Echo selection keeps backend-bound JWT isolated', () => {
   assert.equal(readSession(s), null)
 })
 
+// Express 固定使用 8090；切換前後的 JWT 不得跨後端沿用。
+test('Express selection keeps backend-bound JWT isolated', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.express, 'http://localhost:8090')
+  assert.equal(selectBackend(s, BACKENDS.express), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'express-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.express, accessToken: 'express-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.express, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+})
+
 // 瀏覽器拒絕清除 JWT 時，失敗切換不可把舊 JWT 配給新後端。
 test('backend selection fails closed when token removal throws', () => {
   const s = storage()

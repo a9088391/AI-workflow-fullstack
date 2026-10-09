@@ -14,6 +14,8 @@ import * as admin from './admin.js'
 
 const sample = { id: 7, title: '標題', body: '第一行\r\n第二行', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
 const member = { id: 2, email: 'writer@example.test', nickname: '作者', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
+// 使用完整成功 envelope，讓 Express 互動案例只改本次關注的 data。
+const success = (data) => ({ success: true, message: 'OK', data })
 
 // 逐端點檢查文字、路徑與完整回應，避免前端自行猜欄位或新 ID。
 test('article contract keeps original text and validates routes and envelopes', () => {
@@ -358,6 +360,151 @@ test('ASP.NET backend selection clears prior JWT and routes public and auth requ
   assert.equal(publicList.page.backendLabel.value, 'ASP.NET Core Controllers')
   assert.equal(publicList.requests[0].url, 'http://localhost:8083/api/articles?page=1&per_page=20')
   assert.equal(publicList.requests[0].headers.Authorization, undefined)
+})
+
+// Express 切入未實作頁面時先撤銷舊 JWT，返回公開入口；直接開啟則顯示可用導覽且不呼叫未實作 API。
+test('Express selection and unsupported routes stay within available pages', async (t) => {
+  const switched = articleApp('/vue/me/articles', 'laravel-token', '', true)
+  t.after(switched.close)
+  await switched.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
+  assert.equal(auth.readBackend(switched.sessionStorage), auth.BACKENDS.express)
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  await respond(switched.requests[0], 200, success(member))
+  assert.equal(switched.requests.length, 1, 'late Laravel response cannot start another read')
+
+  const direct = articleApp('/vue/articles/new', null, '', false, auth.BACKENDS.express)
+  t.after(direct.close)
+  assert.deepEqual(direct.requests, [])
+  assert.deepEqual(direct.redirects, [])
+  const html = await renderArticleApp(direct)
+  assert.match(html, /此後端尚未提供此頁/)
+  assert.match(html, /href="\/vue\/"[^>]*>前往文章列表/)
+  assert.doesNotMatch(html, /發表文章|<form/)
+})
+
+// 登入頁改選 Express 時依實際返回頁判斷，保留可閱讀文章並排除尚未實作的作者頁。
+test('Express switch on login preserves supported return target only', async (t) => {
+  const article = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F7')
+  t.after(article.close)
+  await article.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
+  assert.equal(auth.readBackend(article.sessionStorage), auth.BACKENDS.express)
+  assert.deepEqual(article.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F7'])
+
+  const author = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fme%2Farticles')
+  t.after(author.close)
+  await author.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
+  assert.equal(auth.readBackend(author.sessionStorage), auth.BACKENDS.express)
+  assert.deepEqual(author.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+})
+
+// Express 註冊、登入、重載驗權與登出使用本段端點；管理文章列表只讀已實作的 API05。
+test('Express account and reading flows use supported endpoints', async (t) => {
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.express)
+  t.after(registration.close)
+  registration.page.email.value = member.email
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = member.nickname
+  const register = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.express}/api/auth/register`)
+  await respond(registration.requests[0], 201, success({}))
+  await register
+  assert.deepEqual(registration.redirects, ['/vue/login?registered=1'])
+
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fme%2Farticles', false, auth.BACKENDS.express)
+  t.after(login.close)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const signIn = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.express}/api/auth/login`)
+  assert.equal(login.requests[0].headers.Authorization, undefined)
+  await respond(login.requests[0], 200, success({ access_token: 'express-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await signIn
+  assert.deepEqual(login.redirects, ['/vue/'], 'unsupported return target falls back to public list')
+  assert.equal(auth.readSession(login.sessionStorage).backend, auth.BACKENDS.express)
+  const logout = login.page.submitLogout()
+  assert.equal(login.requests[1].url, `${auth.BACKENDS.express}/api/auth/logout`)
+  assert.equal(login.requests[1].headers.Authorization, 'Bearer express-token')
+  await respond(login.requests[1], 200, success({}))
+  await logout
+  assert.equal(auth.readSession(login.sessionStorage), null)
+
+  const list = articleApp('/vue/', 'express-token', '', false, auth.BACKENDS.express)
+  t.after(list.close)
+  assert.equal(list.requests[0].url, `${auth.BACKENDS.express}/api/me`)
+  await respond(list.requests[0], 200, success(member))
+  assert.equal(list.requests[1].url, `${auth.BACKENDS.express}/api/articles?page=1&per_page=20`)
+  await respond(list.requests[1], 200, success({ list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
+  const html = await renderArticleApp(list)
+  assert.match(html, /Express/)
+  assert.match(html, /標題/)
+  assert.doesNotMatch(html, /href="\/vue\/articles\/new"|href="\/vue\/me\/articles"|href="\/vue\/admin\/members"/)
+
+  const managed = articleApp('/vue/admin/articles', 'express-token', '', false, auth.BACKENDS.express)
+  t.after(managed.close)
+  await respond(managed.requests[0], 200, success({ ...member, role: 'admin' }))
+  assert.equal(managed.requests[1].url, `${auth.BACKENDS.express}/api/articles?page=1&per_page=20&filters%5Bscope%5D=management`)
+
+  const detailReturn = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F7', false, auth.BACKENDS.express)
+  t.after(detailReturn.close)
+  detailReturn.page.email.value = member.email
+  detailReturn.page.password.value = 'abcd'
+  await vue.nextTick()
+  const detailLogin = detailReturn.page.submitLogin()
+  await respond(detailReturn.requests[0], 200, success({ access_token: 'detail-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await detailLogin
+  assert.deepEqual(detailReturn.redirects, ['/vue/articles/7'])
+})
+
+// Express 保存的失效 JWT 先經 /me 撤銷，不會改成訪客重送公開列表或送到未實作端點。
+test('Express stale JWT does not become an anonymous retry', async (t) => {
+  const app = articleApp('/vue/', 'stale-token', '', false, auth.BACKENDS.express)
+  t.after(app.close)
+  assert.equal(app.requests[0].headers.Authorization, 'Bearer stale-token')
+  await respond(app.requests[0], 401, { success: false, error_code: 'E0002' })
+  assert.equal(auth.readSession(app.sessionStorage), null)
+  assert.equal(app.requests.length, 1)
+  assert.equal(app.page.account.value, null)
+  assert.match(await renderArticleApp(app), /重新登入後手動讀取/)
+})
+
+// 文章頁仍讀取留言，但 Express 不顯示留言詳情、編輯、下架或新增入口。
+test('Express article reads comments without unavailable actions', async (t) => {
+  const app = articleApp('/vue/articles/7', 'express-token', '', false, auth.BACKENDS.express)
+  t.after(app.close)
+  await respond(app.requests[0], 200, success(member))
+  assert.equal(app.requests[1].url, `${auth.BACKENDS.express}/api/articles/7`)
+  await respond(app.requests[1], 200, success({ ...sample, author: { id: member.id, nickname: member.nickname } }))
+  assert.equal(app.requests[2].url, `${auth.BACKENDS.express}/api/articles/7/comments?page=1&per_page=20`)
+  await respond(app.requests[2], 200, success({ list: [{ ...sample, article_id: 7, body: '留言內容' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
+  const html = await renderArticleApp(app)
+  assert.match(html, /留言內容/)
+  assert.doesNotMatch(html, /閱讀留言詳情|發表留言|編輯文章|下架|href="\/vue\/comments\//)
+})
+
+// Express 的 429 倒數沿用既有入口防重送，包含表單 Enter 觸發的 submit。
+test('Express lockout disables login until Retry-After expires', async (t) => {
+  const app = articleApp('/vue/login', null, '', false, auth.BACKENDS.express)
+  t.after(app.close)
+  app.page.email.value = member.email
+  app.page.password.value = 'abcd'
+  await vue.nextTick()
+  const attempt = app.page.submitLogin()
+  await respond(app.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await attempt
+  assert.equal(app.page.locked.value, true)
+  const lockedHtml = await renderArticleApp(app)
+  assert.match(lockedHtml, /id="email"[^>]*disabled/)
+  assert.match(lockedHtml, /id="password"[^>]*disabled/)
+  assert.match(lockedHtml, /type="submit"[^>]*disabled/)
+  assert.match(lockedHtml, /登入暫時鎖定，約剩 01:00/)
+  await app.page.submitLogin()
+  assert.equal(app.requests.length, 1)
+  app.page.lockDeadline.value = performance.now() - 1
+  app.page.tickLock()
+  assert.equal(app.page.locked.value, false)
+  assert.equal(app.requests.length, 1)
 })
 
 // Django 改選後舊 JWT 立即失效；公開閱讀、註冊與登入都直連相同 API 路徑。

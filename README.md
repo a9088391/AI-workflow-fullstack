@@ -1,16 +1,16 @@
-# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin／Echo
+# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin／Echo／Express
 
 目前 Vue 提供註冊、登入、文章／留言閱讀與會員及管理頁；Nuxt 提供註冊、登入、公開文章列表與詳情。共同頁面可在同一分頁切換 Vue／Nuxt；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 可發表、編修、下架與恢復文章／留言；送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
-需求：Docker Compose、OpenSSL；固定入口使用 `localhost:8080`（前端）、`localhost:8081`（Laravel API）、`localhost:8082`（Symfony API）、`localhost:8083`（ASP.NET Core API）、`localhost:8084`（Django API）、`localhost:8085`（Flask API）、`localhost:8086`（FastAPI）及 `localhost:8087`（Gin API）。PostgreSQL 不對宿主機公開埠。
+需求：Docker Compose、OpenSSL；固定入口使用 `localhost:8080`（前端）、`localhost:8081`（Laravel API）、`localhost:8082`（Symfony API）、`localhost:8083`（ASP.NET Core API）、`localhost:8084`（Django API）、`localhost:8085`（Flask API）、`localhost:8086`（FastAPI）、`localhost:8087`（Gin API）、`localhost:8088`（Echo API）及 `localhost:8090`（Express API）。PostgreSQL 不對宿主機公開埠。
 
 首次執行 `ops/setup.sh`，依提示輸入管理員 Email、暱稱及密碼。密碼為 4–16 碼 ASCII 英數，輸入不回顯，也不經命令列參數。設定會產生未納入 Git 的 `.env`、`.local/keys/` 十二份獨立金鑰、備份目錄與持久化 PostgreSQL volume。重跑只接受原管理員，保留其密碼；若同 Email 是會員則停止，不會升級角色。既有金鑰缺漏或損壞時也會停止，不會重生。
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫 `http://localhost:8081/api/...`、`http://localhost:8082/api/...`、`http://localhost:8083/api/...`、`http://localhost:8084/api/...`、`http://localhost:8085/api/...`、`http://localhost:8086/api/...`、`http://localhost:8087/api/...` 或 `http://localhost:8088/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫各後端固定入口的 `/api/...`，包含 Express 的 `http://localhost:8090/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
 Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。切換後端會清除原登入並轉到登入頁，重新登入後返回合法的本機頁面；不會把舊 JWT 送給新後端。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
 
@@ -43,6 +43,18 @@ Echo API 固定於 `http://localhost:8088`，提供全部 22 項共用操作，�
 同一隔離 Compose 環境可執行 `python3 -B ops/tests/ticket28_query_count.py`，暫開 PostgreSQL 應用角色日誌，量測 Echo 文章與留言列表的實際 SQL 次數；腳本結束時會重設日誌設定並重啟隔離 Echo。
 
 `python3 -B ops/tests/ticket29_query_count.py` 以同一隔離環境量測 Echo 個人文章與留言列表的實際 SQL 次數，並於結束時重設日誌設定與確認 Echo 健康。
+
+Express API 固定於 `http://localhost:8090`，本階段提供註冊、登入／登出、本人、公開／管理文章列表、文章詳情及文章留言列表；發文、作者與管理寫入仍由既有完整後端處理。Express 5.2.1、pg 8.23.0、argon2 0.45.1 以 `backends/express/package-lock.json` 鎖定，使用 Node 24.21.0 ARM64 可用的映像 digest。它以 `.local/keys/express.key` 的獨立金鑰和同一 PostgreSQL 資料庫運作；`GET /up` 驗證共用表可讀。原生單元測試可在 `backends/express/` 執行 `npm test`。
+
+Ticket 34 真實 HTTP／SQL 驗證僅對 `ticket34_test` 專用資料卷執行。先在此 checkout 產生未入 Git 的 `.env`、十二個 `.local/keys/*.key`，並在 `.local/ticket34-backend/` 準備不同於展示金鑰的 `laravel.key`、`express.key`、`laravel-logs/`、`backups/`。將 Laravel CORS 設定複製為該目錄 `cors.php`，僅把允許 origin 改成 `http://localhost:18341`；如需瀏覽器驗證，再把 Vue 來源複製至 `.local/ticket34-frontend/`，在測試副本將 Laravel API 改成 `18342`、Express API 改成 `18343`。測試腳本會在寫入前核對 Compose 專案、資料卷、容器、金鑰、埠及健康狀態。
+
+```sh
+COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
+COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml python3 -B ops/tests/ticket34_http.py
+COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml python3 -B ops/tests/ticket34_query_count.py
+COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml python3 -B ops/tests/ticket34_db_failure.py
+COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml ops/stop.sh
+```
 
 Ticket 30 的管理驗證使用獨立 `ticket30_test` 資料卷、`ops/tests/ticket30_compose.yaml`、`.local/ticket30-backend/` 下的測試專用 `laravel.key`、`echo.key`、`laravel-logs/`、`backups/`，以及 `.local/ticket30-frontend/` 的 Vue 測試副本。從 `frontend/vue/` 複製副本（不用複製 `node_modules/`、`dist/`），只在副本的 `src/auth.js` 將 Laravel `8081`、Echo `8088` 改為 `18093`、`18094`。從 `backends/laravel/config/cors.php` 複製 `.local/ticket30-backend/cors.php`，只將允許來源改為 `http://localhost:18092`，供隔離 Laravel 唯讀掛載；Vue 入口為 `http://localhost:18092/vue/`。以 `COMPOSE_PROJECT_NAME=ticket30_test COMPOSE_FILE=compose.yaml:ops/tests/ticket30_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再以相同 Compose 環境執行 `python3 -B ops/tests/ticket30_http.py`。腳本會在寫入前核對隔離容器、資料卷、金鑰、埠、CORS 與實際送達的 Vue bundle；測試會新增資料並修改隔離鎖定設定，不能指向展示資料。
 
