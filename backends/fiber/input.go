@@ -20,6 +20,7 @@ const wrongType = "欄位型態不正確"
 var emailPattern = regexp.MustCompile(`^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$`)
 var passwordPattern = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
 var decimalPattern = regexp.MustCompile(`^[0-9]+$`)
+var jsonIntegerPattern = regexp.MustCompile(`^-?[0-9]+$`)
 
 // apiError 保存固定錯誤碼及欄位細節，讓各端點共用相同回應。
 type apiError struct {
@@ -111,7 +112,7 @@ func urlID(value, name string) (int64, *apiError) {
 	return n, nil
 }
 
-// pageInput 收集列表 Query 錯誤；只有文章列表可指定管理範圍。
+// pageInput 收集列表 Query 錯誤；文章可用 scope，會員可用 keyword。
 func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError) {
 	if e := noGetBody(r); e != nil {
 		return 0, 0, "", e
@@ -137,6 +138,14 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 	}
 	if value, ok := values["filters[scope]"]; ok && len(errors["filters.scope"]) == 0 && value != "management" {
 		errors["filters.scope"] = []string{invalid}
+	}
+	if value, ok := values["filters[keyword]"]; ok && len(errors["filters.keyword"]) == 0 {
+		// 會員搜尋只裁 U+0020，其他 Unicode 與萬用字元皆視為字面內容。
+		value = strings.Trim(value, " ")
+		if utf8.RuneCountInString(value) > 254 {
+			errors["filters.keyword"] = []string{invalid}
+		}
+		values["filters[keyword]"] = value
 	}
 	if len(errors) > 0 {
 		return 0, 0, "", &apiError{code: "E0001", fields: errors}
@@ -243,6 +252,24 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			errors[key] = []string{nullValue}
 			continue
 		}
+		if key == "enabled" {
+			// 設定開關保留 JSON boolean 型態，字串不能代替布林值。
+			if bytes.Equal(value, []byte("true")) || bytes.Equal(value, []byte("false")) {
+				values[key] = string(value)
+			} else {
+				errors[key] = []string{wrongType}
+			}
+			continue
+		}
+		if key == "window_minutes" || key == "failure_threshold" || key == "lock_seconds" {
+			// 整數詞法與範圍分開檢查，不能把小數或字串默認轉型。
+			if jsonIntegerPattern.Match(value) {
+				values[key] = string(value)
+			} else {
+				errors[key] = []string{wrongType}
+			}
+			continue
+		}
 		// version 必須是 JSON 整數；超出安全整數範圍與非整數型態分開回覆。
 		if key == "version" {
 			if !decimalPattern.Match(value) {
@@ -318,6 +345,21 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 			}
 		case "version":
 			if _, e := urlID(value, field); e != nil {
+				errors[field] = []string{invalid}
+			}
+		case "status":
+			if value != "active" && value != "disabled" {
+				errors[field] = []string{invalid}
+			}
+		case "window_minutes", "failure_threshold", "lock_seconds":
+			limit := int64(86400)
+			if field == "window_minutes" {
+				limit = 60
+			} else if field == "failure_threshold" {
+				limit = 100
+			}
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || n < 1 || n > limit {
 				errors[field] = []string{invalid}
 			}
 		}

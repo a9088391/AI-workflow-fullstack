@@ -397,10 +397,17 @@ func newApp(s *server) *fiber.App {
 	app.Get("/api/comments/:comment_id", asHandler(s.commentDetail))
 	app.Put("/api/comments/:comment_id", asHandler(s.updateComment))
 	app.Put("/api/comments/:comment_id/visibility", asHandler(s.commentVisibility))
+	// 管理路由沿用相同認證、驗證及回應邊界，讓全部 22 個操作可用。
+	app.Get("/api/members", asHandler(s.members))
+	app.Get("/api/members/:member_id", asHandler(s.memberDetail))
+	app.Put("/api/members/:member_id/status", asHandler(s.memberStatus))
+	app.Get("/api/comments", asHandler(s.managementComments))
+	app.Get("/api/settings/login-lockout", asHandler(s.lockoutSettings))
+	app.Put("/api/settings/login-lockout", asHandler(s.updateLockoutSettings))
 	app.Get("/up", asHandler(s.health))
 	// 既有路徑使用其他方法時回 405；未知路徑交由共同 404 處理。
-	for _, path := range []string{"/api/auth/register", "/api/auth/login", "/api/auth/logout", "/api/me", "/api/me/articles", "/api/me/comments", "/api/articles", "/api/articles/:article_id", "/api/articles/:article_id/visibility", "/api/articles/:article_id/comments", "/api/comments/:comment_id", "/api/comments/:comment_id/visibility", "/up"} {
-		// 只攔同一資源路徑的錯誤方法，不替未實作操作提供假成功。
+	for _, path := range []string{"/api/auth/register", "/api/auth/login", "/api/auth/logout", "/api/me", "/api/me/articles", "/api/me/comments", "/api/articles", "/api/articles/:article_id", "/api/articles/:article_id/visibility", "/api/articles/:article_id/comments", "/api/comments/:comment_id", "/api/comments/:comment_id/visibility", "/api/members", "/api/members/:member_id", "/api/members/:member_id/status", "/api/comments", "/api/settings/login-lockout", "/up"} {
+		// 只攔同一資源路徑的錯誤方法，避免不同框架回應不一致。
 		app.All(path, func(c fiber.Ctx) error {
 			respondError(&requestContext{c: c}, &apiError{code: "E0005", status: 405})
 			return nil

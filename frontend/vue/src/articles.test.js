@@ -826,19 +826,21 @@ test('Echo selection and login return preserve protected routes', async (t) => {
   assert.deepEqual(restored.redirects, ['/vue/admin/members'])
 })
 
-// Fiber 作者頁可保留同類返回目標；切換後端仍清除舊 JWT，管理頁改回公開入口。
-test('Fiber switch preserves author page and blocks admin return targets', async (t) => {
+// Fiber 切換後端需清除舊 JWT，並保留作者及管理頁的合法返回目標。
+test('Fiber switch preserves author and admin return targets', async (t) => {
   const supported = articleApp('/vue/articles/7', 'laravel-jwt')
   t.after(supported.close)
   await supported.page.chooseBackend({ target: { value: auth.BACKENDS.fiber } })
   assert.equal(auth.readSession(supported.sessionStorage), null)
   assert.deepEqual(supported.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F7'])
 
-  const unsupported = articleApp('/vue/me/articles', 'laravel-jwt')
-  t.after(unsupported.close)
-  await unsupported.page.chooseBackend({ target: { value: auth.BACKENDS.fiber } })
-  assert.equal(auth.readSession(unsupported.sessionStorage), null)
-  assert.deepEqual(unsupported.redirects, ['/vue/login?return_to=%2Fvue%2Fme%2Farticles'])
+  for (const path of ['/vue/me/articles', '/vue/admin/members', '/vue/admin/settings/login-lockout']) {
+    const switched = articleApp(path, 'laravel-jwt')
+    t.after(switched.close)
+    await switched.page.chooseBackend({ target: { value: auth.BACKENDS.fiber } })
+    assert.equal(auth.readSession(switched.sessionStorage), null, path)
+    assert.deepEqual(switched.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+  }
 
   for (const target of ['/vue/articles/7', '/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/comments/9/edit', '/vue/admin/members']) {
     const loginPage = articleApp('/vue/login', null, `?return_to=${encodeURIComponent(target)}`, false, auth.BACKENDS.fiber)
@@ -850,12 +852,21 @@ test('Fiber switch preserves author page and blocks admin return targets', async
     assert.equal(loginPage.requests[0].url, `${auth.BACKENDS.fiber}/api/auth/login`)
     await respond(loginPage.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'fiber-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
     await login
-    assert.deepEqual(loginPage.redirects, [target.startsWith('/vue/admin/') ? '/vue/' : target])
+    assert.deepEqual(loginPage.redirects, [target])
   }
+  // 既有 Fiber 登入與登入頁切換後端，也須保留同一個合法管理目標。
+  const restored = articleApp('/vue/login', 'fiber-jwt', '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.fiber)
+  t.after(restored.close)
+  await respond(restored.requests[0], 200, { success: true, message: 'OK', data: { ...member, role: 'admin' } })
+  assert.deepEqual(restored.redirects, ['/vue/admin/members'])
+  const changed = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.fiber)
+  t.after(changed.close)
+  await changed.page.chooseBackend({ target: { value: auth.BACKENDS.laravel } })
+  assert.deepEqual(changed.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
 })
 
-// Fiber 作者深連結先驗權，再依路徑讀取資源；只有管理頁停在未提供畫面。
-test('Fiber author deep links verify account and admin deep links stay unavailable', async (t) => {
+// Fiber 作者深連結先驗權，再依路徑讀取資源；管理路徑另由管理案例驗證。
+test('Fiber author deep links verify account before reading resources', async (t) => {
   for (const [path, endpoint] of [
     ['/vue/articles/new', null], ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
     ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'], ['/vue/comments/9', '/api/comments/9'],
@@ -868,17 +879,10 @@ test('Fiber author deep links verify account and admin deep links stay unavailab
     assert.equal(app.requests.length, endpoint ? 2 : 1, path)
     if (endpoint) assert.equal(app.requests[1].url, `${auth.BACKENDS.fiber}${endpoint}`, path)
   }
-  for (const path of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
-    const app = articleApp(path, 'fiber-jwt', '', false, auth.BACKENDS.fiber)
-    t.after(app.close)
-    assert.equal(app.requests.length, 0, path)
-    assert.deepEqual(app.redirects, [], path)
-    assert.match(await renderArticleApp(app), /此頁尚未提供/, path)
-  }
 })
 
-// Fiber 詳情提供作者操作，管理入口仍隱藏；Nuxt 切換與登出維持原契約。
-test('Fiber reads public content and presents author controls without admin pages', async (t) => {
+// Fiber 詳情提供作者及管理入口；Nuxt 切換與登出維持原契約。
+test('Fiber reads public content and presents author and admin controls', async (t) => {
   const app = articleApp('/vue/articles/7', 'fiber-jwt', '', false, auth.BACKENDS.fiber)
   t.after(app.close)
   assert.equal(app.page.backendLabel.value, 'Fiber')
@@ -894,7 +898,8 @@ test('Fiber reads public content and presents author controls without admin page
   assert.match(html, /href="\/vue\/comments\/9"/)
   assert.match(html, /href="\/vue\/articles\/new"/)
   assert.match(html, /發表留言|編輯文章|>下架</)
-  assert.doesNotMatch(html, /href="\/vue\/admin\//)
+  assert.match(html, /href="\/vue\/admin\/articles"/)
+  assert.match(html, /href="\/vue\/admin\/comments"/)
   assert.equal(app.page.canSwitchNuxt.value, false)
   assert.equal(app.page.canComment.value, true)
   assert.equal(app.page.canEdit.value, true)

@@ -236,6 +236,43 @@ test('Echo management routes require verified admin and show all management entr
   for (const href of routes.keys()) if (href !== '/vue/admin/members/2') assert.match(navigation, new RegExp(`href="${href}"`))
 })
 
+// Fiber 管理深連結保留登入目標；驗證目前角色後才讀五種管理資料並顯示入口。
+test('Fiber management routes require verified admin and show management navigation', async (t) => {
+  const routes = new Map([
+    ['/vue/admin/members', '/api/members?page=1&per_page=20'],
+    ['/vue/admin/members/2', '/api/members/2'],
+    ['/vue/admin/articles', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management'],
+    ['/vue/admin/comments', '/api/comments?page=1&per_page=20'],
+    ['/vue/admin/settings/login-lockout', '/api/settings/login-lockout'],
+  ])
+  for (const [path, endpoint] of routes) {
+    const guest = app(path, '', null, auth.BACKENDS.fiber)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
+    const signedIn = app(path, '', 'fiber-token', auth.BACKENDS.fiber)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fiber}/api/me`, path)
+    assert.equal(signedIn.requests.length, 1, path)
+    await respond(signedIn.requests[0], 200, success(administrator))
+    assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.fiber}${endpoint}`, path)
+    assert.equal(signedIn.requests[1].headers.Authorization, 'Bearer fiber-token', path)
+  }
+  const denied = app('/vue/admin/members', '', 'member-token', auth.BACKENDS.fiber)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  const deniedHtml = await rendered(denied.page)
+  assert.match(deniedHtml, /沒有權限使用此功能/)
+  assert.doesNotMatch(deniedHtml, /href="\/vue\/admin\//)
+
+  const menu = app('/vue/', '', 'fiber-token', auth.BACKENDS.fiber)
+  t.after(menu.close)
+  await respond(menu.requests[0], 200, success(administrator))
+  const menuHtml = await rendered(menu.page)
+  for (const href of routes.keys()) if (href !== '/vue/admin/members/2') assert.match(menuHtml, new RegExp(`href="${href}"`))
+})
+
 // Gin 管理頁沿用共用驗權與端點；訪客返回原頁，會員不得先讀取管理資料。
 test('Gin management routes require verified admin and expose all management links', async (t) => {
   const content = { id: 7, body: '管理留言內容', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: 'gin', created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }
