@@ -176,6 +176,20 @@ async function logout(db, subject) {
   }
 }
 
+// recheckSession 在帳號鎖後鎖定登入紀錄，避免停用、撤銷或到期與受保護寫入交錯。
+async function recheckSession(client, subject, current) {
+  const session = await client.query(`SELECT account_id,backend_id,issued_at,expires_at,revoked_at,
+    clock_timestamp() >= expires_at AS expired FROM login_sessions WHERE jti=$1 FOR UPDATE`, [subject.claims.jti]);
+  if (!session.rows.length) throw new ApiError('E0002');
+  const saved = session.rows[0];
+  // 先核對 session 與 JWT，再按停用、撤銷順序回應共同錯誤。
+  if (String(saved.account_id) !== subject.claims.sub || saved.backend_id !== 'express' ||
+      saved.issued_at.getTime() !== subject.claims.iat * 1000 || saved.expires_at.getTime() !== subject.claims.exp * 1000 ||
+      saved.expired) throw new ApiError('E0002');
+  if (current.status === 'disabled') throw new ApiError('E0102');
+  if (saved.revoked_at) throw new ApiError('E0002');
+}
+
 // writeTx 在帳號與登入紀錄鎖內重驗寫入資格，交由呼叫者維持後續文章、留言鎖序。
 async function writeTx(db, subject, operation) {
   const client = await db.connect();
@@ -184,17 +198,8 @@ async function writeTx(db, subject, operation) {
     await client.query('BEGIN');
     const account = await client.query('SELECT id,role,status FROM accounts WHERE id=$1 FOR UPDATE', [subject.account.id]);
     if (!account.rows.length) throw new ApiError('E0002');
-    const session = await client.query(`SELECT account_id,backend_id,issued_at,expires_at,revoked_at,
-      clock_timestamp() >= expires_at AS expired FROM login_sessions WHERE jti=$1 FOR UPDATE`, [subject.claims.jti]);
-    if (!session.rows.length) throw new ApiError('E0002');
     const current = account.rows[0];
-    const saved = session.rows[0];
-    // 鎖後再次核對 JWT 與資料列，避免等待停用、撤銷或到期時仍以舊身分提交。
-    if (String(saved.account_id) !== subject.claims.sub || saved.backend_id !== 'express' ||
-        saved.issued_at.getTime() !== subject.claims.iat * 1000 || saved.expires_at.getTime() !== subject.claims.exp * 1000 ||
-        saved.expired) throw new ApiError('E0002');
-    if (current.status === 'disabled') throw new ApiError('E0102');
-    if (saved.revoked_at) throw new ApiError('E0002');
+    await recheckSession(client, subject, current);
     await operation(client, current);
     await client.query('COMMIT'); committed = true;
   } finally {
@@ -203,4 +208,4 @@ async function writeTx(db, subject, operation) {
   }
 }
 
-module.exports = { businessTime, accountData, hashPassword, verifyPassword, issueToken, verifyToken, identity, login, logout, writeTx };
+module.exports = { businessTime, accountData, hashPassword, verifyPassword, issueToken, verifyToken, identity, login, logout, recheckSession, writeTx };

@@ -98,14 +98,8 @@ const credential = ref(null)
 const backend = ref(API_BASE)
 // 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
 const backendLabel = computed(() => backend.value === BACKENDS.express ? 'Express' : backend.value === BACKENDS.fiber ? 'Fiber' : backend.value === BACKENDS.echo ? 'Echo' : backend.value === BACKENDS.gin ? 'Gin' : backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
-// Express 已提供作者內容操作；管理會員、留言及鎖定設定仍待後續端點。
+// Express 仍需辨識後端選擇，以限制 Nuxt 尚未支援的後端切換。
 const expressBackend = computed(() => backend.value === BACKENDS.express)
-// 同一份可用頁面同時供深連結與登入返回判斷，避免已開放的作者頁被導回列表。
-const expressPages = ['articles', 'article', 'register', 'login', 'article-new', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'managed-articles']
-// 只阻擋 Express 尚未提供端點的管理頁。
-const expressPageAvailable = computed(() => !expressBackend.value || expressPages.includes(page))
-// 登入及切換後端只保留目前後端可到達的返回頁，避免進入尚未實作的管理頁。
-const loginReturnTo = computed(() => expressBackend.value && !expressPages.includes(articlePage(returnTo)) ? '/vue/' : returnTo)
 // Fiber 的管理頁沿用共用流程；仍辨識後端，以限制尚未支援的 Nuxt 切換。
 const fiberBackend = computed(() => backend.value === BACKENDS.fiber)
 // Echo 仍需辨識後端選擇，以限制尚未支援 Echo 的 Nuxt 切換。
@@ -326,10 +320,10 @@ async function copyRelatedLogId() {
   }
 }
 
-// 內容列表、詳情與管理設定沿同一讀取流程，包含 Fiber 的管理資料。
+// 內容列表、詳情與管理設定沿同一讀取流程，包含 Express 的管理資料。
 async function loadContent() {
   // 管理資料須通過目前後端的登入與角色驗證，才可發出讀取請求。
-  if (!expressPageAvailable.value || !['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
+  if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
     || contentLoading.value || contentPending.value || statusPending.value || lockoutPending.value || authChecking.value
     || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value
     || protectedPage && !account.value || credential.value && !account.value
@@ -962,10 +956,9 @@ async function chooseBackend(event) {
   credential.value = null
   account.value = null
   backend.value = next
-  // 先取得實際返回頁，再用同一份可用頁面表排除 Express 尚未實作的管理頁。
+  // 使用安全的本機目標，保留切換前的作者或管理頁供重新登入後讀取。
   const destination = page === 'login' ? returnTo : page === 'register' ? '/vue/' : localPage(path) ? path : '/vue/'
-  const availableDestination = next === BACKENDS.express && !expressPages.includes(articlePage(destination)) ? '/vue/' : destination
-  window.location.assign(`/vue/login?return_to=${encodeURIComponent(availableDestination)}`)
+  window.location.assign(`/vue/login?return_to=${encodeURIComponent(destination)}`)
 }
 
 // Escape 可關閉目前面板，供鍵盤使用者快速回到導覽起點。
@@ -1114,7 +1107,7 @@ async function verifyAccount() {
       clearLockoutForDifferentAccount(result.account.id)
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
-      if (page === 'login') { submitted.value = true; window.location.assign(loginReturnTo.value) }
+      if (page === 'login') { submitted.value = true; window.location.assign(returnTo) }
       else if (adminPage && result.account.role !== 'admin') await showError('沒有權限使用此功能', {}, '', 'E0003')
     } else {
       if (response.status === 401 && result.code === 'E0002') {
@@ -1178,7 +1171,7 @@ async function submitLogin() {
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       clearLock()
-      if (page === 'login') { submitted.value = true; window.location.assign(loginReturnTo.value) }
+      if (page === 'login') { submitted.value = true; window.location.assign(returnTo) }
       else {
         reLogin.value = false
         if (adminPage && result.account.role !== 'admin') {
@@ -1274,10 +1267,9 @@ onMounted(() => {
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('pageshow', onPageShow)
   try { backend.value = readBackend(window.sessionStorage); credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
-  if (!expressPageAvailable.value) document.title = '文章集｜此後端尚未提供'
   // 深連結沿用共同驗權流程；登入前不能讀取管理資料。
   if (credential.value) verifyAccount()
-  else if (protectedPage && expressPageAvailable.value) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
+  else if (protectedPage) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
   else loadContent()
 })
 
@@ -1315,7 +1307,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a v-if="!expressBackend" href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a v-if="!expressBackend" href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a v-if="!expressBackend" href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1335,8 +1327,7 @@ onBeforeUnmount(() => {
     </header>
 
     <main id="main-content" class="main-content">
-      <section v-if="!expressPageAvailable" class="message-page" aria-labelledby="page-title"><h1 id="page-title">此後端尚未提供此頁</h1><p>Express 目前可使用帳號、閱讀與作者內容操作；管理會員、留言及鎖定設定尚未提供。</p><a class="text-link" href="/vue/">前往文章列表</a><a class="text-link" href="/vue/login">前往登入</a></section>
-      <section v-else-if="page === 'register'" class="form-page" aria-labelledby="page-title">
+      <section v-if="page === 'register'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
         <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">

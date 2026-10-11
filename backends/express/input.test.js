@@ -93,3 +93,25 @@ test('nested version cannot change top-level version validation', () => {
     errors: { x: ['不支援此欄位'] },
   });
 });
+
+// 管理輸入驗證涵蓋字面搜尋、狀態與四欄設定，避免框架型態轉換放寬契約。
+test('admin inputs preserve keyword and strict setting types', () => {
+  const allowed = ['page', 'per_page', 'filters[keyword]'];
+  assert.deepEqual(queryInput(request('/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%20A%25_%5C%C3%84%20'), allowed),
+    { page: 1, per_page: 20, 'filters[keyword]': 'A%_\\Ä' });
+  assert.throws(() => queryInput(request('/api/members?page=1&per_page=20&filters[keyword][]=x'), allowed),
+    { errors: { 'filters.keyword': ['欄位型態不正確'] } });
+  assert.throws(() => queryInput(request('/api/members?page=1&per_page=20&filters[keyword]=x&filters[keyword]=y'), allowed),
+    { errors: { 'filters.keyword': ['此參數不可重複'] } });
+  assert.throws(() => bodyInput(request('/', '{"status":"admin"}'), ['status']),
+    { errors: { status: ['欄位格式或範圍不正確'] } });
+  const fields = ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'];
+  assert.deepEqual(bodyInput(request('/', '{"enabled":false,"window_minutes":1,"failure_threshold":100,"lock_seconds":86400}'), fields),
+    { enabled: false, window_minutes: 1, failure_threshold: 100, lock_seconds: 86400 });
+  for (const raw of ['1.0', '1e0', '"1"', 'true']) {
+    assert.throws(() => bodyInput(request('/', `{"enabled":true,"window_minutes":${raw},"failure_threshold":5,"lock_seconds":300}`), fields),
+      { errors: { window_minutes: ['欄位型態不正確'] } });
+  }
+  assert.throws(() => bodyInput(request('/', '{"enabled":"false","window_minutes":0,"failure_threshold":101,"lock_seconds":86401}'), fields),
+    { errors: { enabled: ['欄位型態不正確'], window_minutes: ['欄位格式或範圍不正確'], failure_threshold: ['欄位格式或範圍不正確'], lock_seconds: ['欄位格式或範圍不正確'] } });
+});

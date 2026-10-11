@@ -190,6 +190,121 @@ test('Flask lockout and member status show confirmed readback', async (t) => {
   assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
 })
 
+// Express 管理深連結須先保留登入返回目標，驗證目前角色後才讀對應後端資料。
+test('Express management routes verify role, use Express endpoints, and show navigation', async (t) => {
+  const routes = new Map([
+    ['/vue/admin/members', '/api/members?page=1&per_page=20'],
+    ['/vue/admin/members/2', '/api/members/2'],
+    ['/vue/admin/articles', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management'],
+    ['/vue/admin/comments', '/api/comments?page=1&per_page=20'],
+    ['/vue/admin/settings/login-lockout', '/api/settings/login-lockout'],
+  ])
+  // 每個入口都驗證先後順序和精確 URL，避免誤送至預設 Laravel。
+  for (const [path, endpoint] of routes) {
+    const guest = app(path, '', null, auth.BACKENDS.express)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
+    const instance = app(path, '', 'express-token', auth.BACKENDS.express)
+    t.after(instance.close)
+    assert.equal(instance.requests[0].url, `${auth.BACKENDS.express}/api/me`, path)
+    assert.equal(instance.requests.length, 1, path)
+    await respond(instance.requests[0], 200, success(administrator))
+    assert.equal(instance.requests[1].url, `${auth.BACKENDS.express}${endpoint}`, path)
+    assert.equal(instance.requests[1].headers.Authorization, 'Bearer express-token', path)
+  }
+
+  const denied = app('/vue/admin/members', '', 'member-token', auth.BACKENDS.express)
+  t.after(denied.close)
+  await respond(denied.requests[0], 200, success(member))
+  assert.equal(denied.requests.length, 1)
+  const deniedHtml = await rendered(denied.page)
+  assert.match(deniedHtml, /沒有權限使用此功能/)
+  assert.doesNotMatch(deniedHtml, /href="\/vue\/admin\//)
+
+  const hiddenAdmin = app('/vue/admin/members/1', '', 'express-token', auth.BACKENDS.express)
+  t.after(hiddenAdmin.close)
+  await respond(hiddenAdmin.requests[0], 200, success(administrator))
+  await respond(hiddenAdmin.requests[1], 404, { success: false, error_code: 'E0004' })
+  const missing = await rendered(hiddenAdmin.page)
+  assert.match(missing, /找不到指定資料或 API/)
+  assert.doesNotMatch(missing, /停用會員|恢復會員|admin@example.test/)
+
+  const home = app('/vue/', '', 'express-token', auth.BACKENDS.express)
+  t.after(home.close)
+  await respond(home.requests[0], 200, success(administrator))
+  const navigation = await rendered(home.page)
+  for (const path of routes.keys()) if (path !== '/vue/admin/members/2') assert.match(navigation, new RegExp(`href="${path}"`))
+  assert.doesNotMatch(navigation, /管理會員、留言及鎖定設定尚未提供/)
+})
+
+// Express 登入成功應返回合法管理目標；後續頁面仍需以保存憑證重新驗權。
+test('Express admin login returns to requested management page', async (t) => {
+  const loginPage = app('/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F2', null, auth.BACKENDS.express)
+  t.after(loginPage.close)
+  loginPage.page.email.value = administrator.email
+  loginPage.page.password.value = 'abc123'
+  await vue.nextTick()
+  const login = loginPage.page.submitLogin()
+  assert.equal(loginPage.requests[0].url, `${auth.BACKENDS.express}/api/auth/login`)
+  await respond(loginPage.requests[0], 200, success({ access_token: 'express-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: administrator }))
+  await login
+  assert.deepEqual(loginPage.redirects, ['/vue/admin/members/2'])
+})
+
+// Express 的會員狀態與鎖定設定只以寫入後的同一後端重讀值更新畫面。
+test('Express member status and lockout changes show confirmed Express readback', async (t) => {
+  const detail = app('/vue/admin/members/2', '', 'express-token', auth.BACKENDS.express)
+  t.after(detail.close)
+  await respond(detail.requests[0], 200, success(administrator))
+  await respond(detail.requests[1], 200, success(member))
+  const disable = detail.page.submitMemberStatus()
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.express}/api/members/2/status`)
+  assert.equal(detail.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(detail.requests[2].body), { status: 'disabled' })
+  await respond(detail.requests[2], 200, success({}))
+  assert.equal(detail.requests[3].url, `${auth.BACKENDS.express}/api/members/2`)
+  await respond(detail.requests[3], 200, success({ ...member, status: 'disabled' }))
+  await disable
+  assert.match(await rendered(detail.page), /已重讀會員，目前狀態為停用/)
+
+  const settings = app('/vue/admin/settings/login-lockout', '', 'express-token', auth.BACKENDS.express)
+  t.after(settings.close)
+  await respond(settings.requests[0], 200, success(administrator))
+  await respond(settings.requests[1], 200, success(lockout))
+  settings.page.lockoutDraft.value.window_minutes = 10
+  const save = settings.page.submitLockoutSettings()
+  assert.equal(settings.requests[2].url, `${auth.BACKENDS.express}/api/settings/login-lockout`)
+  assert.equal(settings.requests[2].method, 'PUT')
+  assert.deepEqual(JSON.parse(settings.requests[2].body), { ...lockout, window_minutes: 10 })
+  await respond(settings.requests[2], 200, success({}))
+  assert.equal(settings.requests[3].url, `${auth.BACKENDS.express}/api/settings/login-lockout`)
+  await respond(settings.requests[3], 200, success({ ...lockout, window_minutes: 10 }))
+  await save
+  assert.match(await rendered(settings.page), /value="10"/)
+
+  // 401 必須清掉已授權資料與操作，讓使用者從原管理頁重新驗證。
+  const expired = app('/vue/admin/members/2', '', 'express-token', auth.BACKENDS.express)
+  t.after(expired.close)
+  await respond(expired.requests[0], 200, success(administrator))
+  await respond(expired.requests[1], 200, success(member))
+  const write = expired.page.submitMemberStatus()
+  await respond(expired.requests[2], 401, { success: false, error_code: 'E0002' })
+  await write
+  const expiredHtml = await rendered(expired.page)
+  assert.match(expiredHtml, /請重新登入後讀取原管理頁/)
+  assert.doesNotMatch(expiredHtml, /member@example.test|停用會員/)
+
+  // 後端認定目前管理員已停用時，不得保留會員資料或可操作的表單。
+  const disabled = app('/vue/admin/members/2', '', 'express-token', auth.BACKENDS.express)
+  t.after(disabled.close)
+  await respond(disabled.requests[0], 200, success(administrator))
+  await respond(disabled.requests[1], 403, { success: false, error_code: 'E0102' })
+  const disabledHtml = await rendered(disabled.page)
+  assert.match(disabledHtml, /帳號已停用/)
+  assert.doesNotMatch(disabledHtml, /member@example.test|停用會員/)
+})
+
 // Echo 五種管理頁沿用共用驗權及固定端點；未驗權不得讀取資料。
 test('Echo management routes require verified admin and show all management entries', async (t) => {
   const routes = new Map([

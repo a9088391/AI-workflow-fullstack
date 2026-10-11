@@ -362,8 +362,8 @@ test('ASP.NET backend selection clears prior JWT and routes public and auth requ
   assert.equal(publicList.requests[0].headers.Authorization, undefined)
 })
 
-// Express 切到作者頁時清除舊 JWT 並保留登入返回目標；管理專用未實作頁仍顯示 gate。
-test('Express selection keeps author return target and gates unsupported admin routes', async (t) => {
+// Express 切換仍撤銷舊 JWT；管理深連結改走共用登入與驗權流程。
+test('Express selection keeps author return target and protects admin routes', async (t) => {
   const switched = articleApp('/vue/me/articles', 'laravel-token', '', true)
   t.after(switched.close)
   await switched.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
@@ -376,15 +376,11 @@ test('Express selection keeps author return target and gates unsupported admin r
   const direct = articleApp('/vue/admin/members', null, '', false, auth.BACKENDS.express)
   t.after(direct.close)
   assert.deepEqual(direct.requests, [])
-  assert.deepEqual(direct.redirects, [])
-  const html = await renderArticleApp(direct)
-  assert.match(html, /此後端尚未提供此頁/)
-  assert.match(html, /href="\/vue\/"[^>]*>前往文章列表/)
-  assert.doesNotMatch(html, /會員管理|<form/)
+  assert.deepEqual(direct.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
 })
 
-// 登入頁改選 Express 時保留作者返回路徑，仍排除尚未實作的管理頁。
-test('Express switch on login preserves author return target only', async (t) => {
+// 登入頁改選 Express 時保留已核准的作者與管理目標，避免錯誤導回列表。
+test('Express switch on login preserves author and admin return targets', async (t) => {
   const article = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F7')
   t.after(article.close)
   await article.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
@@ -400,10 +396,17 @@ test('Express switch on login preserves author return target only', async (t) =>
   const admin = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Fmembers')
   t.after(admin.close)
   await admin.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
-  assert.deepEqual(admin.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.deepEqual(admin.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
+
+  // 從管理頁直接切換也保留目前合法路徑，重新登入後才讀目標資料。
+  const managed = articleApp('/vue/admin/comments', 'laravel-token')
+  t.after(managed.close)
+  await managed.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
+  assert.deepEqual(managed.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fcomments'])
+  assert.equal(auth.readSession(managed.sessionStorage), null)
 })
 
-// Express 作者深連結先驗證帳號才讀內容；尚未實作的管理頁不發出 API。
+// Express 作者深連結先驗證帳號才讀內容；管理頁由管理測試檢查角色與端點。
 test('Express author deep links verify identity before content requests', async (t) => {
   const routes = new Map([
     ['/vue/articles/new', null],
@@ -424,12 +427,6 @@ test('Express author deep links verify identity before content requests', async 
     await respond(author.requests[0], 200, success(member))
     assert.equal(author.requests.length, endpoint ? 2 : 1, path)
     if (endpoint) assert.equal(author.requests[1].url, `${auth.BACKENDS.express}${endpoint}`, path)
-  }
-  for (const path of ['/vue/admin/members', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
-    const unavailable = articleApp(path, null, '', false, auth.BACKENDS.express)
-    t.after(unavailable.close)
-    assert.equal(unavailable.requests.length, 0, path)
-    assert.match(await renderArticleApp(unavailable), /此後端尚未提供此頁/, path)
   }
 })
 

@@ -31,14 +31,14 @@ function urlInteger(value, name, max = MAX_ID) {
   return Number(digits);
 }
 
-// queryInput 讀原始 Query 而非 Express 解析結果，以保留重複與陣列鍵錯誤。
+// queryInput 讀原始 Query 而非 Express 解析結果，保留重複／陣列錯誤與關鍵字字面值。
 function queryInput(req, allowed = []) {
   const values = Object.create(null);
   const errors = Object.create(null);
   const raw = req.originalUrl.split('?').slice(1).join('?');
   for (const [name, value] of new URLSearchParams(raw)) {
     let canonical = name;
-    for (const key of ['page', 'per_page', 'filters[scope]']) {
+    for (const key of ['page', 'per_page', 'filters[scope]', 'filters[keyword]']) {
       if (name.startsWith(`${key}[`)) canonical = key;
     }
     // 只有完整的巢狀欄位名稱轉為共同點記法；畸形未知欄位保留原名。
@@ -59,6 +59,11 @@ function queryInput(req, allowed = []) {
   }
   if (Object.hasOwn(values, 'filters[scope]') && !errors['filters.scope'] && values['filters[scope]'] !== 'management') {
     errors['filters.scope'] = [INVALID];
+  }
+  if (Object.hasOwn(values, 'filters[keyword]') && !errors['filters.keyword']) {
+    // 關鍵字只裁 U+0020，其他 Unicode 字元與萬用符號保持字面值。
+    values['filters[keyword]'] = values['filters[keyword]'].replace(/^ +| +$/g, '');
+    if ([...values['filters[keyword]']].length > 254) errors['filters.keyword'] = [INVALID];
   }
   if (Object.keys(errors).length) throw new ApiError('E0001', Object.fromEntries(Object.entries(errors)));
   return Object.fromEntries(Object.entries(values));
@@ -88,7 +93,7 @@ function validSurrogates(raw) {
   return true;
 }
 
-// bodyInput 將 JSON 解析錯誤、根型態與欄位驗證分開，保留共同錯誤順序。
+// bodyInput 將 JSON 解析、原始整數詞形與欄位驗證分開，保留共同錯誤順序。
 function bodyInput(req, fields, optional = false) {
   if (!req.body?.length) {
     if (optional) return {};
@@ -98,13 +103,17 @@ function bodyInput(req, fields, optional = false) {
     throw fieldError('_body', 'Request Body 必須為 JSON object');
   }
   let body;
-  const versionSyntax = new WeakMap();
+  const integerSyntax = new WeakMap();
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(req.body);
     if (!validSurrogates(raw)) throw Error();
-    // 依 reviver 的父物件保存原始詞形；巢狀 version 不得污染頂層欄位。
+    // 依 reviver 的父物件保存原始詞形；巢狀數字不得污染頂層欄位。
     body = JSON.parse(raw, function (name, value, context) {
-      if (name === 'version' && typeof value === 'number') versionSyntax.set(this, context.source);
+      if (['version', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name) && typeof value === 'number') {
+        let fields = integerSyntax.get(this);
+        if (!fields) { fields = {}; integerSyntax.set(this, fields); }
+        fields[name] = context.source;
+      }
       return value;
     });
   }
@@ -119,8 +128,17 @@ function bodyInput(req, fields, optional = false) {
     if (!Object.hasOwn(body, name)) errors[name] = [REQUIRED];
     else if (value === null) errors[name] = [NULL];
     else if (name === 'version') {
-      if (typeof value !== 'number' || !/^-?(0|[1-9][0-9]*)$/.test(versionSyntax.get(body) || '')) errors[name] = [TYPE];
+      if (typeof value !== 'number' || !/^-?(0|[1-9][0-9]*)$/.test(integerSyntax.get(body)?.[name] || '')) errors[name] = [TYPE];
       else if (!Number.isSafeInteger(value) || value < 1) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (['window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)) {
+      // 設定只接受 JSON 整數詞形；範圍錯誤與字串／小數型態錯誤分開回覆。
+      const limit = name === 'window_minutes' ? 60 : name === 'failure_threshold' ? 100 : 86400;
+      if (typeof value !== 'number' || !/^-?(0|[1-9][0-9]*)$/.test(integerSyntax.get(body)?.[name] || '')) errors[name] = [TYPE];
+      else if (!Number.isSafeInteger(value) || value < 1 || value > limit) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'enabled') {
+      if (typeof value !== 'boolean') errors[name] = [TYPE];
       else result[name] = value;
     } else if (typeof value !== 'string') errors[name] = [TYPE];
     else if (name === 'email') {
@@ -141,6 +159,9 @@ function bodyInput(req, fields, optional = false) {
       else result[name] = value;
     } else if (name === 'visibility') {
       if (value !== 'visible' && value !== 'hidden') errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'status') {
+      if (value !== 'active' && value !== 'disabled') errors[name] = [INVALID];
       else result[name] = value;
     }
   }

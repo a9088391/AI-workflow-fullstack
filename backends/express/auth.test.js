@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { randomBytes, createHmac } = require('node:crypto');
-const { hashPassword, verifyPassword, issueToken, verifyToken, login } = require('./auth');
+const { hashPassword, verifyPassword, issueToken, verifyToken, login, recheckSession } = require('./auth');
 
 // signed 專供測試建立同一金鑰下的壞 claims，確保拒絕不是僅因 HMAC 不符。
 function signed(key, header, claims) {
@@ -35,6 +35,34 @@ test('JWT only accepts the Express fixed claims and HS256', () => {
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, exp: now + 28801 })), { code: 'E0002' });
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, iat: String(now) })), { code: 'E0002' });
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, sub: '042' })), { code: 'E0002' });
+});
+
+// 共用鎖後查核維持到期先於停用、停用先於撤銷的結果，兩類受保護寫入沿用相同判定。
+test('locked session validation preserves expiry, disabled and revoked precedence', async () => {
+  const issued = 1767225600;
+  const subject = { claims: { sub: '7', jti: 'test-jti', iat: issued, exp: issued + 28800 } };
+  const saved = { account_id: 7, backend_id: 'express', issued_at: new Date(issued * 1000),
+    expires_at: new Date((issued + 28800) * 1000), expired: false, revoked_at: new Date() };
+  const calls = [];
+  const client = {
+    // 模擬已取得帳號鎖後的 session 列；確認查詢仍使用 FOR UPDATE。
+    async query(statement, args) {
+      calls.push([statement, args]);
+      return { rows: [saved] };
+    },
+  };
+  saved.expired = true;
+  await assert.rejects(recheckSession(client, subject, { status: 'disabled' }), { code: 'E0002' });
+  saved.expired = false;
+  await assert.rejects(recheckSession(client, subject, { status: 'disabled' }), { code: 'E0102' });
+  await assert.rejects(recheckSession(client, subject, { status: 'active' }), { code: 'E0002' });
+  saved.revoked_at = null;
+  await recheckSession(client, subject, { status: 'active' });
+  assert.equal(calls.length, 4);
+  for (const [statement, args] of calls) {
+    assert.match(statement, /FROM login_sessions WHERE jti=\$1 FOR UPDATE/);
+    assert.deepEqual(args, ['test-jti']);
+  }
 });
 
 // LOCK01 的精確鎖定判斷沿用 SQL 微秒布林值，不受 pg 的 Date 毫秒截斷影響。

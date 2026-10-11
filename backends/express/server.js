@@ -7,6 +7,7 @@ const { Pool } = require('pg');
 const { ApiError, fieldError, urlInteger, queryInput, getBody, bodyInput } = require('./input');
 const { accountData, hashPassword, identity, login, logout, writeTx } = require('./auth');
 const content = require('./content');
+const admin = require('./admin');
 
 const MESSAGES = {
   E0001: [422, '欄位資料不正確，請確認後再送出'],
@@ -36,7 +37,14 @@ function respondOK(res, data = {}, status = 200) {
   res.status(status).json({ success: true, message: 'OK', data });
 }
 
-// createApp 配置共同記錄、CORS、原始 Body 與目前已實作的共用 API 操作。
+// adminSubject 先查目前身分與角色，管理端點不會先解析參數或查目標。
+async function adminSubject(db, key, req) {
+  const subject = await identity(db, key, req, true);
+  if (subject.account.role !== 'admin') throw new ApiError('E0003');
+  return subject;
+}
+
+// createApp 配置共同記錄、CORS、原始 Body 與全部 22 個共用 API 操作。
 function createApp(db, key, origin = 'http://localhost:8080') {
   const app = express();
   app.disable('x-powered-by');
@@ -226,6 +234,58 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     respondOK(res);
   });
 
+  // 會員列表僅含一般會員，先驗管理員再解析搜尋與分頁。
+  app.get('/api/members', async (req, res) => {
+    await adminSubject(db, key, req);
+    getBody(req);
+    const query = queryInput(req, ['page', 'per_page', 'filters[keyword]']);
+    respondOK(res, await admin.members(db, query.page, query.per_page, query['filters[keyword]']));
+  });
+
+  // 會員詳情對管理員目標也回 404，不暴露管理員帳號資料。
+  app.get('/api/members/:member_id', async (req, res) => {
+    await adminSubject(db, key, req);
+    getBody(req);
+    queryInput(req);
+    const id = urlInteger(req.params.member_id, 'member_id');
+    respondOK(res, await admin.memberDetail(db, id));
+  });
+
+  // 狀態寫入在交易內重驗管理員，停用時一併撤銷舊登入。
+  app.put('/api/members/:member_id/status', async (req, res) => {
+    const subject = await adminSubject(db, key, req);
+    queryInput(req);
+    const id = urlInteger(req.params.member_id, 'member_id');
+    const body = bodyInput(req, ['status']);
+    await admin.memberStatus(db, subject, id, body.status);
+    respondOK(res);
+  });
+
+  // 管理留言列表包含隱藏留言及隱藏父文的留言，沿用共同內容欄位。
+  app.get('/api/comments', async (req, res) => {
+    const subject = await adminSubject(db, key, req);
+    getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    respondOK(res, await content.managementComments(db, subject.account, query.page, query.per_page));
+  });
+
+  // 共用鎖定設定只向管理員回傳契約指定四欄。
+  app.get('/api/settings/login-lockout', async (req, res) => {
+    await adminSubject(db, key, req);
+    getBody(req);
+    queryInput(req);
+    respondOK(res, await admin.lockoutSettings(db));
+  });
+
+  // 設定寫入先驗四欄，再以設定列鎖和帳號鎖裁決關閉副作用。
+  app.put('/api/settings/login-lockout', async (req, res) => {
+    const subject = await adminSubject(db, key, req);
+    queryInput(req);
+    const body = bodyInput(req, ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds']);
+    await admin.updateLockoutSettings(db, subject, body);
+    respondOK(res);
+  });
+
   // 健康檢查查全部業務表的權限與連線，避免只驗 HTTP socket 的假就緒。
   app.get('/up', async (req, res) => {
     try {
@@ -234,7 +294,7 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     } catch { res.status(503).type('text').send('unavailable'); }
   });
   // 已知路徑但方法錯誤回 405；未知 API 仍由 404 處理。
-  for (const path of ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles', '/api/me/articles', '/api/me/comments', '/api/articles/:article_id', '/api/articles/:article_id/visibility', '/api/articles/:article_id/comments', '/api/comments/:comment_id', '/api/comments/:comment_id/visibility']) {
+  for (const path of ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles', '/api/me/articles', '/api/me/comments', '/api/articles/:article_id', '/api/articles/:article_id/visibility', '/api/articles/:article_id/comments', '/api/comments', '/api/comments/:comment_id', '/api/comments/:comment_id/visibility', '/api/members', '/api/members/:member_id', '/api/members/:member_id/status', '/api/settings/login-lockout']) {
     // 每個已知路徑共用同一方法錯誤，不把 Express 的預設 HTML 送給前端。
     app.all(path, () => { throw new ApiError('E0005', undefined, undefined, 405); });
   }

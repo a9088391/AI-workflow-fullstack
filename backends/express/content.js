@@ -73,6 +73,11 @@ async function owned(db, viewer, page, perPage, article) {
   return pageRows(db, columns, base, [viewer.id], page, perPage, viewer, article);
 }
 
+// managementComments 直接列出全部留言，個別及父文章下架均不限制管理員查看。
+async function managementComments(db, viewer, page, perPage) {
+  return pageRows(db, COMMENT_COLUMNS, 'FROM comments JOIN accounts ON accounts.id=comments.author_id', [], page, perPage, viewer, false);
+}
+
 // comment 讓作者與管理員獨立讀取留言；其他會員先判隱藏再判詳情權限。
 async function comment(db, viewer, id) {
   const result = await db.query(`SELECT ${COMMENT_COLUMNS},articles.visibility AS parent_visibility FROM comments
@@ -162,4 +167,4 @@ async function mutate(client, viewer, id, body, article, visibility) {
   if (updated.rowCount !== 1) throw Error('locked content changed before update');
 }
 
-module.exports = { contentData, pagination, articles, article, comments, owned, comment, createArticle, createComment, mutate };
+module.exports = { contentData, pagination, articles, article, comments, owned, managementComments, comment, createArticle, createComment, mutate };
