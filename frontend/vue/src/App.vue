@@ -98,10 +98,14 @@ const credential = ref(null)
 const backend = ref(API_BASE)
 // 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
 const backendLabel = computed(() => backend.value === BACKENDS.express ? 'Express' : backend.value === BACKENDS.fiber ? 'Fiber' : backend.value === BACKENDS.echo ? 'Echo' : backend.value === BACKENDS.gin ? 'Gin' : backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
-// Express 本段只開放帳號與閱讀；管理文章列表使用已實作的 API05。
+// Express 已提供作者內容操作；管理會員、留言及鎖定設定仍待後續端點。
 const expressBackend = computed(() => backend.value === BACKENDS.express)
-const expressPageAvailable = computed(() => !expressBackend.value || ['articles', 'article', 'register', 'login', 'managed-articles'].includes(page))
-const loginReturnTo = computed(() => expressBackend.value && !['articles', 'article', 'managed-articles'].includes(articlePage(returnTo)) ? '/vue/' : returnTo)
+// 同一份可用頁面同時供深連結與登入返回判斷，避免已開放的作者頁被導回列表。
+const expressPages = ['articles', 'article', 'register', 'login', 'article-new', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'managed-articles']
+// 只阻擋 Express 尚未提供端點的管理頁。
+const expressPageAvailable = computed(() => !expressBackend.value || expressPages.includes(page))
+// 登入及切換後端只保留目前後端可到達的返回頁，避免進入尚未實作的管理頁。
+const loginReturnTo = computed(() => expressBackend.value && !expressPages.includes(articlePage(returnTo)) ? '/vue/' : returnTo)
 // Fiber 的管理頁沿用共用流程；仍辨識後端，以限制尚未支援的 Nuxt 切換。
 const fiberBackend = computed(() => backend.value === BACKENDS.fiber)
 // Echo 仍需辨識後端選擇，以限制尚未支援 Echo 的 Nuxt 切換。
@@ -160,15 +164,15 @@ function hasLockoutDraft() {
   return false
 }
 // 留言前先確認父文章公開及目前登入有效，避免以過期畫面送出。
-const canComment = computed(() => !expressBackend.value && page === 'article' && contentReady.value && articleData.value?.visibility === 'visible' && Boolean(account.value && credential.value) && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value)
+const canComment = computed(() => page === 'article' && contentReady.value && articleData.value?.visibility === 'visible' && Boolean(account.value && credential.value) && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value)
 // 詳情與編輯以後端最新讀取值判斷資格；管理員不能修改他人內文。
 const currentResource = computed(() => articleResource ? articleData.value : commentResource ? commentData.value : null)
 // 確認目前登入與資源後才顯示操作，避免重驗期間洩漏受保護內容。
 const authorizedResource = computed(() => Boolean(contentReady.value && currentResource.value && account.value && credential.value && !authChecking.value && !reLogin.value && !disabledAccount.value && !logoutPending.value))
 // 作者可編修自己的內容；留言還須另外確認父文章公開。
-const canEdit = computed(() => !expressBackend.value && authorizedResource.value && currentResource.value.author.id === account.value.id && (!commentResource || parentArticle.value?.visibility === 'visible' && !relatedLoading.value))
+const canEdit = computed(() => authorizedResource.value && currentResource.value.author.id === account.value.id && (!commentResource || parentArticle.value?.visibility === 'visible' && !relatedLoading.value))
 // 作者與管理員按目前資源資格操作，實際權限仍由後端重驗。
-const canManageVisibility = computed(() => !expressBackend.value && authorizedResource.value && (currentResource.value.author.id === account.value.id || account.value.role === 'admin'))
+const canManageVisibility = computed(() => authorizedResource.value && (currentResource.value.author.id === account.value.id || account.value.role === 'admin'))
 // 管理員可再次下架他人內容以接管恢復權；自己的內容仍按作者規則。
 const canHide = computed(() => canManageVisibility.value && (currentResource.value.visibility === 'visible' || account.value.role === 'admin' && currentResource.value.author.id !== account.value.id))
 // 原文保留在 refs；textarea 的瀏覽器換行正規化只在真實 input 事件後採用。
@@ -958,9 +962,9 @@ async function chooseBackend(event) {
   credential.value = null
   account.value = null
   backend.value = next
-  // 先取得實際返回頁，再排除 Express 尚未實作的頁面；選擇已保存於同分頁。
+  // 先取得實際返回頁，再用同一份可用頁面表排除 Express 尚未實作的管理頁。
   const destination = page === 'login' ? returnTo : page === 'register' ? '/vue/' : localPage(path) ? path : '/vue/'
-  const availableDestination = next === BACKENDS.express && !['articles', 'article', 'managed-articles'].includes(articlePage(destination)) ? '/vue/' : destination
+  const availableDestination = next === BACKENDS.express && !expressPages.includes(articlePage(destination)) ? '/vue/' : destination
   window.location.assign(`/vue/login?return_to=${encodeURIComponent(availableDestination)}`)
 }
 
@@ -1311,7 +1315,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><a href="/vue/articles/new" v-if="!expressBackend" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a v-if="!expressBackend" href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a v-if="!expressBackend" href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a v-if="!expressBackend" href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a v-if="!expressBackend" href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a v-if="!expressBackend" href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a v-if="!expressBackend" href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a v-if="!expressBackend" href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a v-if="!expressBackend" href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1331,10 +1335,10 @@ onBeforeUnmount(() => {
     </header>
 
     <main id="main-content" class="main-content">
-      <section v-if="!expressPageAvailable" class="message-page" aria-labelledby="page-title"><h1 id="page-title">此後端尚未提供此頁</h1><p>Express 目前可使用帳號登入與註冊、文章及留言閱讀。</p><a class="text-link" href="/vue/">前往文章列表</a><a class="text-link" href="/vue/login">前往登入</a></section>
+      <section v-if="!expressPageAvailable" class="message-page" aria-labelledby="page-title"><h1 id="page-title">此後端尚未提供此頁</h1><p>Express 目前可使用帳號、閱讀與作者內容操作；管理會員、留言及鎖定設定尚未提供。</p><a class="text-link" href="/vue/">前往文章列表</a><a class="text-link" href="/vue/login">前往登入</a></section>
       <section v-else-if="page === 'register'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
-        <p class="intro">{{ expressBackend ? '建立帳號後即可登入並閱讀文章。' : '建立帳號後即可登入並發表文章。' }}</p>
+        <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
           <h2 id="error-title">{{ summary }}</h2>
           <ul v-if="Object.keys(errors).length">
@@ -1353,7 +1357,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="page === 'articles' || page === 'article' || page === 'article-new' || page === 'my-articles' || page === 'my-comments' || page === 'comment' || editing" class="reading-page" aria-labelledby="page-title">
-        <div class="reading-heading"><div><p class="eyebrow">文章集 / {{ page === 'articles' ? '公開閱讀' : page === 'article' ? '文章詳情' : page === 'article-new' ? '會員發表' : page === 'my-articles' ? '會員文章' : page === 'article-edit' ? '文章編修' : page === 'comment-edit' ? '留言編修' : '會員留言' }}</p><h1 id="page-title">{{ page === 'articles' ? '最新文章' : page === 'article' ? '閱讀文章' : page === 'article-new' ? '發表文章' : page === 'my-articles' ? '我的文章' : page === 'my-comments' ? '我的留言' : page === 'article-edit' ? '編輯文章' : page === 'comment-edit' ? '編輯留言' : '留言詳情' }}</h1></div><a v-if="account && page === 'articles' && !expressBackend" class="secondary-button" href="/vue/articles/new">發表文章</a></div>
+        <div class="reading-heading"><div><p class="eyebrow">文章集 / {{ page === 'articles' ? '公開閱讀' : page === 'article' ? '文章詳情' : page === 'article-new' ? '會員發表' : page === 'my-articles' ? '會員文章' : page === 'article-edit' ? '文章編修' : page === 'comment-edit' ? '留言編修' : '會員留言' }}</p><h1 id="page-title">{{ page === 'articles' ? '最新文章' : page === 'article' ? '閱讀文章' : page === 'article-new' ? '發表文章' : page === 'my-articles' ? '我的文章' : page === 'my-comments' ? '我的留言' : page === 'article-edit' ? '編輯文章' : page === 'comment-edit' ? '編輯留言' : '留言詳情' }}</h1></div><a v-if="account && page === 'articles'" class="secondary-button" href="/vue/articles/new">發表文章</a></div>
         <p v-if="published && account" class="success-note" role="status">文章已發表，以下為我的文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title"><h2 id="error-title">{{ summary }}</h2><ul v-if="errorFields.length"><li v-for="name in errorFields" :key="name"><button type="button" @click="focusField(name)">{{ fieldNames[name] }}：{{ errors[name].join('；') }}</button></li></ul><div v-if="logId" class="trace"><span>追蹤編號：<span class="trace-id">{{ logId }}</span></span><button type="button" @click="copyLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
         <p v-if="authChecking" role="status">正在確認登入狀態，請稍候…</p>
@@ -1416,9 +1420,9 @@ onBeforeUnmount(() => {
           <h2 id="comments-title">留言</h2><p v-if="relatedLoading" role="status">正在讀取留言，請稍候…</p>
           <section v-if="relatedError" ref="relatedSummary" class="error-summary" tabindex="-1" aria-labelledby="related-error-title"><h3 id="related-error-title">{{ relatedError }}</h3><div v-if="relatedLogId" class="trace"><span>追蹤編號：<span class="trace-id">{{ relatedLogId }}</span></span><button type="button" @click="copyRelatedLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
           <button v-if="relatedError && !relatedLoading" type="button" class="secondary-button" :disabled="contentPending" @click="loadRelated">重新讀取留言</button>
-          <template v-if="commentList"><p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p><p v-if="!commentList.list.length" role="status">{{ commentList.pagination.total && commentPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p><ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><template v-if="!expressBackend"><a v-if="account && (account.id === item.author.id || account.role === 'admin')" class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></template></li></ol><nav v-if="commentList.pagination.total_pages > 1 || commentPage > 1" class="pagination" aria-label="文章留言分頁"><a v-if="commentPage > 1" :href="`${path}?page=${commentPage - 1}#comments`">上一頁</a><span>第 {{ commentPage }} 頁</span><a v-if="commentPage < commentList.pagination.total_pages" :href="`${path}?page=${commentPage + 1}#comments`">下一頁</a><a v-if="commentList.pagination.total && commentPage > commentList.pagination.total_pages" :href="`${path}#comments`">回第一頁</a></nav></template>
+          <template v-if="commentList"><p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p><p v-if="!commentList.list.length" role="status">{{ commentList.pagination.total && commentPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p><ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><a v-if="account && (account.id === item.author.id || account.role === 'admin')" class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></li></ol><nav v-if="commentList.pagination.total_pages > 1 || commentPage > 1" class="pagination" aria-label="文章留言分頁"><a v-if="commentPage > 1" :href="`${path}?page=${commentPage - 1}#comments`">上一頁</a><span>第 {{ commentPage }} 頁</span><a v-if="commentPage < commentList.pagination.total_pages" :href="`${path}?page=${commentPage + 1}#comments`">下一頁</a><a v-if="commentList.pagination.total && commentPage > commentList.pagination.total_pages" :href="`${path}#comments`">回第一頁</a></nav></template>
         </section>
-        <section v-if="!expressBackend && page === 'article' && (articleData && contentReady || reLogin && commentBody)" class="comment-form" aria-labelledby="comment-form-title">
+        <section v-if="page === 'article' && (articleData && contentReady || reLogin && commentBody)" class="comment-form" aria-labelledby="comment-form-title">
           <h2 id="comment-form-title">發表留言</h2>
           <p v-if="commentPosted" class="success-note" role="status">留言已發表。</p>
           <form v-if="canComment || reLogin && commentBody" novalidate @submit.prevent="submitComment"><div class="field"><label for="body">留言內容</label><textarea id="body" v-model="commentBody" :disabled="contentPending || !canComment" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'body-error comment-help' : 'comment-help'"></textarea><p id="comment-help" class="field-help">1–2,000 個字，不可全為空白；原樣保留換行。</p><p v-if="errors.body" id="body-error" class="field-error" role="alert">{{ errors.body.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="contentPending || !canComment">{{ contentPending ? '留言處理中…' : '發表留言' }}</button><p v-if="contentPending" class="pending-note" role="status">正在送出留言，請稍候；不要重複提交。</p></form>
@@ -1654,7 +1658,7 @@ onBeforeUnmount(() => {
       </section>
       <section v-else-if="page === 'login'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">會員登入</h1>
-        <p class="intro">{{ expressBackend ? '登入後可閱讀文章與留言。' : '登入後即可發表文章與查看自己的文章。' }}</p>
+        <p class="intro">登入後即可發表文章與查看自己的文章。</p>
         <p v-if="registered" class="success-note" role="status">帳號已建立，請輸入帳密登入。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
           <h2 id="error-title">{{ summary }}</h2>

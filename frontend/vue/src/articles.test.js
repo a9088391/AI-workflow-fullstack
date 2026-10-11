@@ -362,29 +362,29 @@ test('ASP.NET backend selection clears prior JWT and routes public and auth requ
   assert.equal(publicList.requests[0].headers.Authorization, undefined)
 })
 
-// Express 切入未實作頁面時先撤銷舊 JWT，返回公開入口；直接開啟則顯示可用導覽且不呼叫未實作 API。
-test('Express selection and unsupported routes stay within available pages', async (t) => {
+// Express 切到作者頁時清除舊 JWT 並保留登入返回目標；管理專用未實作頁仍顯示 gate。
+test('Express selection keeps author return target and gates unsupported admin routes', async (t) => {
   const switched = articleApp('/vue/me/articles', 'laravel-token', '', true)
   t.after(switched.close)
   await switched.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
   assert.equal(auth.readBackend(switched.sessionStorage), auth.BACKENDS.express)
   assert.equal(auth.readSession(switched.sessionStorage), null)
-  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Fme%2Farticles'])
   await respond(switched.requests[0], 200, success(member))
   assert.equal(switched.requests.length, 1, 'late Laravel response cannot start another read')
 
-  const direct = articleApp('/vue/articles/new', null, '', false, auth.BACKENDS.express)
+  const direct = articleApp('/vue/admin/members', null, '', false, auth.BACKENDS.express)
   t.after(direct.close)
   assert.deepEqual(direct.requests, [])
   assert.deepEqual(direct.redirects, [])
   const html = await renderArticleApp(direct)
   assert.match(html, /此後端尚未提供此頁/)
   assert.match(html, /href="\/vue\/"[^>]*>前往文章列表/)
-  assert.doesNotMatch(html, /發表文章|<form/)
+  assert.doesNotMatch(html, /會員管理|<form/)
 })
 
-// 登入頁改選 Express 時依實際返回頁判斷，保留可閱讀文章並排除尚未實作的作者頁。
-test('Express switch on login preserves supported return target only', async (t) => {
+// 登入頁改選 Express 時保留作者返回路徑，仍排除尚未實作的管理頁。
+test('Express switch on login preserves author return target only', async (t) => {
   const article = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F7')
   t.after(article.close)
   await article.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
@@ -395,7 +395,42 @@ test('Express switch on login preserves supported return target only', async (t)
   t.after(author.close)
   await author.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
   assert.equal(auth.readBackend(author.sessionStorage), auth.BACKENDS.express)
-  assert.deepEqual(author.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.deepEqual(author.redirects, ['/vue/login?return_to=%2Fvue%2Fme%2Farticles'])
+
+  const admin = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Fmembers')
+  t.after(admin.close)
+  await admin.page.chooseBackend({ target: { value: auth.BACKENDS.express } })
+  assert.deepEqual(admin.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+})
+
+// Express 作者深連結先驗證帳號才讀內容；尚未實作的管理頁不發出 API。
+test('Express author deep links verify identity before content requests', async (t) => {
+  const routes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+  ])
+  for (const [path, endpoint] of routes) {
+    const guest = articleApp(path, null, '', false, auth.BACKENDS.express)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
+    const author = articleApp(path, 'express-token', '', false, auth.BACKENDS.express)
+    t.after(author.close)
+    assert.equal(author.requests[0].url, `${auth.BACKENDS.express}/api/me`, path)
+    await respond(author.requests[0], 200, success(member))
+    assert.equal(author.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) assert.equal(author.requests[1].url, `${auth.BACKENDS.express}${endpoint}`, path)
+  }
+  for (const path of ['/vue/admin/members', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
+    const unavailable = articleApp(path, null, '', false, auth.BACKENDS.express)
+    t.after(unavailable.close)
+    assert.equal(unavailable.requests.length, 0, path)
+    assert.match(await renderArticleApp(unavailable), /此後端尚未提供此頁/, path)
+  }
 })
 
 // Express 註冊、登入、重載驗權與登出使用本段端點；管理文章列表只讀已實作的 API05。
@@ -421,7 +456,7 @@ test('Express account and reading flows use supported endpoints', async (t) => {
   assert.equal(login.requests[0].headers.Authorization, undefined)
   await respond(login.requests[0], 200, success({ access_token: 'express-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
   await signIn
-  assert.deepEqual(login.redirects, ['/vue/'], 'unsupported return target falls back to public list')
+  assert.deepEqual(login.redirects, ['/vue/me/articles'])
   assert.equal(auth.readSession(login.sessionStorage).backend, auth.BACKENDS.express)
   const logout = login.page.submitLogout()
   assert.equal(login.requests[1].url, `${auth.BACKENDS.express}/api/auth/logout`)
@@ -439,7 +474,9 @@ test('Express account and reading flows use supported endpoints', async (t) => {
   const html = await renderArticleApp(list)
   assert.match(html, /Express/)
   assert.match(html, /標題/)
-  assert.doesNotMatch(html, /href="\/vue\/articles\/new"|href="\/vue\/me\/articles"|href="\/vue\/admin\/members"/)
+  assert.match(html, /href="\/vue\/articles\/new"/)
+  assert.match(html, /href="\/vue\/me\/articles"/)
+  assert.doesNotMatch(html, /href="\/vue\/admin\/members"/)
 
   const managed = articleApp('/vue/admin/articles', 'express-token', '', false, auth.BACKENDS.express)
   t.after(managed.close)
@@ -469,8 +506,8 @@ test('Express stale JWT does not become an anonymous retry', async (t) => {
   assert.match(await renderArticleApp(app), /重新登入後手動讀取/)
 })
 
-// 文章頁仍讀取留言，但 Express 不顯示留言詳情、編輯、下架或新增入口。
-test('Express article reads comments without unavailable actions', async (t) => {
+// Express 文章頁顯示作者操作與留言詳情入口，避免已實作功能仍被隱藏。
+test('Express article exposes author and comment actions', async (t) => {
   const app = articleApp('/vue/articles/7', 'express-token', '', false, auth.BACKENDS.express)
   t.after(app.close)
   await respond(app.requests[0], 200, success(member))
@@ -480,7 +517,10 @@ test('Express article reads comments without unavailable actions', async (t) => 
   await respond(app.requests[2], 200, success({ list: [{ ...sample, article_id: 7, body: '留言內容' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
   const html = await renderArticleApp(app)
   assert.match(html, /留言內容/)
-  assert.doesNotMatch(html, /閱讀留言詳情|發表留言|編輯文章|下架|href="\/vue\/comments\//)
+  assert.match(html, /閱讀留言詳情/)
+  assert.match(html, /發表留言/)
+  assert.match(html, /編輯文章/)
+  assert.match(html, /href="\/vue\/comments\//)
 })
 
 // Express 的 429 倒數沿用既有入口防重送，包含表單 Enter 觸發的 submit。
@@ -1343,7 +1383,7 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
 
 // 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
 test('author backends publish member and admin articles to the first my articles page', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber]) for (const actor of [member, { ...member, role: 'admin' }]) {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) for (const actor of [member, { ...member, role: 'admin' }]) {
     const app = articleApp('/vue/articles/new', 'author-jwt', '', false, selectedBackend)
     t.after(app.close)
     await respond(app.requests[0], 200, { success: true, message: 'OK', data: actor })

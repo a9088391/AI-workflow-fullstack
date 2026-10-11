@@ -46,7 +46,7 @@ Fiber API 固定於 `http://localhost:8089`，提供全部 22 項共用操作，
 
 `python3 -B ops/tests/ticket29_query_count.py` 以同一隔離環境量測 Echo 個人文章與留言列表的實際 SQL 次數，並於結束時重設日誌設定與確認 Echo 健康。
 
-Express API 固定於 `http://localhost:8090`，本階段提供註冊、登入／登出、本人、公開／管理文章列表、文章詳情及文章留言列表；發文、作者與管理寫入仍由既有完整後端處理。Express 5.2.1、pg 8.23.0、argon2 0.45.1 以 `backends/express/package-lock.json` 鎖定，使用 Node 24.21.0 ARM64 可用的映像 digest。它以 `.local/keys/express.key` 的獨立金鑰和同一 PostgreSQL 資料庫運作；`GET /up` 驗證共用表可讀。原生單元測試可在 `backends/express/` 執行 `npm test`。
+Express API 固定於 `http://localhost:8090`，提供註冊、登入／登出、本人、公開／管理文章列表與詳情、發文、我的文章／留言、文章及留言編修／下架／恢復、留言建立與單則詳情；管理寫入仍由既有完整後端處理。Express 5.2.1、pg 8.23.0、argon2 0.45.1 以 `backends/express/package-lock.json` 鎖定，使用 Node 24.21.0 ARM64 可用的映像 digest。它以 `.local/keys/express.key` 的獨立金鑰和同一 PostgreSQL 資料庫運作；`GET /up` 驗證共用表可讀。原生單元測試可在 `backends/express/` 執行 `npm test`。
 
 Ticket 34 真實 HTTP／SQL 驗證僅對 `ticket34_test` 專用資料卷執行。先在此 checkout 產生未入 Git 的 `.env`、十二個 `.local/keys/*.key`，並在 `.local/ticket34-backend/` 準備不同於展示金鑰的 `laravel.key`、`express.key`、`laravel-logs/`、`backups/`。將 Laravel CORS 設定複製為該目錄 `cors.php`，僅把允許 origin 改成 `http://localhost:18341`；如需瀏覽器驗證，再把 Vue 來源複製至 `.local/ticket34-frontend/`，在測試副本將 Laravel API 改成 `18342`、Express API 改成 `18343`。測試腳本會在寫入前核對 Compose 專案、資料卷、容器、金鑰、埠及健康狀態。
 
@@ -56,6 +56,20 @@ COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_
 COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml python3 -B ops/tests/ticket34_query_count.py
 COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml python3 -B ops/tests/ticket34_db_failure.py
 COMPOSE_PROJECT_NAME=ticket34_test COMPOSE_FILE=compose.yaml:ops/tests/ticket34_compose.yaml ops/stop.sh
+```
+
+Ticket 35 作者操作測試使用新建的 `ticket35_test` 專用資料卷、`ops/tests/ticket35_compose.yaml`、Vue 入口 `http://localhost:18351/vue/`、Laravel API `http://127.0.0.1:18352` 與 Express API `http://127.0.0.1:18353`。先保留現有 `.env`，在 `.local/ticket35-backend/` 準備與展示不同的 `laravel.key`、`express.key`（各為 32-byte 隨機值的 base64）、`laravel-logs/`、`backups/`；複製 `backends/laravel/config/cors.php` 至該目錄的 `cors.php`，將允許來源改成 `http://localhost:18351`。瀏覽器驗證時，將 `frontend/vue/` 複製至 `.local/ticket35-frontend/`（排除 `node_modules/` 與 `dist/`），只在副本 `src/auth.js` 將 Laravel `8081`、Express `8090` 改為 `18352`、`18353`。啟動前先檢查 `18351`–`18353` 未占用；HTTP 腳本會在任何資料寫入前核對實際容器、資料卷、金鑰與埠。SQL 腳本讀取隔離 DB 日誌並執行 `EXPLAIN (ANALYZE, BUFFERS)`；兩者只對本票資料卷執行。
+
+```sh
+docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml config --quiet
+docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml up -d --wait db
+PROJECT_WRITERS_STOPPED=1 docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml up --build --exit-code-from sql sql
+docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml --profile express up -d --build --wait laravel express
+docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml --profile express exec -T express npm test
+COMPOSE_PROJECT_NAME=ticket35_test COMPOSE_FILE=compose.yaml:ops/tests/ticket35_compose.yaml python3 -B ops/tests/ticket35_http.py
+COMPOSE_PROJECT_NAME=ticket35_test COMPOSE_FILE=compose.yaml:ops/tests/ticket35_compose.yaml python3 -B ops/tests/ticket35_query_count.py
+docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml --profile express up -d --build --wait frontend-vue nginx
+docker compose -p ticket35_test -f compose.yaml -f ops/tests/ticket35_compose.yaml --profile express down
 ```
 
 Ticket 30 的管理驗證使用獨立 `ticket30_test` 資料卷、`ops/tests/ticket30_compose.yaml`、`.local/ticket30-backend/` 下的測試專用 `laravel.key`、`echo.key`、`laravel-logs/`、`backups/`，以及 `.local/ticket30-frontend/` 的 Vue 測試副本。從 `frontend/vue/` 複製副本（不用複製 `node_modules/`、`dist/`），只在副本的 `src/auth.js` 將 Laravel `8081`、Echo `8088` 改為 `18093`、`18094`。從 `backends/laravel/config/cors.php` 複製 `.local/ticket30-backend/cors.php`，只將允許來源改為 `http://localhost:18092`，供隔離 Laravel 唯讀掛載；Vue 入口為 `http://localhost:18092/vue/`。以 `COMPOSE_PROJECT_NAME=ticket30_test COMPOSE_FILE=compose.yaml:ops/tests/ticket30_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再以相同 Compose 環境執行 `python3 -B ops/tests/ticket30_http.py`。腳本會在寫入前核對隔離容器、資料卷、金鑰、埠、CORS 與實際送達的 Vue bundle；測試會新增資料並修改隔離鎖定設定，不能指向展示資料。

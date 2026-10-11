@@ -41,7 +41,8 @@ function queryInput(req, allowed = []) {
     for (const key of ['page', 'per_page', 'filters[scope]']) {
       if (name.startsWith(`${key}[`)) canonical = key;
     }
-    const label = canonical.replace(/^filters\[/, 'filters.').replace(/\]$/, '');
+    // 只有完整的巢狀欄位名稱轉為共同點記法；畸形未知欄位保留原名。
+    const label = canonical.replace(/^filters\[([^\]]+)\]$/, 'filters.$1');
     if (Object.hasOwn(values, canonical)) errors[label] = ['此參數不可重複'];
     else if (canonical !== name && allowed.includes(canonical)) errors[label] = [TYPE];
     else if (!allowed.includes(canonical)) errors[label] = ['不支援此欄位'];
@@ -97,10 +98,15 @@ function bodyInput(req, fields, optional = false) {
     throw fieldError('_body', 'Request Body 必須為 JSON object');
   }
   let body;
+  const versionSyntax = new WeakMap();
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(req.body);
     if (!validSurrogates(raw)) throw Error();
-    body = JSON.parse(raw);
+    // 依 reviver 的父物件保存原始詞形；巢狀 version 不得污染頂層欄位。
+    body = JSON.parse(raw, function (name, value, context) {
+      if (name === 'version' && typeof value === 'number') versionSyntax.set(this, context.source);
+      return value;
+    });
   }
   catch { throw new ApiError('E0005'); }
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -112,7 +118,11 @@ function bodyInput(req, fields, optional = false) {
     const value = body[name];
     if (!Object.hasOwn(body, name)) errors[name] = [REQUIRED];
     else if (value === null) errors[name] = [NULL];
-    else if (typeof value !== 'string') errors[name] = [TYPE];
+    else if (name === 'version') {
+      if (typeof value !== 'number' || !/^-?(0|[1-9][0-9]*)$/.test(versionSyntax.get(body) || '')) errors[name] = [TYPE];
+      else if (!Number.isSafeInteger(value) || value < 1) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (typeof value !== 'string') errors[name] = [TYPE];
     else if (name === 'email') {
       const normalized = value.replace(/^ +| +$/g, '').replace(/[A-Z]/g, c => c.toLowerCase());
       const local = normalized.split('@')[0];
@@ -123,6 +133,14 @@ function bodyInput(req, fields, optional = false) {
       else result[name] = value;
     } else if (name === 'nickname') {
       if (value.includes('\0') || [...value].length < 1 || [...value].length > 30 || /^[ \t\n\r\v\f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u.test(value)) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'title' || name === 'body') {
+      // 文字保留原樣；僅依共同空白集合、NUL 與 Unicode 碼點長度驗證。
+      const limit = name === 'title' ? 200 : fields.includes('title') ? 20000 : 2000;
+      if (value.includes('\0') || [...value].length < 1 || [...value].length > limit || /^[ \t\n\r\v\f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u.test(value)) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'visibility') {
+      if (value !== 'visible' && value !== 'hidden') errors[name] = [INVALID];
       else result[name] = value;
     }
   }

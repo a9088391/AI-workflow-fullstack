@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const express = require('express');
 const { Pool } = require('pg');
 const { ApiError, fieldError, urlInteger, queryInput, getBody, bodyInput } = require('./input');
-const { accountData, hashPassword, identity, login, logout } = require('./auth');
+const { accountData, hashPassword, identity, login, logout, writeTx } = require('./auth');
 const content = require('./content');
 
 const MESSAGES = {
@@ -18,6 +18,7 @@ const MESSAGES = {
   E0102: [403, '此帳號已停用，請聯絡系統管理員'],
   E0104: [500, '後台認證設定異常，請聯絡系統管理員'],
   E0105: [429, '登入失敗次數過多，請稍後再試'],
+  E0201: [409, '內容已更新，請確認最新內容後再送出'],
   E9999: [500, '系統暫時無法處理，請稍後再試'],
 };
 
@@ -35,7 +36,7 @@ function respondOK(res, data = {}, status = 200) {
   res.status(status).json({ success: true, message: 'OK', data });
 }
 
-// createApp 配置共同記錄、CORS、原始 Body 與七個已核准操作。
+// createApp 配置共同記錄、CORS、原始 Body 與目前已實作的共用 API 操作。
 function createApp(db, key, origin = 'http://localhost:8080') {
   const app = express();
   app.disable('x-powered-by');
@@ -117,6 +118,32 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     respondOK(res, await content.articles(db, subject?.account, query.page, query.per_page, query['filters[scope]'] === 'management'));
   });
 
+  // 發文先完成認證與本文格式，再在認證鎖內記錄實際作者及來源。
+  app.post('/api/articles', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    queryInput(req);
+    const body = bodyInput(req, ['title', 'body']);
+    // callback 使用交易內重驗的帳號，確保建立者不是等待鎖前的快照。
+    await writeTx(db, subject, (client, viewer) => content.createArticle(client, viewer, body));
+    respondOK(res, {}, 201);
+  });
+
+  // 自己的文章包含已下架項目，採用公開列表相同欄位與排序。
+  app.get('/api/me/articles', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    respondOK(res, await content.owned(db, subject.account, query.page, query.per_page, true));
+  });
+
+  // 自己的留言只回 article_id，不藉下架父文章洩漏其內容。
+  app.get('/api/me/comments', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    respondOK(res, await content.owned(db, subject.account, query.page, query.per_page, false));
+  });
+
   // article 先查攜帶的憑證，再依作者與管理員身分判 hidden 可讀性。
   app.get('/api/articles/:article_id', async (req, res) => {
     const subject = await identity(db, key, req);
@@ -124,6 +151,28 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     queryInput(req);
     const id = urlInteger(req.params.article_id, 'article_id');
     respondOK(res, await content.article(db, subject?.account, id));
+  });
+
+  // 修改文章只接受作者本人；鎖內先判可讀及權限，再比對 version。
+  app.put('/api/articles/:article_id', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    queryInput(req);
+    const id = urlInteger(req.params.article_id, 'article_id');
+    const body = bodyInput(req, ['title', 'body', 'version']);
+    // callback 在鎖內讀取現況，將權限和 version 裁決與更新綁成一次交易。
+    await writeTx(db, subject, (client, viewer) => content.mutate(client, viewer, id, body, true, false));
+    respondOK(res);
+  });
+
+  // 下架與恢復沿用相同交易裁決，管理員可接管他人的恢復控制權。
+  app.put('/api/articles/:article_id/visibility', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    queryInput(req);
+    const id = urlInteger(req.params.article_id, 'article_id');
+    const body = bodyInput(req, ['visibility', 'version']);
+    // callback 於同一交易裁決恢復權，防止並行下架覆蓋新控制者。
+    await writeTx(db, subject, (client, viewer) => content.mutate(client, viewer, id, body, true, true));
+    respondOK(res);
   });
 
   // comments 先確定父文章可讀，之後才篩選個別下架留言。
@@ -135,6 +184,48 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     respondOK(res, await content.comments(db, subject?.account, id, query.page, query.per_page));
   });
 
+  // 新增留言先鎖父文章，確認其仍公開後才寫入。
+  app.post('/api/articles/:article_id/comments', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    queryInput(req);
+    const id = urlInteger(req.params.article_id, 'article_id');
+    const body = bodyInput(req, ['body']);
+    // callback 使用交易中的父文鎖，確保提交前仍可新增留言。
+    await writeTx(db, subject, (client, viewer) => content.createComment(client, viewer, id, body));
+    respondOK(res, {}, 201);
+  });
+
+  // 留言詳情限作者與管理員；對其他人先隱藏不可讀內容的存在。
+  app.get('/api/comments/:comment_id', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    getBody(req);
+    queryInput(req);
+    const id = urlInteger(req.params.comment_id, 'comment_id');
+    respondOK(res, await content.comment(db, subject.account, id));
+  });
+
+  // 留言內文修改鎖定父文章後才鎖留言，防止下架與修改交錯。
+  app.put('/api/comments/:comment_id', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    queryInput(req);
+    const id = urlInteger(req.params.comment_id, 'comment_id');
+    const body = bodyInput(req, ['body', 'version']);
+    // callback 先鎖父文再鎖留言，與文章下架維持相同順序。
+    await writeTx(db, subject, (client, viewer) => content.mutate(client, viewer, id, body, false, false));
+    respondOK(res);
+  });
+
+  // 留言下架及恢復不改父文章狀態，仍在父文章與留言鎖內裁決。
+  app.put('/api/comments/:comment_id/visibility', async (req, res) => {
+    const subject = await identity(db, key, req, true);
+    queryInput(req);
+    const id = urlInteger(req.params.comment_id, 'comment_id');
+    const body = bodyInput(req, ['visibility', 'version']);
+    // callback 在父文與留言鎖內判權限，避免版本和恢復控制競爭。
+    await writeTx(db, subject, (client, viewer) => content.mutate(client, viewer, id, body, false, true));
+    respondOK(res);
+  });
+
   // 健康檢查查全部業務表的權限與連線，避免只驗 HTTP socket 的假就緒。
   app.get('/up', async (req, res) => {
     try {
@@ -143,7 +234,7 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     } catch { res.status(503).type('text').send('unavailable'); }
   });
   // 已知路徑但方法錯誤回 405；未知 API 仍由 404 處理。
-  for (const path of ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles', '/api/articles/:article_id', '/api/articles/:article_id/comments']) {
+  for (const path of ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles', '/api/me/articles', '/api/me/comments', '/api/articles/:article_id', '/api/articles/:article_id/visibility', '/api/articles/:article_id/comments', '/api/comments/:comment_id', '/api/comments/:comment_id/visibility']) {
     // 每個已知路徑共用同一方法錯誤，不把 Express 的預設 HTML 送給前端。
     app.all(path, () => { throw new ApiError('E0005', undefined, undefined, 405); });
   }
