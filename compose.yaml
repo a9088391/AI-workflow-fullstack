@@ -244,6 +244,30 @@ services:
       timeout: 3s
       retries: 20
 
+  fiber:
+    profiles: ["fiber"]
+    build:
+      context: .
+      dockerfile: backends/fiber/Dockerfile
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
+    volumes:
+      - ./.local/keys/fiber.key:/run/secrets/fiber-jwt.key:ro
+    ports:
+      - "127.0.0.1:8089:8000"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/up"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   express:
     profiles: ["express"]
     build:

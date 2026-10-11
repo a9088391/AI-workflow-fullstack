@@ -149,6 +149,21 @@ test('Express selection keeps backend-bound JWT isolated', () => {
   assert.equal(readSession(s), null)
 })
 
+// Fiber 固定 8089，切入與切出均須撤銷舊後端 JWT，避免跨框架誤用登入。
+test('Fiber selection keeps backend-bound JWT isolated', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.fiber, 'http://localhost:8089')
+  assert.equal(selectBackend(s, BACKENDS.fiber), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'fiber-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.fiber, accessToken: 'fiber-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.echo), true)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.fiber, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+})
+
 // 瀏覽器拒絕清除 JWT 時，失敗切換不可把舊 JWT 配給新後端。
 test('backend selection fails closed when token removal throws', () => {
   const s = storage()

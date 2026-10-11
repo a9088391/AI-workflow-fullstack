@@ -97,11 +97,13 @@ const pending = ref(false)
 const credential = ref(null)
 const backend = ref(API_BASE)
 // 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
-const backendLabel = computed(() => backend.value === BACKENDS.express ? 'Express' : backend.value === BACKENDS.echo ? 'Echo' : backend.value === BACKENDS.gin ? 'Gin' : backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
+const backendLabel = computed(() => backend.value === BACKENDS.express ? 'Express' : backend.value === BACKENDS.fiber ? 'Fiber' : backend.value === BACKENDS.echo ? 'Echo' : backend.value === BACKENDS.gin ? 'Gin' : backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
 // Express 本段只開放帳號與閱讀；管理文章列表使用已實作的 API05。
 const expressBackend = computed(() => backend.value === BACKENDS.express)
 const expressPageAvailable = computed(() => !expressBackend.value || ['articles', 'article', 'register', 'login', 'managed-articles'].includes(page))
 const loginReturnTo = computed(() => expressBackend.value && !['articles', 'article', 'managed-articles'].includes(articlePage(returnTo)) ? '/vue/' : returnTo)
+// Fiber 的管理頁沿用共用流程；仍辨識後端，以限制尚未支援的 Nuxt 切換。
+const fiberBackend = computed(() => backend.value === BACKENDS.fiber)
 // Echo 仍需辨識後端選擇，以限制尚未支援 Echo 的 Nuxt 切換。
 const echoBackend = computed(() => backend.value === BACKENDS.echo)
 // Gin 使用共用管理流程；此後端 key 仍用於限制尚未支援的 Nuxt 切換。
@@ -110,8 +112,8 @@ const ginBackend = computed(() => backend.value === BACKENDS.gin)
 const flaskBackend = computed(() => backend.value === BACKENDS.flask)
 // FastAPI 的管理頁沿用共用流程；後端 key 仍用於限制尚未支援的 Nuxt 切換。
 const fastapiBackend = computed(() => backend.value === BACKENDS.fastapi)
-// Nuxt 尚未認得 Flask、FastAPI、Gin 與 Echo 的共用後端 key；避免跨前端誤用目前 JWT。
-const canSwitchNuxt = computed(() => !expressBackend.value && !flaskBackend.value && !fastapiBackend.value && !ginBackend.value && !echoBackend.value && canSwitchNuxtPage)
+// Nuxt 尚未認得 Express、Fiber、Flask、FastAPI、Gin 與 Echo 的共用後端 key；避免跨前端誤用目前 JWT。
+const canSwitchNuxt = computed(() => !expressBackend.value && !fiberBackend.value && !flaskBackend.value && !fastapiBackend.value && !ginBackend.value && !echoBackend.value && canSwitchNuxtPage)
 const account = ref(null)
 const authChecking = ref(false)
 const logoutPending = ref(false)
@@ -320,7 +322,7 @@ async function copyRelatedLogId() {
   }
 }
 
-// 內容列表、詳情與管理設定沿同一讀取流程；管理資料須先驗證角色。
+// 內容列表、詳情與管理設定沿同一讀取流程，包含 Fiber 的管理資料。
 async function loadContent() {
   // 管理資料須通過目前後端的登入與角色驗證，才可發出讀取請求。
   if (!expressPageAvailable.value || !['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
@@ -938,7 +940,7 @@ function chooseFrontend(event) {
   window.location.assign(`${destination}${nextReturn}`)
 }
 
-// 換後端只更換 API 基底並撤銷舊 JWT，登入後再返回合法的本機語意頁。
+// 換後端只更換 API 基底並撤銷舊 JWT；保留合法作者或管理頁的返回目標。
 async function chooseBackend(event) {
   const next = event.target.value
   if (next === backend.value) return
@@ -1261,7 +1263,7 @@ async function copyLogId() {
   }
 }
 
-// 掛載時註冊離頁事件並讀取保存憑證；受保護頁面先驗權才讀取資料。
+// 掛載時讀取保存憑證；管理深連結先驗權，再讀取目前後端資料。
 onMounted(() => {
   alive = true
   window.addEventListener('beforeunload', warnOnLeave)
@@ -1321,8 +1323,8 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="versionsOpen" id="version-panel" class="version-panel">
         <div class="version-panel-inner">
-          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : expressBackend || flaskBackend || fastapiBackend || ginBackend || echoBackend ? '（此後端尚未提供）' : '（此頁尚未提供）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">{{ expressBackend ? 'Nuxt 尚未支援目前選擇的 Express 後端；請留在 Vue。' : echoBackend ? 'Nuxt 尚未支援目前選擇的 Echo 後端；請留在 Vue。' : ginBackend ? 'Nuxt 尚未支援目前選擇的 Gin 後端；請留在 Vue。' : flaskBackend ? 'Nuxt 尚未支援目前選擇的 Flask 後端；請留在 Vue。' : fastapiBackend ? 'Nuxt 尚未支援目前選擇的 FastAPI 後端；請留在 Vue。' : 'Nuxt 目前可切換文章列表、文章詳情、登入與註冊；未完成頁面請留在 Vue。' }}</p></div>
-          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option><option :value="BACKENDS.flask">Flask</option><option :value="BACKENDS.fastapi">FastAPI</option><option :value="BACKENDS.gin">Gin</option><option :value="BACKENDS.echo">Echo</option><option :value="BACKENDS.express">Express</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
+          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : expressBackend || fiberBackend || flaskBackend || fastapiBackend || ginBackend || echoBackend ? '（此後端尚未提供）' : '（此頁尚未提供）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">{{ expressBackend ? 'Nuxt 尚未支援目前選擇的 Express 後端；請留在 Vue。' : fiberBackend ? 'Nuxt 尚未支援目前選擇的 Fiber 後端；請留在 Vue。' : echoBackend ? 'Nuxt 尚未支援目前選擇的 Echo 後端；請留在 Vue。' : ginBackend ? 'Nuxt 尚未支援目前選擇的 Gin 後端；請留在 Vue。' : flaskBackend ? 'Nuxt 尚未支援目前選擇的 Flask 後端；請留在 Vue。' : fastapiBackend ? 'Nuxt 尚未支援目前選擇的 FastAPI 後端；請留在 Vue。' : 'Nuxt 目前可切換文章列表、文章詳情、登入與註冊；未完成頁面請留在 Vue。' }}</p></div>
+          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option><option :value="BACKENDS.flask">Flask</option><option :value="BACKENDS.fastapi">FastAPI</option><option :value="BACKENDS.gin">Gin</option><option :value="BACKENDS.echo">Echo</option><option :value="BACKENDS.fiber">Fiber</option><option :value="BACKENDS.express">Express</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
           <button class="panel-close" type="button" @click="closePanel('versions')">關閉</button>
         </div>
       </div>
