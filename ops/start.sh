@@ -23,7 +23,7 @@ case "${COMPOSE_FILE:-}" in
             *ops/tests/ticket28_compose.yaml*) backend_services="laravel echo" ;;
             *ops/tests/ticket31_compose.yaml*) backend_services="laravel fiber" ;;
             *ops/tests/ticket34_compose.yaml*) backend_services="laravel express" ;;
-            *ops/tests/ticket37_compose.yaml*) backend_services="laravel fastify" ;;
+            *ops/tests/ticket37_compose.yaml*|*ops/tests/ticket38_compose.yaml*) backend_services="laravel fastify" ;;
             *ops/tests/ticket19_compose.yaml*|*ops/tests/ticket20_compose.yaml*) backend_services="laravel flask" ;;
             *ops/tests/ticket16_compose.yaml*) backend_services="laravel symfony aspnet-core django" ;;
             *) backend_services="laravel symfony aspnet-core" ;;
@@ -70,7 +70,10 @@ else
     elif [ "$backend_services" = "laravel express" ]; then
         echo 'Vue／Laravel／Express 專用展示已就緒：http://localhost:18341/vue/；Express API：http://localhost:18343'
     elif [ "$backend_services" = "laravel fastify" ]; then
-        echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18371/vue/；Fastify API：http://localhost:18373'
+        case "${COMPOSE_FILE:-}" in
+            *ops/tests/ticket38_compose.yaml*) echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18381/vue/；Laravel API：http://localhost:18382；Fastify API：http://localhost:18383' ;;
+            *) echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18371/vue/；Fastify API：http://localhost:18373' ;;
+        esac
     elif [ "$backend_services" = "laravel gin" ]; then
         echo 'Vue／Laravel／Gin 專用展示已就緒：http://localhost:8090/vue/；Gin API：http://localhost:8087'
     elif [ "$backend_services" = "laravel echo" ]; then

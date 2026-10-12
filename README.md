@@ -87,7 +87,17 @@ docker compose -p ticket36_test -f compose.yaml -f ops/tests/ticket36_compose.ya
 ```
 
 
-Fastify API 固定於 `http://localhost:8091`，目前提供註冊、登入、登出、`/api/me`、公開文章列表／詳情與文章留言列表（操作 01–05、07、12）。Fastify 5.12.5、pg 8.23.0、argon2 0.45.1 由 `backends/fastify/package-lock.json` 鎖定，Node 24.21.0 ARM64 映像以 digest 鎖定；它使用 `.local/keys/fastify.key` 與共用 PostgreSQL。`GET /up` 會確認必要共用表可讀。其餘作者與管理端點尚未由 Fastify 提供。
+Fastify API 固定於 `http://localhost:8091`，目前提供註冊、登入、登出、`/api/me`、公開文章列表／詳情、作者發文／編修／我的文章與留言／下架恢復，以及文章留言列表／新增／單則詳情／編修／下架恢復（操作 01–16）。Fastify 5.12.5、pg 8.23.0、argon2 0.45.1 由 `backends/fastify/package-lock.json` 鎖定，Node 24.21.0 ARM64 映像以 digest 鎖定；它使用 `.local/keys/fastify.key` 與共用 PostgreSQL。`GET /up` 會確認必要共用表可讀。管理端點尚未由 Fastify 提供。
+
+Ticket 38 作者操作驗證沿用 Ticket 37 的隔離方式，改用 `ticket38_test` 資料卷、`.local/ticket38-backend/` 的專用金鑰及 `18381`–`18383` loopback 埠。將 Laravel CORS 設定複製到 `.local/ticket38-backend/cors.php`，只把允許 origin 改成 `http://localhost:18381`；Vue 測試副本放在 `.local/ticket38-frontend/`，其 Laravel／Fastify API 位址分別改為 `18382`／`18383`。這些檔案僅供本機測試，不改展示設定。先確認專用資料卷、金鑰與埠，再執行：
+
+```sh
+COMPOSE_PROJECT_NAME=ticket38_test COMPOSE_FILE=compose.yaml:ops/tests/ticket38_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
+COMPOSE_PROJECT_NAME=ticket38_test COMPOSE_FILE=compose.yaml:ops/tests/ticket38_compose.yaml python3 -B ops/tests/ticket38_http.py
+COMPOSE_PROJECT_NAME=ticket38_test COMPOSE_FILE=compose.yaml:ops/tests/ticket38_compose.yaml docker compose --profile fastify exec -T fastify npm test
+COMPOSE_PROJECT_NAME=ticket38_test COMPOSE_FILE=compose.yaml:ops/tests/ticket38_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh
+COMPOSE_PROJECT_NAME=ticket38_test COMPOSE_FILE=compose.yaml:ops/tests/ticket38_compose.yaml ops/stop.sh
+```
 
 Ticket 37 HTTP／SQL 驗證只在 `ticket37_test` 專用資料卷執行。先在 `.local/ticket37-backend/` 準備不同於展示金鑰的 `laravel.key`、`fastify.key`（各為 32-byte 隨機值的 base64）、`laravel-logs/`、`backups/`；將 `backends/laravel/config/cors.php` 複製為 `cors.php`，並只把允許 origin 改成 `http://localhost:18371`。沿用現有 `.env`，先確認 18371–18373 埠未占用。腳本在任何寫入前核對實際容器、隔離資料卷、金鑰及埠；SQL 腳本量測真正送出的查詢次數並執行 `EXPLAIN (ANALYZE, BUFFERS)`。Vue 瀏覽器驗證時另將前端複製到 ignored `.local/ticket37-frontend/`，在副本把 Laravel 與 Fastify API 指向 18372、18373；不在展示前端改測試位址。
 

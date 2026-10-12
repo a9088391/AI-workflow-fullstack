@@ -166,7 +166,7 @@ test('confirmed article publish opens my articles first page with success notice
 
 // 201 若缺少核准的空 data 格式仍視為結果未知，不能顯示成功或重送寫入。
 test('incomplete 201 publish response does not announce success', async (t) => {
-  const app = articleApp('/vue/articles/new')
+  const app = articleApp('/vue/articles/new', 'fastify-jwt', '', false, auth.BACKENDS.fastify)
   t.after(app.close)
   await respond(app.requests[0], 200, { success: true, message: 'OK', data: member })
   app.page.articleTitle.value = '標題'
@@ -177,11 +177,12 @@ test('incomplete 201 publish response does not announce success', async (t) => {
   assert.deepEqual(app.redirects, [])
   assert.equal(app.page.writeUnknown.value, true)
   assert.equal(app.requests.length, 2)
+  assert.match(await renderArticleApp(app), /發文結果尚未確認.*先到我的文章查證/)
 })
 
 // 重驗失效後若登入另一帳號，原帳號草稿不得繼承；遲到的舊回應也不得覆蓋新狀態。
 test('revalidation 401 then different-account login clears draft', async (t) => {
-  const app = articleApp('/vue/articles/new')
+  const app = articleApp('/vue/articles/new', 'fastify-jwt', '', false, auth.BACKENDS.fastify)
   t.after(app.close)
   await respond(app.requests[0], 200, { success: true, message: 'OK', data: member })
   app.page.articleTitle.value = '私有草稿'
@@ -199,6 +200,7 @@ test('revalidation 401 then different-account login clears draft', async (t) => 
   assert.equal(app.page.articleTitle.value, '')
   assert.equal(app.page.articleBody.value, '')
   assert.match(app.page.summary.value, /不同帳號/)
+  assert.doesNotMatch(await renderArticleApp(app), /私有草稿|保留到失效/)
   assert.equal(app.requests.length, 3)
 })
 
@@ -379,15 +381,15 @@ test('Express selection keeps author return target and protects admin routes', a
   assert.deepEqual(direct.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
 })
 
-// 切入 Fastify 後清除舊 JWT，舊後端的延遲回應與未提供頁面都不能產生新請求。
-test('Fastify switch clears old session and avoids unsupported return targets', async (t) => {
+// 切入 Fastify 後清除舊 JWT；作者目標保留，管理目標不送往未提供的端點。
+test('Fastify switch clears old session and preserves only supported return targets', async (t) => {
   const switched = articleApp('/vue/me/articles', 'laravel-token')
   t.after(switched.close)
   await switched.page.chooseBackend({ target: { value: auth.BACKENDS.fastify } })
   assert.equal(auth.readBackend(switched.sessionStorage), auth.BACKENDS.fastify)
   assert.equal(auth.readSession(switched.sessionStorage), null)
   assert.equal(switched.page.backendLabel.value, 'Fastify')
-  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Fme%2Farticles'])
   await respond(switched.requests[0], 200, success(member))
   assert.equal(switched.requests.length, 1)
 
@@ -410,18 +412,18 @@ test('Fastify switch clears old session and avoids unsupported return targets', 
   const retained = articleApp('/vue/login', 'fastify-jwt', '?return_to=%2Fvue%2Fme%2Farticles', false, auth.BACKENDS.fastify)
   t.after(retained.close)
   await respond(retained.requests[0], 200, success(member))
-  assert.deepEqual(retained.redirects, ['/vue/'])
+  assert.deepEqual(retained.redirects, ['/vue/me/articles'])
   assert.equal(auth.readSession(retained.sessionStorage).expiresAt, '2026-09-24 18:00:00')
 })
 
-// Fastify 深連結只說明未提供功能；已登入者可登出，但不讀取作者或管理 API。
-test('Fastify unsupported routes render guidance without unsupported API calls', async (t) => {
-  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/admin/members']) {
+// Fastify 管理頁尚未提供；深連結顯示說明並阻止管理 API 請求。
+test('Fastify management routes render guidance without unsupported API calls', async (t) => {
+  for (const path of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
     const guest = articleApp(path, null, '', false, auth.BACKENDS.fastify)
     t.after(guest.close)
     assert.equal(guest.requests.length, 0, path)
     assert.deepEqual(guest.redirects, [], path)
-    assert.match(await renderArticleApp(guest), /Fastify 目前提供註冊、登入與公開文章及留言閱讀/, path)
+    assert.match(await renderArticleApp(guest), /管理頁尚未提供/, path)
     const signedIn = articleApp(path, 'fastify-jwt', '', false, auth.BACKENDS.fastify)
     t.after(signedIn.close)
     assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastify}/api/me`, path)
@@ -430,11 +432,58 @@ test('Fastify unsupported routes render guidance without unsupported API calls',
     const html = await renderArticleApp(signedIn)
     assert.match(html, /此後端尚未提供此頁/, path)
     assert.doesNotMatch(html, /href="\/vue\/admin\/members"/, path)
-    assert.doesNotMatch(html, /href="\/vue\/me\/articles"/, path)
+    assert.match(html, /href="\/vue\/me\/articles"/, path)
   }
 })
 
-// Fastify 使用既有表單與公開閱讀畫面；留言內容可讀但作者操作與 Nuxt 切換不可用。
+// Fastify 作者頁須先驗證身分；訪客登入後回原目標，管理返回目標仍被排除。
+test('Fastify author deep links verify identity and return through login', async (t) => {
+  const authorRoutes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+  ])
+  for (const [path, endpoint] of authorRoutes) {
+    const visitor = articleApp(path, null, '', false, auth.BACKENDS.fastify)
+    t.after(visitor.close)
+    assert.deepEqual(visitor.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(visitor.requests.length, 0, path)
+    const signedIn = articleApp(path, 'fastify-jwt', '', false, auth.BACKENDS.fastify)
+    t.after(signedIn.close)
+    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastify}/api/me`, path)
+    await respond(signedIn.requests[0], 200, success(member))
+    assert.equal(signedIn.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) {
+      assert.equal(signedIn.requests[1].url, `${auth.BACKENDS.fastify}${endpoint}`, path)
+      assert.equal(signedIn.requests[1].headers.Authorization, 'Bearer fastify-jwt', path)
+    }
+  }
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Farticles%2F7%2Fedit', false, auth.BACKENDS.fastify)
+  t.after(login.close)
+  assert.match(await renderArticleApp(login), /登入後即可發表文章與查看自己的文章。/)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const signIn = login.page.submitLogin()
+  await respond(login.requests[0], 200, success({ access_token: 'fastify-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await signIn
+  assert.deepEqual(login.redirects, ['/vue/articles/7/edit'])
+
+  // 管理員自己的文章仍使用作者頁；管理選單保持隱藏直到後端提供管理 API。
+  const admin = articleApp('/vue/me/articles', 'fastify-admin-jwt', '', false, auth.BACKENDS.fastify)
+  t.after(admin.close)
+  await respond(admin.requests[0], 200, success({ ...member, role: 'admin' }))
+  await respond(admin.requests[1], 200, success({ list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
+  const html = await renderArticleApp(admin)
+  assert.match(html, /我的文章/)
+  assert.match(html, /href="\/vue\/articles\/new"/)
+  assert.doesNotMatch(html, /href="\/vue\/admin\/members"/)
+})
+
+// Fastify 使用既有表單與公開閱讀畫面；作者操作可用，Nuxt 切換仍不可用。
 test('Fastify registration, login, logout, article and comment reading', async (t) => {
   const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.fastify)
   t.after(registration.close)
@@ -455,7 +504,7 @@ test('Fastify registration, login, logout, article and comment reading', async (
   const listHtml = await renderArticleApp(list)
   assert.match(listHtml, /Fastify/)
   assert.match(listHtml, /標題/)
-  assert.doesNotMatch(listHtml, /href="\/vue\/articles\/new"/)
+  assert.match(listHtml, /href="\/vue\/articles\/new"/)
   assert.equal(list.page.canSwitchNuxt.value, false)
   list.page.versionsOpen.value = true
   assert.match(await renderArticleApp(list), /Nuxt 尚未支援目前選擇的 Fastify 後端/)
@@ -474,9 +523,8 @@ test('Fastify registration, login, logout, article and comment reading', async (
   await respond(detail.requests[2], 200, success({ list: [{ ...sample, article_id: 7, body: '既有留言' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
   const detailHtml = await renderArticleApp(detail)
   assert.match(detailHtml, /既有留言/)
-  assert.doesNotMatch(detailHtml, /href="\/vue\/comments\//)
-  assert.doesNotMatch(detailHtml, /發表留言/)
-  assert.doesNotMatch(detailHtml, /編輯文章/)
+  assert.match(detailHtml, /href="\/vue\/comments\//)
+  assert.match(detailHtml, /發表留言/)
   assert.doesNotMatch(detailHtml, /返回文章管理/)
 
   const logout = list.page.submitLogout()
@@ -864,7 +912,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="!fastifyBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -1482,12 +1530,12 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><template v-if="!fastifyBackend"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
 })
 
 // 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
 test('author backends publish member and admin articles to the first my articles page', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) for (const actor of [member, { ...member, role: 'admin' }]) {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) for (const actor of [member, { ...member, role: 'admin' }]) {
     const app = articleApp('/vue/articles/new', 'author-jwt', '', false, selectedBackend)
     t.after(app.close)
     await respond(app.requests[0], 200, { success: true, message: 'OK', data: actor })

@@ -6,6 +6,8 @@ const NULL = '此欄位不可為 null';
 const TYPE = '欄位型態不正確';
 const MAX_ID = 9007199254740991;
 const EMAIL = /^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
+const BLANK = /^[ \t\n\r\v\f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
+const VERSION_MARKER = Symbol('parsed version');
 
 // ApiError 保存共同錯誤碼與欄位細節，避免 Fastify 原生格式流出。
 class ApiError extends Error {
@@ -94,7 +96,7 @@ function validSurrogates(raw) {
   return true;
 }
 
-// bodyInput 自行解析原始 JSON 與本票欄位，保留共用驗證錯誤順序。
+// bodyInput 自行解析原始 JSON 與端點欄位，保留共用驗證錯誤順序。
 function bodyInput(req, fields, optional = false) {
   if (!req.body?.length) {
     if (optional) return {};
@@ -107,7 +109,11 @@ function bodyInput(req, fields, optional = false) {
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(req.body);
     if (!validSurrogates(raw)) throw Error();
-    body = JSON.parse(raw);
+    // Symbol 僅由 reviver 建立，保留 version 原始寫法且不讓 JSON object 偽造整數。
+    body = JSON.parse(raw, function preserveVersion(name, value, context) {
+      if (name === 'version' && typeof value === 'number') return { [VERSION_MARKER]: value, source: context.source };
+      return value;
+    });
   }
   catch { throw new ApiError('E0005'); }
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -119,7 +125,13 @@ function bodyInput(req, fields, optional = false) {
     const value = body[name];
     if (!Object.hasOwn(body, name)) errors[name] = [REQUIRED];
     else if (value === null) errors[name] = [NULL];
-    else if (typeof value !== 'string') errors[name] = [TYPE];
+    else if (name === 'version') {
+      // 版本須是十進位 JSON 整數；字串、小數與指數不可借 JS 數值轉換通過。
+      if (!value || typeof value !== 'object' || !Object.hasOwn(value, VERSION_MARKER)) errors[name] = [TYPE];
+      else if (!/^-?(0|[1-9][0-9]*)$/.test(value.source)) errors[name] = [TYPE];
+      else if (!Number.isSafeInteger(value[VERSION_MARKER]) || value[VERSION_MARKER] < 1) errors[name] = [INVALID];
+      else result[name] = value[VERSION_MARKER];
+    } else if (typeof value !== 'string') errors[name] = [TYPE];
     else if (name === 'email') {
       // 只轉 ASCII 大寫，避免 Unicode 大小寫規則改變跨後端帳號比對。
       const normalized = value.replace(/^ +| +$/g, '').replace(/[A-Z]/g, c => c.toLowerCase());
@@ -130,7 +142,14 @@ function bodyInput(req, fields, optional = false) {
       if (!/^[A-Za-z0-9]{4,16}$/.test(value)) errors[name] = [INVALID];
       else result[name] = value;
     } else if (name === 'nickname') {
-      if (value.includes('\0') || [...value].length < 1 || [...value].length > 30 || /^[ \t\n\r\v\f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u.test(value)) errors[name] = [INVALID];
+      if (value.includes('\0') || [...value].length < 1 || [...value].length > 30 || BLANK.test(value)) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'title' || name === 'body') {
+      const limit = name === 'title' ? 200 : fields.includes('title') ? 20000 : 2000;
+      if (value.includes('\0') || [...value].length < 1 || [...value].length > limit || BLANK.test(value)) errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'visibility') {
+      if (value !== 'visible' && value !== 'hidden') errors[name] = [INVALID];
       else result[name] = value;
     }
   }

@@ -18,6 +18,7 @@ const MESSAGES = {
   E0102: [403, '此帳號已停用，請聯絡系統管理員'],
   E0104: [500, '後台認證設定異常，請聯絡系統管理員'],
   E0105: [429, '登入失敗次數過多，請稍後再試'],
+  E0201: [409, '內容已更新，請確認最新內容後再送出'],
   E9999: [500, '系統暫時無法處理，請稍後再試'],
 };
 
@@ -35,7 +36,7 @@ function ok(data = {}) {
   return { success: true, message: 'OK', data };
 }
 
-// createApp 為本框架註冊原始本文、共同錯誤、CORS 與本票七個 API 操作。
+// createApp 為本框架註冊原始本文、共同錯誤、CORS 與已核准的 API 操作。
 function createApp(db, key, origin = 'http://localhost:8080') {
   const app = Fastify({ logger: false, bodyLimit: 1048576, genReqId: randomUUID,
     // 讓可達的過長 article_id 進入共同欄位驗證，而非提前變成框架 400。
@@ -156,6 +157,66 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     return ok(await content.comments(db, subject?.account, id, query.page, query.per_page));
   });
 
+  // 發文先在交易中重驗登入，再由資料庫建立作者、來源與時間。
+  app.post('/api/articles', async function createArticle(req, reply) {
+    await content.write(db, key, req, 'article', 'create');
+    return reply.code(201).send(ok());
+  });
+
+  // 文章編修在列鎖下依作者權限與版本更新，避免覆蓋較新的內容。
+  app.put('/api/articles/:article_id', async function editArticle(req) {
+    await content.write(db, key, req, 'article', 'edit');
+    return ok();
+  });
+
+  // 個人文章清單依交易外已驗證的登入者查詢，包含自己的下架內容。
+  app.get('/api/me/articles', async function myArticles(req) {
+    const subject = await identity(db, key, req, true);
+    await getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    return ok(await content.mine(db, subject.account, 'article', query.page, query.per_page));
+  });
+
+  // 個人留言清單不從父文章擴張讀取權，仍可列出自己下架的留言。
+  app.get('/api/me/comments', async function myComments(req) {
+    const subject = await identity(db, key, req, true);
+    await getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    return ok(await content.mine(db, subject.account, 'comment', query.page, query.per_page));
+  });
+
+  // 文章下架或恢復在列鎖下重驗恢復控制者與版本。
+  app.put('/api/articles/:article_id/visibility', async function articleVisibility(req) {
+    await content.write(db, key, req, 'article', 'visibility');
+    return ok();
+  });
+
+  // 新留言與父文章可見性共用交易及文章鎖，避免下架競爭。
+  app.post('/api/articles/:article_id/comments', async function createComment(req, reply) {
+    await content.write(db, key, req, 'comment', 'create');
+    return reply.code(201).send(ok());
+  });
+
+  // 單則留言只允許作者或管理員閱讀，對其他人先隱藏下架內容。
+  app.get('/api/comments/:comment_id', async function comment(req) {
+    const subject = await identity(db, key, req, true);
+    await getBody(req);
+    queryInput(req);
+    return ok(await content.comment(db, subject.account, urlInteger(req.params.comment_id, 'comment_id')));
+  });
+
+  // 留言編修重驗父文章公開狀態，並在留言鎖下比對版本。
+  app.put('/api/comments/:comment_id', async function editComment(req) {
+    await content.write(db, key, req, 'comment', 'edit');
+    return ok();
+  });
+
+  // 留言下架與恢復沿用內容交易，父文章下架不改留言自己的狀態。
+  app.put('/api/comments/:comment_id/visibility', async function commentVisibility(req) {
+    await content.write(db, key, req, 'comment', 'visibility');
+    return ok();
+  });
+
   // up 查核本票依賴的共用表讀取權，避免只有 HTTP socket 就顯示就緒。
   app.get('/up', async function health(req, reply) {
     try {
@@ -169,8 +230,9 @@ function createApp(db, key, origin = 'http://localhost:8080') {
   // 已實作路徑的錯誤方法是 405，其餘未知路徑是共同 404。
   app.setNotFoundHandler(function notFound(req) {
     const path = req.url.split('?')[0];
-    if (['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles'].includes(path) ||
-        /^\/api\/articles\/[^/]+(?:\/comments)?$/.test(path)) throw new ApiError('E0005', undefined, undefined, 405);
+    if (['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/me/articles', '/api/me/comments', '/api/articles'].includes(path) ||
+        /^\/api\/articles\/[^/]+(?:\/comments|\/visibility)?$/.test(path) ||
+        /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path)) throw new ApiError('E0005', undefined, undefined, 405);
     throw new ApiError('E0004');
   });
   // 框架解析與意外錯誤一律改成安全的共同 envelope，保留可追查 log_id。

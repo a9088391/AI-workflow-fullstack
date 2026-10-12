@@ -288,7 +288,7 @@ test('Django comment creation and own detail use author endpoints', async (t) =>
 
 // 各作者後端新留言重讀原文章第一頁；父文章不可讀時仍保留自己的留言詳情。
 test('author backends comment creation and own detail preserve author flow', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
     const instance = await writableArticle(t, '?page=2', selectedBackend)
     assert.equal(instance.page.canComment.value, true)
     assert.match(await renderedPage(instance.page), /發表留言/)
@@ -317,6 +317,7 @@ test('author backends comment creation and own detail preserve author flow', asy
     assert.equal(own.page.canEdit.value, false)
     const html = await renderedPage(own.page)
     assert.match(html, /所屬文章目前無法讀取/)
+    assert.match(html, />恢復<\/button>/)
     assert.doesNotMatch(html, /不得顯示/)
   }
 })
@@ -358,7 +359,7 @@ test('comment validation and server 422 retain text and field errors', async (t)
 // 401 同帳號重登保留原文並僅重讀文章；另一帳號不能接收原草稿，皆不得自動寫入。
 test('comment 401 draft survives same-account login and is cleared for different account', async (t) => {
   for (const different of [false, true]) {
-    const instance = await writableArticle(t)
+    const instance = await writableArticle(t, '', auth.BACKENDS.fastify)
     instance.page.commentBody.value = '原帳號私有草稿'
     const write = instance.page.submitComment()
     await respond(instance.requests[3], 401, { success: false, error_code: 'E0002' })
@@ -393,7 +394,7 @@ test('comment 401 draft survives same-account login and is cleared for different
 // 5xx、未知 201 與連線錯誤都屬結果不明，保留登入和文字供手動查證，不能假報成功。
 test('unknown comment write result retains credential and text without retry', async (t) => {
   for (const result of ['server', 'incomplete', 'network']) {
-    const instance = await writableArticle(t)
+    const instance = await writableArticle(t, '', auth.BACKENDS.fastify)
     instance.page.commentBody.value = '待查證文字'
     const write = instance.page.submitComment()
     if (result === 'network') { instance.requests[3].reject(new Error('connection interrupted')); await setImmediate() }
@@ -405,6 +406,9 @@ test('unknown comment write result retains credential and text without retry', a
     assert.equal(instance.page.commentPosted.value, false)
     assert.equal(instance.requests.length, 4)
     assert.deepEqual(instance.history, [])
+    const html = await renderedPage(instance.page)
+    assert.match(html, /留言結果尚未確認/)
+    assert.match(html, /到我的留言查證/)
   }
 })
 
@@ -789,7 +793,7 @@ test('edit conflict requires a fresh comparison and explicit merge or discard be
 
 // 各作者後端編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
 test('author backends keep edit conflict draft until explicit latest-version comparison', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
     const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, selectedBackend)
     instance.page.articleTitle.value = '我的 Django 標題'
     instance.page.articleBody.value = '我的 Django 內文'
@@ -821,7 +825,7 @@ test('author backends keep edit conflict draft until explicit latest-version com
 
 // 各作者後端編修留言須先確認父文章公開；成功後依原 ID 重讀。
 test('author backends reread own comment detail after edit success', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
     const instance = await resourcePage(t, '/vue/comments/9/edit', { ...comment, visibility: 'visible' }, member, article, selectedBackend)
     assert.equal(instance.page.canEdit.value, true)
     instance.page.commentBody.value = '編修後留言'
@@ -840,7 +844,7 @@ test('author backends reread own comment detail after edit success', async (t) =
 
 // 各作者後端下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
 test('author backends change article visibility with version and server readback', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
     const instance = await resourcePage(t, '/vue/articles/7', article, member, article, selectedBackend)
     assert.equal(instance.page.canManageVisibility.value, true)
     const hide = instance.page.submitVisibility('hidden')
@@ -864,7 +868,7 @@ test('author backends change article visibility with version and server readback
 
 // 作者留言恢復依後端 can_restore 與目前版本；無資格時不能發出 PUT。
 test('author backends own comment visibility use current version and restore eligibility', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.fastapi, auth.BACKENDS.fiber, auth.BACKENDS.express]) {
+  for (const selectedBackend of [auth.BACKENDS.fastapi, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
     const instance = await resourcePage(t, '/vue/comments/9', { ...comment, can_restore: false }, member, article, selectedBackend)
     await instance.page.submitVisibility('visible')
     assert.equal(instance.requests.length, 3)
@@ -916,7 +920,7 @@ test('visibility uses server restoration rights and confirms administrator takeo
 
 // 各後端狀態衝突先阻止重送；手動 GET 後再次確認操作，使用最新詳情版本而非隱藏自動重試。
 test('visibility conflict rereads and reconfirms the operation before sending a new version', async (t) => {
-  for (const selectedBackend of [auth.API_BASE, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express]) {
+  for (const selectedBackend of [auth.API_BASE, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
     const instance = await resourcePage(t, '/vue/comments/9', comment, member, article, selectedBackend)
     const restore = instance.page.submitVisibility('visible')
     await respond(instance.requests[3], 409, { success: false, error_code: 'E0201' })
@@ -1059,7 +1063,7 @@ test('same-page relogin preserves only the same account editor draft and conflic
 
 // 未知結果提示獨立於目前資源和父文章；404／5xx／重登入仍可依原 ID 手動查證。
 test('unknown PUT result guidance survives resource, parent and authentication failures without retry', async (t) => {
-  const instance = await resourcePage(t, '/vue/comments/9/edit')
+  const instance = await resourcePage(t, '/vue/comments/9/edit', comment, member, article, auth.BACKENDS.fastify)
   instance.page.commentBody.value = '待查證草稿'
   const write = instance.page.submitEdit()
   instance.requests[3].reject(new Error('connection interrupted'))
@@ -1095,7 +1099,7 @@ test('unknown PUT result guidance survives resource, parent and authentication f
 // 停用停止授權流程；422 與未知 200／5xx 保留輸入，不能誤報已更新。
 test('edit failure contracts distinguish validation, disabled account and unknown writes', async (t) => {
   for (const [status, body, unknown] of [[422, { success: false, error_code: 'E0001', errors: { body: ['欄位格式或範圍不正確'], version: ['版本資料不正確'] } }, false], [403, { success: false, error_code: 'E0102' }, false], [500, { success: false, error_code: 'E9999' }, true], [200, success({ id: 9 }), true]]) {
-    const instance = await resourcePage(t, '/vue/articles/7/edit')
+    const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, auth.BACKENDS.fastify)
     instance.page.articleBody.value = '保存草稿'
     const write = instance.page.submitEdit()
     await respond(instance.requests[2], status, body)
