@@ -59,6 +59,19 @@ test('backend selection persists without token and rejects previous backend cred
   assert.equal(readSession(s).accessToken, 'new-login')
 })
 
+// NestJS 使用固定埠且 JWT 只屬於所選後端，切出後不能沿用舊登入。
+test('NestJS selection keeps its session isolated', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.nestjs, 'http://localhost:8092')
+  assert.equal(selectBackend(s, BACKENDS.nestjs), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'nest-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.nestjs, accessToken: 'nest-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+})
+
 // Django 只接受固定 8084 位址；切入與切出都清除前一後端 JWT，未知值不得改選。
 test('Django session selection is exact and fails closed', () => {
   const s = storage()

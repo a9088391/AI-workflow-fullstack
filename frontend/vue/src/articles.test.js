@@ -896,7 +896,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="!nestBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -1514,7 +1514,7 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><a v-if="!nestBackend" href="\/vue\/articles\/new"/)
 })
 
 // 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
@@ -1673,4 +1673,96 @@ test('logout 401 blocks guest retry and keeps public login return target', async
     await app.page.loadContent()
     assert.equal(app.requests.length, 3)
   }
+})
+
+// NestJS 只提供帳號與公開閱讀；已登入畫面仍須讀 /me，但不可出現寫入或管理入口。
+test('NestJS reads articles and comments without offering unfinished actions', async (t) => {
+  const list = articleApp('/vue/', null, '', false, auth.BACKENDS.nestjs)
+  t.after(list.close)
+  assert.equal(list.requests[0].url, `${auth.BACKENDS.nestjs}/api/articles?page=1&per_page=20`)
+  await respond(list.requests[0], 200, success({ list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
+  assert.match(await renderArticleApp(list), /閱讀全文/)
+
+  const detail = articleApp('/vue/articles/7', 'nest-jwt', '', false, auth.BACKENDS.nestjs)
+  t.after(detail.close)
+  assert.equal(detail.requests[0].url, `${auth.BACKENDS.nestjs}/api/me`)
+  await respond(detail.requests[0], 200, success({ ...member, role: 'admin' }))
+  assert.equal(detail.requests[1].url, `${auth.BACKENDS.nestjs}/api/articles/7`)
+  await respond(detail.requests[1], 200, success(sample))
+  assert.equal(detail.requests[2].url, `${auth.BACKENDS.nestjs}/api/articles/7/comments?page=1&per_page=20`)
+  await respond(detail.requests[2], 200, success({ list: [{ id: 9, article_id: 7, body: '可閱讀留言', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'nestjs', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
+  assert.equal(detail.page.canComment.value, false)
+  assert.equal(detail.page.canManageVisibility.value, false)
+  const html = await renderArticleApp(detail)
+  assert.match(html, /可閱讀留言/)
+  for (const unavailable of ['發表留言', '發表文章', '我的文章', '會員管理', '閱讀留言詳情', '返回文章管理']) assert.doesNotMatch(html, new RegExp(unavailable))
+  assert.equal(detail.page.canSwitchNuxt.value, false)
+  detail.page.chooseFrontend({ target: { value: 'nuxt' } })
+  assert.equal(detail.redirects.length, 0)
+  const logout = detail.page.submitLogout()
+  assert.equal(detail.requests[3].url, `${auth.BACKENDS.nestjs}/api/auth/logout`)
+  await respond(detail.requests[3], 200, success({}))
+  await logout
+  assert.equal(auth.readSession(detail.sessionStorage), null)
+})
+
+// 深連結與登入返回目標先限制在 NestJS 已完成頁面，避免 /me 之後呼叫缺少的 API。
+test('NestJS switches and deep links avoid unfinished endpoints', async (t) => {
+  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/admin/members']) {
+    const direct = articleApp(path, 'nest-jwt', '', false, auth.BACKENDS.nestjs)
+    t.after(direct.close)
+    assert.deepEqual(direct.redirects, ['/vue/'], path)
+    assert.equal(direct.requests.length, 0, path)
+    const switched = articleApp(path, 'laravel-jwt')
+    t.after(switched.close)
+    await switched.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
+    assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'], path)
+    assert.equal(auth.readSession(switched.sessionStorage), null)
+  }
+  const supported = articleApp('/vue/articles/7', null)
+  t.after(supported.close)
+  await supported.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
+  assert.deepEqual(supported.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F7'])
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.nestjs)
+  t.after(login.close)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const submit = login.page.submitLogin()
+  assert.equal(login.requests[0].url, `${auth.BACKENDS.nestjs}/api/auth/login`)
+  await respond(login.requests[0], 200, success({ access_token: 'nest-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await submit
+  assert.deepEqual(login.redirects, ['/vue/'])
+})
+
+// NestJS 註冊與鎖定登入沿用共用表單及 Retry-After 倒數，歸零才允許再次送出。
+test('NestJS registration and lockout use the existing account flow', async (t) => {
+  const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.nestjs)
+  t.after(registration.close)
+  assert.match(await renderArticleApp(registration), /建立帳號後即可登入並閱讀文章/)
+  registration.page.email.value = 'new@example.test'
+  registration.page.password.value = 'abcd'
+  registration.page.nickname.value = '新會員'
+  const register = registration.page.submitRegistration()
+  assert.equal(registration.requests[0].url, `${auth.BACKENDS.nestjs}/api/auth/register`)
+  await respond(registration.requests[0], 201, success({}))
+  await register
+  assert.deepEqual(registration.redirects, ['/vue/login?registered=1'])
+
+  const login = articleApp('/vue/login', null, '', false, auth.BACKENDS.nestjs)
+  t.after(login.close)
+  login.page.email.value = member.email
+  login.page.password.value = 'abcd'
+  await vue.nextTick()
+  const first = login.page.submitLogin()
+  await respond(login.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await first
+  assert.equal(login.page.locked.value, true)
+  assert.match(await renderArticleApp(login), /登入暫時鎖定，約剩 0[01]:[0-5][0-9]/)
+  await login.page.submitLogin()
+  assert.equal(login.requests.length, 1)
+  login.page.lockDeadline.value = performance.now() - 1
+  login.page.tickLock()
+  assert.equal(login.page.locked.value, false)
+  assert.equal(login.requests.length, 1)
 })
