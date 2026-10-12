@@ -41,7 +41,7 @@ function queryInput(req, allowed = []) {
   const raw = req.raw.url.split('?').slice(1).join('?');
   for (const [name, value] of new URLSearchParams(raw)) {
     let canonical = name;
-    for (const key of ['page', 'per_page', 'filters[scope]']) {
+    for (const key of ['page', 'per_page', 'filters[scope]', 'filters[keyword]']) {
       if (name.startsWith(`${key}[`)) canonical = key;
     }
     // 只有完整的巢狀欄位名稱轉為共同點記法；畸形未知欄位保留原名。
@@ -62,6 +62,11 @@ function queryInput(req, allowed = []) {
   }
   if (Object.hasOwn(values, 'filters[scope]') && !errors['filters.scope'] && values['filters[scope]'] !== 'management') {
     errors['filters.scope'] = [INVALID];
+  }
+  if (Object.hasOwn(values, 'filters[keyword]') && !errors['filters.keyword']) {
+    // 關鍵字只裁 U+0020；Unicode 字元與萬用符號仍須按字面搜尋。
+    values['filters[keyword]'] = values['filters[keyword]'].replace(/^ +| +$/g, '');
+    if ([...values['filters[keyword]']].length > 254) errors['filters.keyword'] = [INVALID];
   }
   if (Object.keys(errors).length) throw new ApiError('E0001', Object.fromEntries(Object.entries(errors)));
   return Object.fromEntries(Object.entries(values));
@@ -109,9 +114,9 @@ function bodyInput(req, fields, optional = false) {
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(req.body);
     if (!validSurrogates(raw)) throw Error();
-    // Symbol 僅由 reviver 建立，保留 version 原始寫法且不讓 JSON object 偽造整數。
+    // Symbol 僅由 reviver 建立，保留整數原始寫法且不讓 JSON object 偽造整數。
     body = JSON.parse(raw, function preserveVersion(name, value, context) {
-      if (name === 'version' && typeof value === 'number') return { [VERSION_MARKER]: value, source: context.source };
+      if (['version', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name) && typeof value === 'number') return { [VERSION_MARKER]: value, source: context.source };
       return value;
     });
   }
@@ -125,12 +130,16 @@ function bodyInput(req, fields, optional = false) {
     const value = body[name];
     if (!Object.hasOwn(body, name)) errors[name] = [REQUIRED];
     else if (value === null) errors[name] = [NULL];
-    else if (name === 'version') {
-      // 版本須是十進位 JSON 整數；字串、小數與指數不可借 JS 數值轉換通過。
+    else if (['version', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)) {
+      // 整數須保留十進位 JSON 原始寫法，避免指數與超大數被 JS 轉換後誤收。
       if (!value || typeof value !== 'object' || !Object.hasOwn(value, VERSION_MARKER)) errors[name] = [TYPE];
       else if (!/^-?(0|[1-9][0-9]*)$/.test(value.source)) errors[name] = [TYPE];
-      else if (!Number.isSafeInteger(value[VERSION_MARKER]) || value[VERSION_MARKER] < 1) errors[name] = [INVALID];
+      else if (!Number.isSafeInteger(value[VERSION_MARKER]) || value[VERSION_MARKER] < 1 ||
+          value[VERSION_MARKER] > ({ window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 }[name] || MAX_ID)) errors[name] = [INVALID];
       else result[name] = value[VERSION_MARKER];
+    } else if (name === 'enabled') {
+      if (typeof value !== 'boolean') errors[name] = [TYPE];
+      else result[name] = value;
     } else if (typeof value !== 'string') errors[name] = [TYPE];
     else if (name === 'email') {
       // 只轉 ASCII 大寫，避免 Unicode 大小寫規則改變跨後端帳號比對。
@@ -150,6 +159,9 @@ function bodyInput(req, fields, optional = false) {
       else result[name] = value;
     } else if (name === 'visibility') {
       if (value !== 'visible' && value !== 'hidden') errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'status') {
+      if (value !== 'active' && value !== 'disabled') errors[name] = [INVALID];
       else result[name] = value;
     }
   }

@@ -381,8 +381,8 @@ test('Express selection keeps author return target and protects admin routes', a
   assert.deepEqual(direct.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
 })
 
-// 切入 Fastify 後清除舊 JWT；作者目標保留，管理目標不送往未提供的端點。
-test('Fastify switch clears old session and preserves only supported return targets', async (t) => {
+// 切入 Fastify 後清除舊 JWT，並保留安全的作者或管理返回目標。
+test('Fastify switch clears old session and preserves author and admin return targets', async (t) => {
   const switched = articleApp('/vue/me/articles', 'laravel-token')
   t.after(switched.close)
   await switched.page.chooseBackend({ target: { value: auth.BACKENDS.fastify } })
@@ -397,6 +397,10 @@ test('Fastify switch clears old session and preserves only supported return targ
   t.after(detail.close)
   await detail.page.chooseBackend({ target: { value: auth.BACKENDS.fastify } })
   assert.deepEqual(detail.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F7'])
+  const management = articleApp('/vue/admin/members/2', 'laravel-token')
+  t.after(management.close)
+  await management.page.chooseBackend({ target: { value: auth.BACKENDS.fastify } })
+  assert.deepEqual(management.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers%2F2'])
   const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.fastify)
   t.after(login.close)
   login.page.email.value = member.email
@@ -404,9 +408,9 @@ test('Fastify switch clears old session and preserves only supported return targ
   await vue.nextTick()
   const signIn = login.page.submitLogin()
   assert.equal(login.requests[0].url, `${auth.BACKENDS.fastify}/api/auth/login`)
-  await respond(login.requests[0], 200, success({ access_token: 'fastify-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await respond(login.requests[0], 200, success({ access_token: 'fastify-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: { ...member, role: 'admin' } }))
   await signIn
-  assert.deepEqual(login.redirects, ['/vue/'])
+  assert.deepEqual(login.redirects, ['/vue/admin/members'])
   assert.equal(auth.readSession(login.sessionStorage).expiresAt, '2026-09-24 18:00:00')
 
   const retained = articleApp('/vue/login', 'fastify-jwt', '?return_to=%2Fvue%2Fme%2Farticles', false, auth.BACKENDS.fastify)
@@ -416,27 +420,7 @@ test('Fastify switch clears old session and preserves only supported return targ
   assert.equal(auth.readSession(retained.sessionStorage).expiresAt, '2026-09-24 18:00:00')
 })
 
-// Fastify 管理頁尚未提供；深連結顯示說明並阻止管理 API 請求。
-test('Fastify management routes render guidance without unsupported API calls', async (t) => {
-  for (const path of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) {
-    const guest = articleApp(path, null, '', false, auth.BACKENDS.fastify)
-    t.after(guest.close)
-    assert.equal(guest.requests.length, 0, path)
-    assert.deepEqual(guest.redirects, [], path)
-    assert.match(await renderArticleApp(guest), /管理頁尚未提供/, path)
-    const signedIn = articleApp(path, 'fastify-jwt', '', false, auth.BACKENDS.fastify)
-    t.after(signedIn.close)
-    assert.equal(signedIn.requests[0].url, `${auth.BACKENDS.fastify}/api/me`, path)
-    await respond(signedIn.requests[0], 200, success({ ...member, role: 'admin' }))
-    assert.equal(signedIn.requests.length, 1, path)
-    const html = await renderArticleApp(signedIn)
-    assert.match(html, /此後端尚未提供此頁/, path)
-    assert.doesNotMatch(html, /href="\/vue\/admin\/members"/, path)
-    assert.match(html, /href="\/vue\/me\/articles"/, path)
-  }
-})
-
-// Fastify 作者頁須先驗證身分；訪客登入後回原目標，管理返回目標仍被排除。
+// Fastify 作者頁須先驗證身分；訪客登入後回原目標。
 test('Fastify author deep links verify identity and return through login', async (t) => {
   const authorRoutes = new Map([
     ['/vue/articles/new', null],
@@ -472,7 +456,7 @@ test('Fastify author deep links verify identity and return through login', async
   await signIn
   assert.deepEqual(login.redirects, ['/vue/articles/7/edit'])
 
-  // 管理員自己的文章仍使用作者頁；管理選單保持隱藏直到後端提供管理 API。
+  // 管理員自己的文章仍使用作者頁，並能從選單進入共用管理頁。
   const admin = articleApp('/vue/me/articles', 'fastify-admin-jwt', '', false, auth.BACKENDS.fastify)
   t.after(admin.close)
   await respond(admin.requests[0], 200, success({ ...member, role: 'admin' }))
@@ -480,7 +464,7 @@ test('Fastify author deep links verify identity and return through login', async
   const html = await renderArticleApp(admin)
   assert.match(html, /我的文章/)
   assert.match(html, /href="\/vue\/articles\/new"/)
-  assert.doesNotMatch(html, /href="\/vue\/admin\/members"/)
+  assert.match(html, /href="\/vue\/admin\/members"/)
 })
 
 // Fastify 使用既有表單與公開閱讀畫面；作者操作可用，Nuxt 切換仍不可用。
@@ -525,7 +509,7 @@ test('Fastify registration, login, logout, article and comment reading', async (
   assert.match(detailHtml, /既有留言/)
   assert.match(detailHtml, /href="\/vue\/comments\//)
   assert.match(detailHtml, /發表留言/)
-  assert.doesNotMatch(detailHtml, /返回文章管理/)
+  assert.match(detailHtml, /href="\/vue\/admin\/articles"[^>]*>返回文章管理<\/a>/)
 
   const logout = list.page.submitLogout()
   assert.equal(list.requests[2].url, `${auth.BACKENDS.fastify}/api/auth/logout`)

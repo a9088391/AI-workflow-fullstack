@@ -7,6 +7,7 @@ const { Pool } = require('pg');
 const { ApiError, fieldError, urlInteger, queryInput, getBody, bodyInput } = require('./input');
 const { accountData, hashPassword, identity, login, logout } = require('./auth');
 const content = require('./content');
+const admin = require('./admin');
 
 const MESSAGES = {
   E0001: [422, '欄位資料不正確，請確認後再送出'],
@@ -217,6 +218,63 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     return ok();
   });
 
+  // members 先驗管理員身分，才檢查 GET Body 與 Query 並讀一般會員清單。
+  app.get('/api/members', async function members(req) {
+    const subject = await identity(db, key, req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    await getBody(req);
+    const query = queryInput(req, ['page', 'per_page', 'filters[keyword]']);
+    return ok(await admin.members(db, query.page, query.per_page, query['filters[keyword]']));
+  });
+
+  // memberDetail 對非會員目標隱藏存在，避免透過 ID 列出管理員。
+  app.get('/api/members/:member_id', async function memberDetail(req) {
+    const subject = await identity(db, key, req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    await getBody(req);
+    queryInput(req);
+    return ok(await admin.memberDetail(db, urlInteger(req.params.member_id, 'member_id')));
+  });
+
+  // memberStatus 在驗證後由交易重新查核管理員與會員，再原子停用／撤銷。
+  app.put('/api/members/:member_id/status', async function memberStatus(req) {
+    const subject = await identity(db, key, req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    queryInput(req);
+    const id = urlInteger(req.params.member_id, 'member_id');
+    const body = bodyInput(req, ['status']);
+    await admin.memberStatus(db, key, req, subject, id, body.status);
+    return ok();
+  });
+
+  // managementComments 包含下架留言；角色門禁在參數與資料查詢前。
+  app.get('/api/comments', async function managementComments(req) {
+    const subject = await identity(db, key, req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    await getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    return ok(await admin.managementComments(db, subject.account, query.page, query.per_page));
+  });
+
+  // lockoutSettings 僅管理員可讀；四欄從同一筆共用設定取得。
+  app.get('/api/settings/login-lockout', async function lockoutSettings(req) {
+    const subject = await identity(db, key, req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    await getBody(req);
+    queryInput(req);
+    return ok(await admin.lockoutSettings(db));
+  });
+
+  // updateLockoutSettings 先驗完整四欄，再在設定列鎖下提交完整新值。
+  app.put('/api/settings/login-lockout', async function updateLockoutSettings(req) {
+    const subject = await identity(db, key, req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    queryInput(req);
+    const body = bodyInput(req, ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds']);
+    await admin.updateLockoutSettings(db, key, req, body);
+    return ok();
+  });
+
   // up 查核本票依賴的共用表讀取權，避免只有 HTTP socket 就顯示就緒。
   app.get('/up', async function health(req, reply) {
     try {
@@ -230,9 +288,10 @@ function createApp(db, key, origin = 'http://localhost:8080') {
   // 已實作路徑的錯誤方法是 405，其餘未知路徑是共同 404。
   app.setNotFoundHandler(function notFound(req) {
     const path = req.url.split('?')[0];
-    if (['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/me/articles', '/api/me/comments', '/api/articles'].includes(path) ||
+    if (['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/me/articles', '/api/me/comments', '/api/articles', '/api/members', '/api/comments', '/api/settings/login-lockout'].includes(path) ||
         /^\/api\/articles\/[^/]+(?:\/comments|\/visibility)?$/.test(path) ||
-        /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path)) throw new ApiError('E0005', undefined, undefined, 405);
+        /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path) ||
+        /^\/api\/members\/[^/]+(?:\/status)?$/.test(path)) throw new ApiError('E0005', undefined, undefined, 405);
     throw new ApiError('E0004');
   });
   // 框架解析與意外錯誤一律改成安全的共同 envelope，保留可追查 log_id。

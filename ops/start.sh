@@ -23,7 +23,7 @@ case "${COMPOSE_FILE:-}" in
             *ops/tests/ticket28_compose.yaml*) backend_services="laravel echo" ;;
             *ops/tests/ticket31_compose.yaml*) backend_services="laravel fiber" ;;
             *ops/tests/ticket34_compose.yaml*) backend_services="laravel express" ;;
-            *ops/tests/ticket37_compose.yaml*|*ops/tests/ticket38_compose.yaml*) backend_services="laravel fastify" ;;
+            *ops/tests/ticket37_compose.yaml*|*ops/tests/ticket38_compose.yaml*|*ops/tests/ticket39_compose.yaml*) backend_services="laravel fastify" ;;
             *ops/tests/ticket19_compose.yaml*|*ops/tests/ticket20_compose.yaml*) backend_services="laravel flask" ;;
             *ops/tests/ticket16_compose.yaml*) backend_services="laravel symfony aspnet-core django" ;;
             *) backend_services="laravel symfony aspnet-core" ;;
@@ -47,7 +47,10 @@ if [ "${1:-}" = '--backend-only' ]; then
     elif [ "$backend_services" = "laravel express" ]; then
         echo 'Laravel／Express 專用後端已就緒；前端尚未啟動'
     elif [ "$backend_services" = "laravel fastify" ]; then
-        echo 'Laravel／Fastify 專用後端已就緒；前端尚未啟動'
+        case "${COMPOSE_FILE:-}" in
+            *ops/tests/ticket39_compose.yaml*) echo 'Laravel／Fastify 專用後端已就緒；Laravel API：http://localhost:18392；Fastify API：http://localhost:18393；前端尚未啟動' ;;
+            *) echo 'Laravel／Fastify 專用後端已就緒；前端尚未啟動' ;;
+        esac
     elif [ "$backend_services" = "laravel gin" ]; then
         echo 'Laravel／Gin 專用後端已就緒；前端尚未啟動'
     elif [ "$backend_services" = "laravel echo" ]; then
@@ -71,6 +74,7 @@ else
         echo 'Vue／Laravel／Express 專用展示已就緒：http://localhost:18341/vue/；Express API：http://localhost:18343'
     elif [ "$backend_services" = "laravel fastify" ]; then
         case "${COMPOSE_FILE:-}" in
+            *ops/tests/ticket39_compose.yaml*) echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18391/vue/；Laravel API：http://localhost:18392；Fastify API：http://localhost:18393' ;;
             *ops/tests/ticket38_compose.yaml*) echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18381/vue/；Laravel API：http://localhost:18382；Fastify API：http://localhost:18383' ;;
             *) echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18371/vue/；Fastify API：http://localhost:18373' ;;
         esac

@@ -96,15 +96,9 @@ const copyState = ref('')
 const pending = ref(false)
 const credential = ref(null)
 const backend = ref(API_BASE)
-// Fastify 已提供作者內容操作；管理深連結仍停在說明頁，避免呼叫尚未提供的端點。
-function backendSupportsPage(selected, destination) {
-  return selected !== BACKENDS.fastify || !['members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(articlePage(destination))
-}
-// 目前頁面依選定後端決定是否可用，供讀取流程與深連結提示共用。
-const backendPageAvailable = computed(() => backendSupportsPage(backend.value, path))
 // 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
 const backendLabel = computed(() => backend.value === BACKENDS.fastify ? 'Fastify' : backend.value === BACKENDS.express ? 'Express' : backend.value === BACKENDS.fiber ? 'Fiber' : backend.value === BACKENDS.echo ? 'Echo' : backend.value === BACKENDS.gin ? 'Gin' : backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
-// Nuxt 尚未支援 Fastify 選擇；Vue 用此旗標限制未提供的管理操作。
+// Nuxt 尚未支援 Fastify 選擇；Vue 的管理頁仍可使用共用流程。
 const fastifyBackend = computed(() => backend.value === BACKENDS.fastify)
 // Express 仍需辨識後端選擇，以限制 Nuxt 尚未支援的後端切換。
 const expressBackend = computed(() => backend.value === BACKENDS.express)
@@ -328,10 +322,10 @@ async function copyRelatedLogId() {
   }
 }
 
-// 內容列表、詳情與管理設定沿同一讀取流程；Fastify 管理頁在入口先被排除。
+// 內容列表、詳情與管理設定沿同一讀取流程，登入與角色驗證先於受保護資料。
 async function loadContent() {
-  // 先排除目前後端未提供的頁面；管理資料仍須通過登入與角色驗證。
-  if (!backendPageAvailable.value || !['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
+  // 排除非內容頁；管理資料仍須通過登入與角色驗證。
+  if (!['articles', 'article', 'my-articles', 'my-comments', 'comment', 'article-edit', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
     || contentLoading.value || contentPending.value || statusPending.value || lockoutPending.value || authChecking.value
     || disabledAccount.value || summaryCode.value === 'E0002' && !credential.value
     || protectedPage && !account.value || credential.value && !account.value
@@ -946,7 +940,7 @@ function chooseFrontend(event) {
   window.location.assign(`${destination}${nextReturn}`)
 }
 
-// 換後端只更換 API 基底並撤銷舊 JWT；返回目標須是新後端已有的頁面。
+// 換後端只更換 API 基底並撤銷舊 JWT；保留安全的本機返回目標。
 async function chooseBackend(event) {
   const next = event.target.value
   if (next === backend.value) return
@@ -964,11 +958,9 @@ async function chooseBackend(event) {
   credential.value = null
   account.value = null
   backend.value = next
-  // 先取得安全的本機目標；支援的作者或管理頁可在重新登入後讀取。
+  // 先取得安全的本機目標；作者或管理頁可在重新登入後讀取。
   const destination = page === 'login' ? returnTo : page === 'register' ? '/vue/' : localPage(path) ? path : '/vue/'
-  // 切入 Fastify 時保留作者深連結，管理目標則改回公開列表。
-  const supportedDestination = backendSupportsPage(next, destination) ? destination : '/vue/'
-  window.location.assign(`/vue/login?return_to=${encodeURIComponent(supportedDestination)}`)
+  window.location.assign(`/vue/login?return_to=${encodeURIComponent(destination)}`)
 }
 
 // Escape 可關閉目前面板，供鍵盤使用者快速回到導覽起點。
@@ -1117,8 +1109,8 @@ async function verifyAccount() {
       clearLockoutForDifferentAccount(result.account.id)
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
-      // 已登入時仍須檢查舊返回路徑，避免導向 Fastify 尚未實作的管理頁。
-      if (page === 'login') { submitted.value = true; window.location.assign(backendSupportsPage(backend.value, returnTo) ? returnTo : '/vue/') }
+      // 已登入時只使用通過本機路徑檢查的返回目標。
+      if (page === 'login') { submitted.value = true; window.location.assign(returnTo) }
       else if (adminPage && result.account.role !== 'admin') await showError('沒有權限使用此功能', {}, '', 'E0003')
     } else {
       if (response.status === 401 && result.code === 'E0002') {
@@ -1182,8 +1174,8 @@ async function submitLogin() {
       account.value = result.account
       if (statusOwner !== null && statusOwner !== result.account.id) { statusUnknown.value = false; statusNeedsReadback.value = false; statusNotice.value = ''; statusOwner = null }
       clearLock()
-      // 登入只保存後端給的到期時間；返回目標若不屬於目前後端，改開公開列表。
-      if (page === 'login') { submitted.value = true; window.location.assign(backendSupportsPage(backend.value, returnTo) ? returnTo : '/vue/') }
+      // 登入只保存後端給的到期時間，並導向已驗證的本機返回目標。
+      if (page === 'login') { submitted.value = true; window.location.assign(returnTo) }
       else {
         reLogin.value = false
         if (adminPage && result.account.role !== 'admin') {
@@ -1272,16 +1264,16 @@ async function copyLogId() {
   }
 }
 
-// 掛載時讀取保存憑證；未提供的深連結只顯示說明，其餘依後端驗權讀取。
+// 掛載時讀取保存憑證；受保護深連結先登入驗權，再讀取內容。
 onMounted(() => {
   alive = true
   window.addEventListener('beforeunload', warnOnLeave)
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('pageshow', onPageShow)
   try { backend.value = readBackend(window.sessionStorage); credential.value = readSession(window.sessionStorage) } catch { credential.value = null }
-  // 深連結沿用共同驗權流程；未提供的頁面不導向登入或讀取業務 API。
+  // 深連結沿用共同驗權流程，訪客先登入，避免提前讀取管理資料。
   if (credential.value) verifyAccount()
-  else if (protectedPage && backendPageAvailable.value) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
+  else if (protectedPage) window.location.assign(`/vue/login?return_to=${encodeURIComponent(path)}`)
   else loadContent()
 })
 
@@ -1319,7 +1311,7 @@ onBeforeUnmount(() => {
           <button ref="navToggle" class="menu-toggle" type="button" :aria-expanded="navOpen" aria-controls="visitor-nav" @click="toggleNav">選單</button>
           <nav id="visitor-nav" class="visitor-nav" :class="{ 'is-open': navOpen }" aria-label="主要導覽">
             <a href="/vue/" :aria-current="page === 'articles' ? 'page' : undefined">文章</a>
-            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin' && !fastifyBackend"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
+            <template v-if="account"><a href="/vue/articles/new" :aria-current="page === 'article-new' ? 'page' : undefined">發文</a><a href="/vue/me/articles" :aria-current="page === 'my-articles' ? 'page' : undefined">我的文章</a><a href="/vue/me/comments" :aria-current="page === 'my-comments' ? 'page' : undefined">我的留言</a><template v-if="account.role === 'admin'"><a href="/vue/admin/members" :aria-current="page === 'members' || page === 'member' ? 'page' : undefined">會員管理</a><a href="/vue/admin/articles" :aria-current="page === 'managed-articles' ? 'page' : undefined">文章管理</a><a href="/vue/admin/comments" :aria-current="page === 'managed-comments' ? 'page' : undefined">留言管理</a><a href="/vue/admin/settings/login-lockout" :aria-current="page === 'lockout-settings' ? 'page' : undefined">鎖定設定</a></template><span class="account-name"><span class="account-nickname">{{ account.nickname }}</span><span class="muted">（{{ account.role === 'admin' ? '管理員' : '會員' }}）</span></span><button type="button" class="nav-action" :disabled="logoutPending || contentPending || statusPending || lockoutPending" @click="submitLogout">{{ logoutPending ? '登出處理中…' : '登出' }}</button></template>
             <template v-else><a href="/vue/login" :aria-current="page === 'login' ? 'page' : undefined">登入</a><a href="/vue/register" :aria-current="page === 'register' ? 'page' : undefined">註冊</a></template>
             <button v-if="navOpen" type="button" class="close-link" @click="closePanel('nav')">關閉選單</button>
           </nav>
@@ -1332,15 +1324,14 @@ onBeforeUnmount(() => {
       <div v-if="versionsOpen" id="version-panel" class="version-panel">
         <div class="version-panel-inner">
           <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : fastifyBackend || expressBackend || fiberBackend || flaskBackend || fastapiBackend || ginBackend || echoBackend ? '（此後端尚未提供）' : '（此頁尚未提供）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">{{ fastifyBackend ? 'Nuxt 尚未支援目前選擇的 Fastify 後端；請留在 Vue。' : expressBackend ? 'Nuxt 尚未支援目前選擇的 Express 後端；請留在 Vue。' : fiberBackend ? 'Nuxt 尚未支援目前選擇的 Fiber 後端；請留在 Vue。' : echoBackend ? 'Nuxt 尚未支援目前選擇的 Echo 後端；請留在 Vue。' : ginBackend ? 'Nuxt 尚未支援目前選擇的 Gin 後端；請留在 Vue。' : flaskBackend ? 'Nuxt 尚未支援目前選擇的 Flask 後端；請留在 Vue。' : fastapiBackend ? 'Nuxt 尚未支援目前選擇的 FastAPI 後端；請留在 Vue。' : 'Nuxt 目前可切換文章列表、文章詳情、登入與註冊；未完成頁面請留在 Vue。' }}</p></div>
-          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option><option :value="BACKENDS.flask">Flask</option><option :value="BACKENDS.fastapi">FastAPI</option><option :value="BACKENDS.gin">Gin</option><option :value="BACKENDS.echo">Echo</option><option :value="BACKENDS.fiber">Fiber</option><option :value="BACKENDS.express">Express</option><option :value="BACKENDS.fastify">Fastify</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。Fastify 目前提供公開閱讀、帳號及作者內容操作；管理頁尚未提供。</p></div>
+          <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option><option :value="BACKENDS.flask">Flask</option><option :value="BACKENDS.fastapi">FastAPI</option><option :value="BACKENDS.gin">Gin</option><option :value="BACKENDS.echo">Echo</option><option :value="BACKENDS.fiber">Fiber</option><option :value="BACKENDS.express">Express</option><option :value="BACKENDS.fastify">Fastify</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
           <button class="panel-close" type="button" @click="closePanel('versions')">關閉</button>
         </div>
       </div>
     </header>
 
     <main id="main-content" class="main-content">
-      <section v-if="!backendPageAvailable" class="reading-page" aria-labelledby="page-title"><h1 id="page-title">此後端尚未提供此頁</h1><p>Fastify 目前提供公開閱讀、帳號及作者內容操作；管理頁尚未提供。</p><a class="text-link" href="/vue/">返回文章列表</a></section>
-      <section v-else-if="page === 'register'" class="form-page" aria-labelledby="page-title">
+      <section v-if="page === 'register'" class="form-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
         <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
@@ -1376,7 +1367,7 @@ onBeforeUnmount(() => {
           <div v-if="articleList && contentReady" class="article-results"><p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁<span v-if="articleList.pagination.total_pages">／共 {{ articleList.pagination.total_pages }} 頁</span></p><p v-if="!articleList.list.length" role="status">{{ articleList.pagination.total && listPage > articleList.pagination.total_pages ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。' }}</p><ol v-else class="article-list"><li v-for="item in articleList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><h2><a :href="`/vue/articles/${item.id}`">{{ item.title }}</a></h2><p class="article-excerpt">{{ item.body }}</p><a class="read-link" :href="`/vue/articles/${item.id}`">閱讀全文</a></li></ol><nav v-if="articleList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="文章分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < articleList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="articleList.pagination.total && listPage > articleList.pagination.total_pages" :href="path">回第一頁</a></nav></div>
           <button v-else-if="!contentLoading && !authChecking && !reLogin && !disabledAccount && summaryCode !== 'E0002' && (!protectedPage || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button>
         </template>
-        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p class="detail-return-links"><a class="text-link" href="/vue/">返回文章列表</a><a v-if="account?.role === 'admin' && !fastifyBackend" class="text-link" href="/vue/admin/articles">返回文章管理</a></p></template>
+        <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p class="detail-return-links"><a class="text-link" href="/vue/">返回文章列表</a><a v-if="account?.role === 'admin'" class="text-link" href="/vue/admin/articles">返回文章管理</a></p></template>
         <template v-else-if="page === 'my-comments'">
           <div v-if="commentList && contentReady" class="article-results">
             <p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p>
