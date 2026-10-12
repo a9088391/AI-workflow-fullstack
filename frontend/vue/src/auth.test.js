@@ -164,6 +164,21 @@ test('Fiber selection keeps backend-bound JWT isolated', () => {
   assert.equal(readSession(s), null)
 })
 
+// Fastify 固定 8091，切入與切出均清除舊憑證；前端切換則保留同一到期時間。
+test('Fastify selection isolates JWT and retains the original session expiry', () => {
+  const s = storage()
+  saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  assert.equal(BACKENDS.fastify, 'http://localhost:8091')
+  assert.equal(selectBackend(s, BACKENDS.fastify), true)
+  assert.equal(readSession(s), null)
+  saveSession(s, 'fastify-jwt', '2026-09-24 18:00:00')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.fastify, accessToken: 'fastify-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+  s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.fastify, accessToken: 'stale', expiresAt: '2026-09-24 18:00:00' }))
+  assert.equal(readSession(s), null)
+})
+
 // 瀏覽器拒絕清除 JWT 時，失敗切換不可把舊 JWT 配給新後端。
 test('backend selection fails closed when token removal throws', () => {
   const s = storage()

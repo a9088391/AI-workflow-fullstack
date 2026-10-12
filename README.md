@@ -86,6 +86,19 @@ COMPOSE_PROJECT_NAME=ticket36_test COMPOSE_FILE=compose.yaml:ops/tests/ticket36_
 docker compose -p ticket36_test -f compose.yaml -f ops/tests/ticket36_compose.yaml --profile express down
 ```
 
+
+Fastify API 固定於 `http://localhost:8091`，目前提供註冊、登入、登出、`/api/me`、公開文章列表／詳情與文章留言列表（操作 01–05、07、12）。Fastify 5.12.5、pg 8.23.0、argon2 0.45.1 由 `backends/fastify/package-lock.json` 鎖定，Node 24.21.0 ARM64 映像以 digest 鎖定；它使用 `.local/keys/fastify.key` 與共用 PostgreSQL。`GET /up` 會確認必要共用表可讀。其餘作者與管理端點尚未由 Fastify 提供。
+
+Ticket 37 HTTP／SQL 驗證只在 `ticket37_test` 專用資料卷執行。先在 `.local/ticket37-backend/` 準備不同於展示金鑰的 `laravel.key`、`fastify.key`（各為 32-byte 隨機值的 base64）、`laravel-logs/`、`backups/`；將 `backends/laravel/config/cors.php` 複製為 `cors.php`，並只把允許 origin 改成 `http://localhost:18371`。沿用現有 `.env`，先確認 18371–18373 埠未占用。腳本在任何寫入前核對實際容器、隔離資料卷、金鑰及埠；SQL 腳本量測真正送出的查詢次數並執行 `EXPLAIN (ANALYZE, BUFFERS)`。Vue 瀏覽器驗證時另將前端複製到 ignored `.local/ticket37-frontend/`，在副本把 Laravel 與 Fastify API 指向 18372、18373；不在展示前端改測試位址。
+
+```sh
+COMPOSE_PROJECT_NAME=ticket37_test COMPOSE_FILE=compose.yaml:ops/tests/ticket37_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
+COMPOSE_PROJECT_NAME=ticket37_test COMPOSE_FILE=compose.yaml:ops/tests/ticket37_compose.yaml python3 -B ops/tests/ticket37_http.py
+COMPOSE_PROJECT_NAME=ticket37_test COMPOSE_FILE=compose.yaml:ops/tests/ticket37_compose.yaml python3 -B ops/tests/ticket37_query_count.py
+COMPOSE_PROJECT_NAME=ticket37_test COMPOSE_FILE=compose.yaml:ops/tests/ticket37_compose.yaml docker compose --profile fastify exec -T fastify npm test
+COMPOSE_PROJECT_NAME=ticket37_test COMPOSE_FILE=compose.yaml:ops/tests/ticket37_compose.yaml ops/stop.sh
+```
+
 Ticket 30 的管理驗證使用獨立 `ticket30_test` 資料卷、`ops/tests/ticket30_compose.yaml`、`.local/ticket30-backend/` 下的測試專用 `laravel.key`、`echo.key`、`laravel-logs/`、`backups/`，以及 `.local/ticket30-frontend/` 的 Vue 測試副本。從 `frontend/vue/` 複製副本（不用複製 `node_modules/`、`dist/`），只在副本的 `src/auth.js` 將 Laravel `8081`、Echo `8088` 改為 `18093`、`18094`。從 `backends/laravel/config/cors.php` 複製 `.local/ticket30-backend/cors.php`，只將允許來源改為 `http://localhost:18092`，供隔離 Laravel 唯讀掛載；Vue 入口為 `http://localhost:18092/vue/`。以 `COMPOSE_PROJECT_NAME=ticket30_test COMPOSE_FILE=compose.yaml:ops/tests/ticket30_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再以相同 Compose 環境執行 `python3 -B ops/tests/ticket30_http.py`。腳本會在寫入前核對隔離容器、資料卷、金鑰、埠、CORS 與實際送達的 Vue bundle；測試會新增資料並修改隔離鎖定設定，不能指向展示資料。
 
 Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
