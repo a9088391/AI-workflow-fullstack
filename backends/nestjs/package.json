@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check input.js && node --check auth.js && node --check content.js && node --check server.test.js"
+    "check": "node --check server.js && node --check input.js && node --check auth.js && node --check content.js && node --check server.test.js && node --check author.test.js"
   },
   "dependencies": {
     "@nestjs/common": "11.2.6",

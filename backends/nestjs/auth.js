@@ -93,6 +93,27 @@ async function identity(db, key, req, required = false) {
   return { account: row, claims };
 }
 
+// lockedIdentity 在寫入交易中依帳號→session 鎖序重驗，讓停用、登出及內容寫入有確定先後。
+async function lockedIdentity(client, key, req) {
+  const authorization = req.headers.authorization || '';
+  const parts = authorization.split(' ');
+  if (parts.length !== 2 || !/^Bearer$/i.test(parts[0]) || !parts[1]) throw new ApiError('E0002');
+  const claims = verifyToken(key, parts[1]);
+  // 等待帳號鎖後才讀 session 與資料庫時間，不能沿用交易前已通過的身分。
+  const found = await client.query('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1 FOR UPDATE', [claims.sub]);
+  const session = await client.query('SELECT account_id,backend_id,issued_at,expires_at,revoked_at FROM login_sessions WHERE jti=$1 FOR UPDATE', [claims.jti]);
+  const now = await client.query('SELECT floor(extract(epoch FROM clock_timestamp()))::bigint AS now');
+  if (!found.rows.length || !session.rows.length) throw new ApiError('E0002');
+  const account = found.rows[0];
+  const row = session.rows[0];
+  if (String(row.account_id) !== claims.sub || row.backend_id !== 'nestjs' ||
+      row.issued_at.getTime() !== claims.iat * 1000 || row.expires_at.getTime() !== claims.exp * 1000 ||
+      Number(now.rows[0].now) < claims.nbf || Number(now.rows[0].now) >= claims.exp) throw new ApiError('E0002');
+  if (account.status === 'disabled') throw new ApiError('E0102');
+  if (row.revoked_at) throw new ApiError('E0002');
+  return { account, claims };
+}
+
 // lockRetry 在交易完成後沿用登入連線取資料庫時間，避免滿池時再借連線。
 async function lockRetry(client, until) {
   const result = await client.query('SELECT GREATEST(1,CEIL(EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))))::integer AS retry', [until]);
@@ -176,4 +197,4 @@ async function logout(db, subject) {
   }
 }
 
-module.exports = { businessTime, accountData, hashPassword, verifyPassword, issueToken, verifyToken, identity, login, logout };
+module.exports = { businessTime, accountData, hashPassword, verifyPassword, issueToken, verifyToken, identity, lockedIdentity, login, logout };

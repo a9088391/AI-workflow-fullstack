@@ -5,7 +5,7 @@ const { readFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Pool } = require('pg');
 const { NestFactory } = require('@nestjs/core');
-const { Controller, Get, Post, Req, Res, HttpCode, Injectable, Inject, Module } = require('@nestjs/common');
+const { Controller, Get, Post, Put, Req, Res, HttpCode, Injectable, Inject, Module } = require('@nestjs/common');
 const { ApiError, fieldError, urlInteger, queryInput, getBody, bodyInput } = require('./input');
 const { accountData, hashPassword, identity, login, logout } = require('./auth');
 const content = require('./content');
@@ -20,6 +20,7 @@ const MESSAGES = {
   E0102: [403, '此帳號已停用，請聯絡系統管理員'],
   E0104: [500, '後台認證設定異常，請聯絡系統管理員'],
   E0105: [429, '登入失敗次數過多，請稍後再試'],
+  E0201: [409, '內容已更新，請確認最新內容後再送出'],
   E9999: [500, '系統暫時無法處理，請稍後再試'],
 };
 
@@ -70,6 +71,15 @@ class ApiService {
 
   // comments 先查父文章可讀性，再取得授權範圍內的留言頁。
   async comments(viewer, id, query) { return content.comments(this.db, viewer, id, query.page, query.per_page); }
+
+  // mine 由登入身分限制 SQL 分頁，包含自己的隱藏內容。
+  async mine(viewer, kind, query) { return content.mine(this.db, viewer, kind, query.page, query.per_page); }
+
+  // comment 讀單則留言時檢查作者與管理員資格，不附帶父文章內容。
+  async comment(viewer, id) { return content.comment(this.db, viewer, id); }
+
+  // write 讓內容寫入在同一交易重驗身分及完成版本條件更新。
+  async write(req, kind, action) { return content.write(this.db, this.key, req, kind, action); }
 
   // health 查必要共用表的讀取權，讓 Compose 不把空 HTTP socket 當成就緒。
   async health() { await this.db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 1'); }
@@ -149,6 +159,56 @@ class ReadController {
 Reflect.defineMetadata('design:paramtypes', [ApiService], ReadController);
 Controller('api')(ReadController);
 
+// AuthorController 統一作者端點的登入、輸入與寫入順序，避免框架預設行為改變契約。
+class AuthorController {
+  // constructor 共用注入的 service，使內容操作使用同一資料庫與 NestJS 金鑰。
+  constructor(api) { this.api = api; }
+
+  // createArticle 在交易中驗身分及本文，再以伺服器欄位建立公開文章。
+  async createArticle(req) { await this.api.write(req, 'article', 'create'); return ok(); }
+
+  // editArticle 依作者權限及版本條件修改文章，保留同值時的時間與版本。
+  async editArticle(req) { await this.api.write(req, 'article', 'edit'); return ok(); }
+
+  // articleVisibility 依作者或管理員的恢復權轉換單篇文章狀態。
+  async articleVisibility(req) { await this.api.write(req, 'article', 'visibility'); return ok(); }
+
+  // myArticles 先驗登入與 GET 本文，再查只屬於自己的文章分頁。
+  async myArticles(req) {
+    const subject = await this.api.identity(req, true);
+    getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    return ok(await this.api.mine(subject.account, 'article', query));
+  }
+
+  // myComments 只查自己的留言與所屬 ID，即使父文章隱藏也不洩漏父內容。
+  async myComments(req) {
+    const subject = await this.api.identity(req, true);
+    getBody(req);
+    const query = queryInput(req, ['page', 'per_page']);
+    return ok(await this.api.mine(subject.account, 'comment', query));
+  }
+
+  // createComment 在父文章列鎖下確認仍公開，再建立自己的留言。
+  async createComment(req) { await this.api.write(req, 'comment', 'create'); return ok(); }
+
+  // comment 依登入者身分及隱藏狀態讀單則留言，不授予父文章讀取權。
+  async comment(req) {
+    const subject = await this.api.identity(req, true);
+    getBody(req);
+    queryInput(req);
+    return ok(await this.api.comment(subject.account, urlInteger(req.params.comment_id, 'comment_id')));
+  }
+
+  // editComment 在父文章公開時才允許作者依版本條件修改留言。
+  async editComment(req) { await this.api.write(req, 'comment', 'edit'); return ok(); }
+
+  // commentVisibility 保留父文章自己的狀態，僅修改留言個別下架與恢復權。
+  async commentVisibility(req) { await this.api.write(req, 'comment', 'visibility'); return ok(); }
+}
+Reflect.defineMetadata('design:paramtypes', [ApiService], AuthorController);
+Controller('api')(AuthorController);
+
 // HealthController 讓 Compose 健康檢查觀察 SQL 依賴，而不洩漏系統錯誤。
 class HealthController {
   // constructor 共用 service 的資料庫池，避免健康檢查另開無界連線。
@@ -177,12 +237,21 @@ route(ReadController, 'me', Get, 'me');
 route(ReadController, 'articles', Get, 'articles');
 route(ReadController, 'article', Get, 'articles/:article_id');
 route(ReadController, 'comments', Get, 'articles/:article_id/comments');
+route(AuthorController, 'createArticle', Post, 'articles', 201);
+route(AuthorController, 'editArticle', Put, 'articles/:article_id');
+route(AuthorController, 'articleVisibility', Put, 'articles/:article_id/visibility');
+route(AuthorController, 'myArticles', Get, 'me/articles');
+route(AuthorController, 'myComments', Get, 'me/comments');
+route(AuthorController, 'createComment', Post, 'articles/:article_id/comments', 201);
+route(AuthorController, 'comment', Get, 'comments/:comment_id');
+route(AuthorController, 'editComment', Put, 'comments/:comment_id');
+route(AuthorController, 'commentVisibility', Put, 'comments/:comment_id/visibility');
 route(HealthController, 'up', Get, 'up');
 
 // createApp 組裝 Nest 模組、原始本文、共同 CORS 與錯誤回應；測試可注入隔離 DB。
 async function createApp(db, key, origin = 'http://localhost:8080') {
   class AppModule {}
-  Module({ controllers: [AuthController, ReadController, HealthController],
+  Module({ controllers: [AuthController, ReadController, AuthorController, HealthController],
     providers: [{ provide: ApiService,
       // useFactory 將本次應用的池與金鑰注入 Nest service，避免每個 controller 重建。
       useFactory: () => new ApiService(db, key) }] })(AppModule);
@@ -226,8 +295,10 @@ async function createApp(db, key, origin = 'http://localhost:8080') {
       const status = error.getStatus?.() || error.statusCode || error.status;
       if (status === 404) {
         const path = req.originalUrl.split('?')[0];
-        const known = ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles'].includes(path) ||
-          /^\/api\/articles\/[^/]+(?:\/comments)?$/.test(path);
+        const known = ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles',
+          '/api/me/articles', '/api/me/comments'].includes(path) ||
+          /^\/api\/articles\/[^/]+(?:\/comments|\/visibility)?$/.test(path) ||
+          /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path);
         failure = new ApiError(known ? 'E0005' : 'E0004', undefined, undefined, known ? 405 : 404);
       } else if (Number.isInteger(status) && status >= 400 && status < 500) failure = new ApiError('E0005', undefined, undefined, status);
       else {

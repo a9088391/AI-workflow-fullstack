@@ -24,7 +24,7 @@ case "${COMPOSE_FILE:-}" in
             *ops/tests/ticket31_compose.yaml*) backend_services="laravel fiber" ;;
             *ops/tests/ticket34_compose.yaml*) backend_services="laravel express" ;;
             *ops/tests/ticket37_compose.yaml*|*ops/tests/ticket38_compose.yaml*|*ops/tests/ticket39_compose.yaml*) backend_services="laravel fastify" ;;
-            *ops/tests/ticket40_compose.yaml*) backend_services="laravel nestjs" ;;
+            *ops/tests/ticket40_compose.yaml*|*ops/tests/ticket41_compose.yaml*) backend_services="laravel nestjs" ;;
             *ops/tests/ticket19_compose.yaml*|*ops/tests/ticket20_compose.yaml*) backend_services="laravel flask" ;;
             *ops/tests/ticket16_compose.yaml*) backend_services="laravel symfony aspnet-core django" ;;
             *) backend_services="laravel symfony aspnet-core" ;;
@@ -82,7 +82,10 @@ else
             *) echo 'Vue／Laravel／Fastify 專用展示已就緒：http://localhost:18371/vue/；Fastify API：http://localhost:18373' ;;
         esac
     elif [ "$backend_services" = "laravel nestjs" ]; then
-        echo 'Vue／Laravel／NestJS 專用展示已就緒：http://localhost:18401/vue/；Laravel API：http://localhost:18402；NestJS API：http://localhost:18403'
+        case "${COMPOSE_FILE:-}" in
+            *ops/tests/ticket41_compose.yaml*) echo 'Vue／Laravel／NestJS 專用展示已就緒：http://localhost:18411/vue/；Laravel API：http://localhost:18412；NestJS API：http://localhost:18413' ;;
+            *) echo 'Vue／Laravel／NestJS 專用展示已就緒：http://localhost:18401/vue/；Laravel API：http://localhost:18402；NestJS API：http://localhost:18403' ;;
+        esac
     elif [ "$backend_services" = "laravel gin" ]; then
         echo 'Vue／Laravel／Gin 專用展示已就緒：http://localhost:8090/vue/；Gin API：http://localhost:8087'
     elif [ "$backend_services" = "laravel echo" ]; then

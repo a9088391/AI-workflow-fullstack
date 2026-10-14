@@ -288,7 +288,7 @@ test('Django comment creation and own detail use author endpoints', async (t) =>
 
 // 各作者後端新留言重讀原文章第一頁；父文章不可讀時仍保留自己的留言詳情。
 test('author backends comment creation and own detail preserve author flow', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify, auth.BACKENDS.nestjs]) {
     const instance = await writableArticle(t, '?page=2', selectedBackend)
     assert.equal(instance.page.canComment.value, true)
     assert.match(await renderedPage(instance.page), /發表留言/)
@@ -793,7 +793,7 @@ test('edit conflict requires a fresh comparison and explicit merge or discard be
 
 // 各作者後端編輯衝突均保留草稿及原版本；讀取比較後仍須作者確認新版本。
 test('author backends keep edit conflict draft until explicit latest-version comparison', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify, auth.BACKENDS.nestjs]) {
     const instance = await resourcePage(t, '/vue/articles/7/edit', article, member, article, selectedBackend)
     instance.page.articleTitle.value = '我的 Django 標題'
     instance.page.articleBody.value = '我的 Django 內文'
@@ -825,7 +825,7 @@ test('author backends keep edit conflict draft until explicit latest-version com
 
 // 各作者後端編修留言須先確認父文章公開；成功後依原 ID 重讀。
 test('author backends reread own comment detail after edit success', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify, auth.BACKENDS.nestjs]) {
     const instance = await resourcePage(t, '/vue/comments/9/edit', { ...comment, visibility: 'visible' }, member, article, selectedBackend)
     assert.equal(instance.page.canEdit.value, true)
     instance.page.commentBody.value = '編修後留言'
@@ -844,7 +844,7 @@ test('author backends reread own comment detail after edit success', async (t) =
 
 // 各作者後端下架、恢復沿作者權限及 server can_restore；成功後重讀目前詳情。
 test('author backends change article visibility with version and server readback', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
+  for (const selectedBackend of [auth.BACKENDS.django, auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify, auth.BACKENDS.nestjs]) {
     const instance = await resourcePage(t, '/vue/articles/7', article, member, article, selectedBackend)
     assert.equal(instance.page.canManageVisibility.value, true)
     const hide = instance.page.submitVisibility('hidden')
@@ -868,7 +868,7 @@ test('author backends change article visibility with version and server readback
 
 // 作者留言恢復依後端 can_restore 與目前版本；無資格時不能發出 PUT。
 test('author backends own comment visibility use current version and restore eligibility', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.fastapi, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) {
+  for (const selectedBackend of [auth.BACKENDS.fastapi, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify, auth.BACKENDS.nestjs]) {
     const instance = await resourcePage(t, '/vue/comments/9', { ...comment, can_restore: false }, member, article, selectedBackend)
     await instance.page.submitVisibility('visible')
     assert.equal(instance.requests.length, 3)

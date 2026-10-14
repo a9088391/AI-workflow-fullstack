@@ -164,6 +164,18 @@ test('confirmed article publish opens my articles first page with success notice
   assert.match(descriptor.template.content, /v-if="published && account"[^>]*role="status"[^>]*>文章已發表/)
 })
 
+// NestJS 發文確認後的目標頁仍從第一頁讀取本人文章，並在驗權後顯示成功提示。
+test('NestJS published return reads my articles first page', async (t) => {
+  const published = articleApp('/vue/me/articles', 'nest-jwt', '?published=1', false, auth.BACKENDS.nestjs)
+  t.after(published.close)
+  await respond(published.requests[0], 200, success(member))
+  assert.equal(published.requests[1].url, `${auth.BACKENDS.nestjs}/api/me/articles?page=1&per_page=20`)
+  await respond(published.requests[1], 200, success({ list: [{ ...sample, created_backend: 'nestjs' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
+  const html = await renderArticleApp(published)
+  assert.match(html, /文章已發表，以下為我的文章/)
+  assert.match(html, /建立於 NestJS/)
+})
+
 // 201 若缺少核准的空 data 格式仍視為結果未知，不能顯示成功或重送寫入。
 test('incomplete 201 publish response does not announce success', async (t) => {
   const app = articleApp('/vue/articles/new', 'fastify-jwt', '', false, auth.BACKENDS.fastify)
@@ -896,7 +908,7 @@ test('Flask author routes verify identity', async (t) => {
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.flask">Flask<\/option>/)
-  assert.match(descriptor.template.content, /v-if="!nestBackend && account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
+  assert.match(descriptor.template.content, /v-if="account && \(account\.id === item\.author\.id \|\| account\.role === 'admin'\)"[^>]*>閱讀留言詳情/)
 })
 
 // FastAPI 切換雙向清除舊 JWT，晚到的舊驗權回應不得恢復上一後端帳號。
@@ -1514,12 +1526,12 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><a v-if="!nestBackend" href="\/vue\/articles\/new"/)
+  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
 })
 
 // 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
 test('author backends publish member and admin articles to the first my articles page', async (t) => {
-  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify]) for (const actor of [member, { ...member, role: 'admin' }]) {
+  for (const selectedBackend of [auth.BACKENDS.flask, auth.BACKENDS.fastapi, auth.BACKENDS.gin, auth.BACKENDS.echo, auth.BACKENDS.fiber, auth.BACKENDS.express, auth.BACKENDS.fastify, auth.BACKENDS.nestjs]) for (const actor of [member, { ...member, role: 'admin' }]) {
     const app = articleApp('/vue/articles/new', 'author-jwt', '', false, selectedBackend)
     t.after(app.close)
     await respond(app.requests[0], 200, { success: true, message: 'OK', data: actor })
@@ -1675,8 +1687,8 @@ test('logout 401 blocks guest retry and keeps public login return target', async
   }
 })
 
-// NestJS 只提供帳號與公開閱讀；已登入畫面仍須讀 /me，但不可出現寫入或管理入口。
-test('NestJS reads articles and comments without offering unfinished actions', async (t) => {
+// NestJS 已提供作者操作；管理入口與 Nuxt 切換仍維持限制。
+test('NestJS reads articles and comments with author actions but no management', async (t) => {
   const list = articleApp('/vue/', null, '', false, auth.BACKENDS.nestjs)
   t.after(list.close)
   assert.equal(list.requests[0].url, `${auth.BACKENDS.nestjs}/api/articles?page=1&per_page=20`)
@@ -1691,11 +1703,12 @@ test('NestJS reads articles and comments without offering unfinished actions', a
   await respond(detail.requests[1], 200, success(sample))
   assert.equal(detail.requests[2].url, `${auth.BACKENDS.nestjs}/api/articles/7/comments?page=1&per_page=20`)
   await respond(detail.requests[2], 200, success({ list: [{ id: 9, article_id: 7, body: '可閱讀留言', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'nestjs', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }))
-  assert.equal(detail.page.canComment.value, false)
-  assert.equal(detail.page.canManageVisibility.value, false)
+  assert.equal(detail.page.canComment.value, true)
+  assert.equal(detail.page.canManageVisibility.value, true)
   const html = await renderArticleApp(detail)
   assert.match(html, /可閱讀留言/)
-  for (const unavailable of ['發表留言', '發表文章', '我的文章', '會員管理', '閱讀留言詳情', '返回文章管理']) assert.doesNotMatch(html, new RegExp(unavailable))
+  for (const available of ['發表留言', '發文', '我的文章', '閱讀留言詳情', '編輯文章']) assert.match(html, new RegExp(available))
+  for (const unavailable of ['會員管理', '返回文章管理']) assert.doesNotMatch(html, new RegExp(unavailable))
   assert.equal(detail.page.canSwitchNuxt.value, false)
   detail.page.chooseFrontend({ target: { value: 'nuxt' } })
   assert.equal(detail.redirects.length, 0)
@@ -1704,21 +1717,56 @@ test('NestJS reads articles and comments without offering unfinished actions', a
   await respond(detail.requests[3], 200, success({}))
   await logout
   assert.equal(auth.readSession(detail.sessionStorage), null)
+
+  // 管理員自己的留言仍可操作，但不能連到 NestJS 尚未提供的管理列表。
+  const ownComment = articleApp('/vue/comments/9', 'nest-jwt', '', false, auth.BACKENDS.nestjs)
+  t.after(ownComment.close)
+  await respond(ownComment.requests[0], 200, success({ ...member, role: 'admin' }))
+  await respond(ownComment.requests[1], 200, success({ id: 9, article_id: 7, body: '自己的留言', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'nestjs', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'hidden', can_restore: true }))
+  await respond(ownComment.requests[2], 404, { success: false, error_code: 'E0004', data: { title: '不可洩漏' } })
+  const ownHtml = await renderArticleApp(ownComment)
+  assert.match(ownHtml, /自己的留言/)
+  assert.match(ownHtml, /所屬文章目前無法讀取/)
+  assert.match(ownHtml, />恢復<\/button>/)
+  assert.doesNotMatch(ownHtml, /不可洩漏|返回留言管理/)
 })
 
-// 深連結與登入返回目標先限制在 NestJS 已完成頁面，避免 /me 之後呼叫缺少的 API。
-test('NestJS switches and deep links avoid unfinished endpoints', async (t) => {
-  for (const path of ['/vue/articles/new', '/vue/me/articles', '/vue/me/comments', '/vue/comments/9', '/vue/articles/7/edit', '/vue/admin/members']) {
+// 作者深連結保留登入目標；尚未提供的管理頁仍導回公開列表。
+test('NestJS switches and deep links preserve author routes and avoid admin endpoints', async (t) => {
+  const authorRoutes = new Map([
+    ['/vue/articles/new', null],
+    ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
+    ['/vue/me/comments', '/api/me/comments?page=1&per_page=20'],
+    ['/vue/comments/9', '/api/comments/9'],
+    ['/vue/comments/9/edit', '/api/comments/9'],
+    ['/vue/articles/7/edit', '/api/articles/7'],
+  ])
+  for (const [path, endpoint] of authorRoutes) {
     const direct = articleApp(path, 'nest-jwt', '', false, auth.BACKENDS.nestjs)
     t.after(direct.close)
-    assert.deepEqual(direct.redirects, ['/vue/'], path)
-    assert.equal(direct.requests.length, 0, path)
+    assert.deepEqual(direct.redirects, [], path)
+    assert.equal(direct.requests[0].url, `${auth.BACKENDS.nestjs}/api/me`, path)
+    await respond(direct.requests[0], 200, success(member))
+    assert.equal(direct.requests.length, endpoint ? 2 : 1, path)
+    if (endpoint) assert.equal(direct.requests[1].url, `${auth.BACKENDS.nestjs}${endpoint}`, path)
+    const guest = articleApp(path, null, '', false, auth.BACKENDS.nestjs)
+    t.after(guest.close)
+    assert.deepEqual(guest.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
+    assert.equal(guest.requests.length, 0, path)
     const switched = articleApp(path, 'laravel-jwt')
     t.after(switched.close)
     await switched.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
-    assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2F'], path)
+    assert.deepEqual(switched.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
     assert.equal(auth.readSession(switched.sessionStorage), null)
   }
+  const blocked = articleApp('/vue/admin/members', 'nest-jwt', '', false, auth.BACKENDS.nestjs)
+  t.after(blocked.close)
+  assert.deepEqual(blocked.redirects, ['/vue/'])
+  assert.equal(blocked.requests.length, 0)
+  const blockedSwitch = articleApp('/vue/admin/members', 'laravel-jwt')
+  t.after(blockedSwitch.close)
+  await blockedSwitch.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
+  assert.deepEqual(blockedSwitch.redirects, ['/vue/login?return_to=%2Fvue%2F'])
   const supported = articleApp('/vue/articles/7', null)
   t.after(supported.close)
   await supported.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
@@ -1733,13 +1781,22 @@ test('NestJS switches and deep links avoid unfinished endpoints', async (t) => {
   await respond(login.requests[0], 200, success({ access_token: 'nest-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
   await submit
   assert.deepEqual(login.redirects, ['/vue/'])
+  const authorLogin = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fcomments%2F9%2Fedit', false, auth.BACKENDS.nestjs)
+  t.after(authorLogin.close)
+  authorLogin.page.email.value = member.email
+  authorLogin.page.password.value = 'abcd'
+  await vue.nextTick()
+  const authorSubmit = authorLogin.page.submitLogin()
+  await respond(authorLogin.requests[0], 200, success({ access_token: 'nest-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await authorSubmit
+  assert.deepEqual(authorLogin.redirects, ['/vue/comments/9/edit'])
 })
 
 // NestJS 註冊與鎖定登入沿用共用表單及 Retry-After 倒數，歸零才允許再次送出。
 test('NestJS registration and lockout use the existing account flow', async (t) => {
   const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.nestjs)
   t.after(registration.close)
-  assert.match(await renderArticleApp(registration), /建立帳號後即可登入並閱讀文章/)
+  assert.match(await renderArticleApp(registration), /建立帳號後即可登入並發表文章/)
   registration.page.email.value = 'new@example.test'
   registration.page.password.value = 'abcd'
   registration.page.nickname.value = '新會員'

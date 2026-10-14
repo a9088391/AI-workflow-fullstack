@@ -1,0 +1,29 @@
+# Ticket 41 僅在專用資料卷、測試金鑰與 loopback 埠驗證 NestJS。
+services:
+  db:
+    environment:
+      TICKET41_FIXTURE: isolated-ticket41
+    command: ["postgres", "-c", "log_min_duration_statement=0", "-c", "log_line_prefix=%m [%p] %u@%d "]
+  sql:
+    volumes:
+      - ./.local/ticket41-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:18412:8000"
+    volumes:
+      - ./.local/ticket41-backend/cors.php:/srv/laravel/config/cors.php:ro
+      - ./.local/ticket41-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket41-backend/laravel-logs:/srv/laravel/storage/logs
+  nestjs:
+    environment:
+      CORS_ORIGIN: http://localhost:18411
+    ports: !override
+      - "127.0.0.1:18413:8000"
+    volumes:
+      - ./.local/ticket41-backend/nestjs.key:/run/secrets/nestjs-jwt.key:ro
+  frontend-vue:
+    build:
+      context: ./.local/ticket41-frontend
+  nginx:
+    ports: !override
+      - "127.0.0.1:18411:80"
