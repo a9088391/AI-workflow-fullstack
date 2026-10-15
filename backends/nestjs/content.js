@@ -1,7 +1,7 @@
 'use strict';
 
 const { ApiError, urlInteger, queryInput, bodyInput } = require('./input');
-const { businessTime, lockedIdentity } = require('./auth');
+const { businessTime, accountData, lockedIdentity } = require('./auth');
 
 const ARTICLE_COLUMNS = 'articles.id,articles.author_id,articles.title,articles.body,articles.visibility,articles.restore_control,articles.version,articles.created_backend,articles.created_at,articles.updated_at,accounts.nickname';
 const COMMENT_COLUMNS = 'comments.id,comments.author_id,comments.article_id,comments.body,comments.visibility,comments.restore_control,comments.version,comments.created_backend,comments.created_at,comments.updated_at,accounts.nickname';
@@ -45,6 +45,42 @@ async function pageRows(db, columns, base, args, page, perPage, viewer, article)
 async function articles(db, viewer, page, perPage, management) {
   const base = `FROM articles JOIN accounts ON accounts.id=articles.author_id ${management ? '' : "WHERE articles.visibility='visible'"}`;
   return pageRows(db, ARTICLE_COLUMNS, base, [], page, perPage, viewer, true);
+}
+
+// members 在 SQL 完成 ASCII 折疊的字面搜尋、精確計數與排序分頁，不載入整張會員表。
+async function members(db, page, perPage, keyword) {
+  // PostgreSQL text 不接受 NUL；此字面關鍵字不可能命中合法的暱稱或 Email。
+  if (keyword?.includes('\0')) return { list: [], pagination: pagination(page, perPage, 0) };
+  // replace callback 只將 ASCII 大寫字母轉小寫，其他 Unicode 原樣比對。
+  const folded = keyword?.replace(/[A-Z]/g, letter => letter.toLowerCase());
+  const condition = folded ? ` AND (strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0
+    OR strpos(translate(email,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0)` : '';
+  const args = folded ? [folded] : [];
+  const base = `FROM accounts WHERE role='member'${condition}`;
+  const counted = await db.query(`SELECT count(*)::bigint AS total ${base}`, args);
+  const total = Number(counted.rows[0].total);
+  const offset = (BigInt(page) - 1n) * BigInt(perPage);
+  let list = [];
+  if (offset < BigInt(total)) {
+    const rows = await db.query(`SELECT id,email,nickname,role,status,created_at ${base}
+      ORDER BY created_at DESC,id DESC LIMIT $${args.length + 1} OFFSET $${args.length + 2}`,
+    [...args, perPage, offset.toString()]);
+    // 每列僅轉換核准公開欄位，不能把鎖定或密碼資料帶到回應。
+    list = rows.rows.map(row => accountData(row));
+  }
+  return { list, pagination: pagination(page, perPage, total) };
+}
+
+// member 只讀一般會員；管理員 ID 與不存在 ID 一律不透露差異。
+async function member(db, id) {
+  const found = await db.query("SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1 AND role='member'", [id]);
+  if (!found.rows.length) throw new ApiError('E0004');
+  return accountData(found.rows[0]);
+}
+
+// managementComments 包含兩層下架狀態，沿用一次 JOIN 的留言映射與分頁。
+async function managementComments(db, viewer, page, perPage) {
+  return pageRows(db, COMMENT_COLUMNS, 'FROM comments JOIN accounts ON accounts.id=comments.author_id', [], page, perPage, viewer, false);
 }
 
 // article 對訪客與非作者隱藏下架文章的存在。
@@ -176,4 +212,4 @@ async function write(db, key, req, kind, action) {
   }
 }
 
-module.exports = { contentData, pagination, articles, article, comments, mine, comment, write };
+module.exports = { contentData, pagination, articles, article, comments, mine, comment, members, member, managementComments, write };

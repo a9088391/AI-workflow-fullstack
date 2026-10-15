@@ -581,9 +581,9 @@ test('Django lockout settings authorize and read back full update', async (t) =>
   assert.match(await rendered(settings.page), /已重新讀取並顯示目前伺服器設定/)
 })
 
-// 兩個後端共用同一組管理頁行為，逐一檢查角色、端點與讀回結果。
-for (const [name, selectedBackend] of [['FastAPI', auth.BACKENDS.fastapi], ['Fastify', auth.BACKENDS.fastify]]) {
-  // FastAPI／Fastify 管理深連結先驗登入與角色，五個入口才可讀共同 API。
+// 三個後端共用同一組管理頁行為，逐一檢查角色、端點與讀回結果。
+for (const [name, selectedBackend] of [['FastAPI', auth.BACKENDS.fastapi], ['Fastify', auth.BACKENDS.fastify], ['NestJS', auth.BACKENDS.nestjs]]) {
+  // 管理深連結先驗登入與角色，五個入口才可讀共同 API。
   test(`${name} management routes require verified admin and expose all entries`, async (t) => {
     const routes = new Map([
       ['/vue/admin/members', '/api/members?page=1&per_page=20'],
@@ -619,6 +619,14 @@ for (const [name, selectedBackend] of [['FastAPI', auth.BACKENDS.fastapi], ['Fas
     assert.match(deniedHtml, /沒有權限使用此功能/)
     assert.doesNotMatch(deniedHtml, /href="\/vue\/admin\/|member@example.test/)
 
+    // 後端若在驗權後拒絕管理請求，畫面仍只顯示無權限而不保留管理資料。
+    const forbidden = app('/vue/admin/members', '', 'admin-token', selectedBackend)
+    t.after(forbidden.close)
+    await respond(forbidden.requests[0], 200, success(administrator))
+    await respond(forbidden.requests[1], 403, { success: false, error_code: 'E0003' })
+    assert.match(await rendered(forbidden.page), /沒有權限使用此功能/)
+    assert.equal(forbidden.page.memberList.value, null)
+
     const hiddenAdmin = app('/vue/admin/members/1', '', 'admin-token', selectedBackend)
     t.after(hiddenAdmin.close)
     await respond(hiddenAdmin.requests[0], 200, success(administrator))
@@ -640,7 +648,7 @@ for (const [name, selectedBackend] of [['FastAPI', auth.BACKENDS.fastapi], ['Fas
     }
   })
 
-  // FastAPI／Fastify 管理內容共用既有列表與詳情，隱藏項仍須有詳情及返回管理入口。
+  // 管理內容共用既有列表與詳情，隱藏項仍須有詳情及返回管理入口。
   test(`${name} management lists and hidden content links`, async (t) => {
     const content = { id: 7, title: '下架文章', body: '原文', author: { id: 2, nickname: '阿明' }, version: 1, created_backend: name.toLowerCase(), created_at: '2026-09-24 09:00:00', updated_at: '2026-09-24 09:00:00', visibility: 'hidden', can_restore: true }
     const articlesPage = app('/vue/admin/articles', '', 'admin-token', selectedBackend)
@@ -665,7 +673,7 @@ for (const [name, selectedBackend] of [['FastAPI', auth.BACKENDS.fastapi], ['Fas
     assert.match(await rendered(comment.page), /href="\/vue\/admin\/comments"[^>]*>返回留言管理<\/a>/)
   })
 
-  // FastAPI／Fastify 狀態與完整設定寫入後都重讀同後端，畫面只顯示已確認的伺服器值。
+  // 狀態與完整設定寫入後都重讀同後端，畫面只顯示已確認的伺服器值。
   test(`${name} member status and lockout update use same-backend readback`, async (t) => {
     const detail = app('/vue/admin/members/2', '', 'admin-token', selectedBackend)
     t.after(detail.close)

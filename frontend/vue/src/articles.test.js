@@ -1687,8 +1687,8 @@ test('logout 401 blocks guest retry and keeps public login return target', async
   }
 })
 
-// NestJS 已提供作者操作；管理入口與 Nuxt 切換仍維持限制。
-test('NestJS reads articles and comments with author actions but no management', async (t) => {
+// NestJS 作者內容仍可操作；管理員在詳情頁可回管理列表，Nuxt 切換仍受限制。
+test('NestJS reads articles and comments with author and management links', async (t) => {
   const list = articleApp('/vue/', null, '', false, auth.BACKENDS.nestjs)
   t.after(list.close)
   assert.equal(list.requests[0].url, `${auth.BACKENDS.nestjs}/api/articles?page=1&per_page=20`)
@@ -1708,7 +1708,8 @@ test('NestJS reads articles and comments with author actions but no management',
   const html = await renderArticleApp(detail)
   assert.match(html, /可閱讀留言/)
   for (const available of ['發表留言', '發文', '我的文章', '閱讀留言詳情', '編輯文章']) assert.match(html, new RegExp(available))
-  for (const unavailable of ['會員管理', '返回文章管理']) assert.doesNotMatch(html, new RegExp(unavailable))
+  assert.match(html, /href="\/vue\/admin\/articles"[^>]*>返回文章管理<\/a>/)
+  for (const href of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) assert.match(html, new RegExp(`href="${href}"`))
   assert.equal(detail.page.canSwitchNuxt.value, false)
   detail.page.chooseFrontend({ target: { value: 'nuxt' } })
   assert.equal(detail.redirects.length, 0)
@@ -1718,7 +1719,7 @@ test('NestJS reads articles and comments with author actions but no management',
   await logout
   assert.equal(auth.readSession(detail.sessionStorage), null)
 
-  // 管理員自己的留言仍可操作，但不能連到 NestJS 尚未提供的管理列表。
+  // 管理員自己的留言仍可操作，並可返回管理列表。
   const ownComment = articleApp('/vue/comments/9', 'nest-jwt', '', false, auth.BACKENDS.nestjs)
   t.after(ownComment.close)
   await respond(ownComment.requests[0], 200, success({ ...member, role: 'admin' }))
@@ -1728,11 +1729,12 @@ test('NestJS reads articles and comments with author actions but no management',
   assert.match(ownHtml, /自己的留言/)
   assert.match(ownHtml, /所屬文章目前無法讀取/)
   assert.match(ownHtml, />恢復<\/button>/)
-  assert.doesNotMatch(ownHtml, /不可洩漏|返回留言管理/)
+  assert.doesNotMatch(ownHtml, /不可洩漏/)
+  assert.match(ownHtml, /href="\/vue\/admin\/comments"[^>]*>返回留言管理<\/a>/)
 })
 
-// 作者深連結保留登入目標；尚未提供的管理頁仍導回公開列表。
-test('NestJS switches and deep links preserve author routes and avoid admin endpoints', async (t) => {
+// 作者與管理深連結保留登入目標；訪客和會員仍須重新驗權。
+test('NestJS switches and deep links preserve protected return targets', async (t) => {
   const authorRoutes = new Map([
     ['/vue/articles/new', null],
     ['/vue/me/articles', '/api/me/articles?page=1&per_page=20'],
@@ -1759,14 +1761,10 @@ test('NestJS switches and deep links preserve author routes and avoid admin endp
     assert.deepEqual(switched.redirects, [`/vue/login?return_to=${encodeURIComponent(path)}`], path)
     assert.equal(auth.readSession(switched.sessionStorage), null)
   }
-  const blocked = articleApp('/vue/admin/members', 'nest-jwt', '', false, auth.BACKENDS.nestjs)
-  t.after(blocked.close)
-  assert.deepEqual(blocked.redirects, ['/vue/'])
-  assert.equal(blocked.requests.length, 0)
   const blockedSwitch = articleApp('/vue/admin/members', 'laravel-jwt')
   t.after(blockedSwitch.close)
   await blockedSwitch.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
-  assert.deepEqual(blockedSwitch.redirects, ['/vue/login?return_to=%2Fvue%2F'])
+  assert.deepEqual(blockedSwitch.redirects, ['/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers'])
   const supported = articleApp('/vue/articles/7', null)
   t.after(supported.close)
   await supported.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
@@ -1780,7 +1778,7 @@ test('NestJS switches and deep links preserve author routes and avoid admin endp
   assert.equal(login.requests[0].url, `${auth.BACKENDS.nestjs}/api/auth/login`)
   await respond(login.requests[0], 200, success({ access_token: 'nest-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
   await submit
-  assert.deepEqual(login.redirects, ['/vue/'])
+  assert.deepEqual(login.redirects, ['/vue/admin/members'])
   const authorLogin = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fcomments%2F9%2Fedit', false, auth.BACKENDS.nestjs)
   t.after(authorLogin.close)
   authorLogin.page.email.value = member.email

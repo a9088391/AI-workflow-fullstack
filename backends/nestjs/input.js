@@ -7,7 +7,7 @@ const TYPE = '欄位型態不正確';
 const MAX_ID = 9007199254740991;
 const EMAIL = /^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
 const BLANK = /^[ \t\n\r\v\f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
-const VERSION_MARKER = Symbol('parsed version');
+const INTEGER_MARKER = Symbol('parsed integer');
 
 // ApiError 保存共同錯誤碼與欄位細節，避免 NestJS 原生格式流出。
 class ApiError extends Error {
@@ -41,7 +41,7 @@ function queryInput(req, allowed = []) {
   const raw = req.originalUrl.split('?').slice(1).join('?');
   for (const [name, value] of new URLSearchParams(raw)) {
     let canonical = name;
-    for (const key of ['page', 'per_page', 'filters[scope]']) {
+    for (const key of ['page', 'per_page', 'filters[scope]', 'filters[keyword]']) {
       if (name.startsWith(`${key}[`)) canonical = key;
     }
     // 只有完整的巢狀欄位名稱轉為共同點記法；畸形未知欄位保留原名。
@@ -62,6 +62,12 @@ function queryInput(req, allowed = []) {
   }
   if (Object.hasOwn(values, 'filters[scope]') && !errors['filters.scope'] && values['filters[scope]'] !== 'management') {
     errors['filters.scope'] = [INVALID];
+  }
+  // 搜尋僅移除前後 U+0020 空格，並限制 254 個 Unicode 碼點，以維持跨後端搜尋契約。
+  if (Object.hasOwn(values, 'filters[keyword]') && !errors['filters.keyword']) {
+    const keyword = values['filters[keyword]'].replace(/^ +| +$/g, '');
+    if ([...keyword].length > 254) errors['filters.keyword'] = [INVALID];
+    else values['filters[keyword]'] = keyword;
   }
   if (Object.keys(errors).length) throw new ApiError('E0001', Object.fromEntries(Object.entries(errors)));
   return Object.fromEntries(Object.entries(values));
@@ -104,9 +110,9 @@ function bodyInput(req, fields, optional = false) {
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(req.body);
     if (!validSurrogates(raw)) throw Error();
-    // reviver 保留 version 的原始數字寫法；私有 Symbol 使 JSON object 無法偽造整數。
-    body = JSON.parse(raw, function preserveVersion(name, value, context) {
-      if (name === 'version' && typeof value === 'number') return { [VERSION_MARKER]: value, source: context.source };
+    // reviver 保留所有整數欄位的原始寫法；私有 Symbol 避免 object 偽造型態。
+    body = JSON.parse(raw, function preserveInteger(name, value, context) {
+      if (['version', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name) && typeof value === 'number') return { [INTEGER_MARKER]: value, source: context.source };
       return value;
     });
   }
@@ -120,12 +126,17 @@ function bodyInput(req, fields, optional = false) {
     const value = body[name];
     if (!Object.hasOwn(body, name)) errors[name] = [REQUIRED];
     else if (value === null) errors[name] = [NULL];
-    else if (name === 'version') {
+    else if (['version', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)) {
       // JSON 整數須為十進位原始寫法，避免指數及超大數在 JS 轉換後誤收。
-      if (!value || typeof value !== 'object' || !Object.hasOwn(value, VERSION_MARKER)) errors[name] = [TYPE];
+      if (!value || typeof value !== 'object' || !Object.hasOwn(value, INTEGER_MARKER)) errors[name] = [TYPE];
       else if (!/^-?(0|[1-9][0-9]*)$/.test(value.source)) errors[name] = [TYPE];
-      else if (!Number.isSafeInteger(value[VERSION_MARKER]) || value[VERSION_MARKER] < 1 || value[VERSION_MARKER] > MAX_ID) errors[name] = [INVALID];
-      else result[name] = value[VERSION_MARKER];
+      else if (!Number.isSafeInteger(value[INTEGER_MARKER]) || value[INTEGER_MARKER] < 1 || value[INTEGER_MARKER] >
+        ({ version: MAX_ID, window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 })[name]) errors[name] = [INVALID];
+      else result[name] = value[INTEGER_MARKER];
+    }
+    else if (name === 'enabled') {
+      if (typeof value !== 'boolean') errors[name] = [TYPE];
+      else result[name] = value;
     }
     else if (typeof value !== 'string') errors[name] = [TYPE];
     else if (name === 'email') {
@@ -146,6 +157,9 @@ function bodyInput(req, fields, optional = false) {
       else result[name] = value;
     } else if (name === 'visibility') {
       if (value !== 'visible' && value !== 'hidden') errors[name] = [INVALID];
+      else result[name] = value;
+    } else if (name === 'status') {
+      if (value !== 'active' && value !== 'disabled') errors[name] = [INVALID];
       else result[name] = value;
     }
   }

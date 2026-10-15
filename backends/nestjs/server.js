@@ -7,7 +7,7 @@ const { Pool } = require('pg');
 const { NestFactory } = require('@nestjs/core');
 const { Controller, Get, Post, Put, Req, Res, HttpCode, Injectable, Inject, Module } = require('@nestjs/common');
 const { ApiError, fieldError, urlInteger, queryInput, getBody, bodyInput } = require('./input');
-const { accountData, hashPassword, identity, login, logout } = require('./auth');
+const { accountData, hashPassword, identity, login, logout, adminRead, memberStatus, lockoutValues, lockoutSettings } = require('./auth');
 const content = require('./content');
 
 const MESSAGES = {
@@ -81,6 +81,15 @@ class ApiService {
   // write 讓內容寫入在同一交易重驗身分及完成版本條件更新。
   async write(req, kind, action) { return content.write(this.db, this.key, req, kind, action); }
 
+  // adminRead 在同一交易重驗管理員資格並完成資料查詢，避免失效身分繼續讀管理資料。
+  async adminRead(req, read) { return adminRead(this.db, this.key, req, read); }
+
+  // memberStatus 於帳號及 session 鎖下完成停用與撤銷。
+  async memberStatus(req, id, status) { return memberStatus(this.db, this.key, req, id, status); }
+
+  // lockoutSettings 以設定列為第一把鎖完成完整更新及關閉副作用。
+  async lockoutSettings(req, body) { return lockoutSettings(this.db, this.key, req, body); }
+
   // health 查必要共用表的讀取權，讓 Compose 不把空 HTTP socket 當成就緒。
   async health() { await this.db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 1'); }
 }
@@ -132,8 +141,16 @@ class ReadController {
   // articles 指定管理範圍時先驗 JWT 與角色，再檢查本文和 Query。
   async articles(req) {
     const management = new URLSearchParams(req.originalUrl.split('?').slice(1).join('?')).getAll('filters[scope]').includes('management');
-    const subject = await this.api.identity(req, management);
-    if (management && subject.account.role !== 'admin') throw new ApiError('E0003');
+    if (management) {
+      // 管理範圍的驗權、驗參與資料查詢在同一交易完成。
+      // readManagement callback 沿用共用文章 SQL 與映射，不在路由另做篩選。
+      return ok(await this.api.adminRead(req, async function readManagement(client, viewer) {
+        getBody(req);
+        const query = queryInput(req, ['page', 'per_page', 'filters[scope]']);
+        return content.articles(client, viewer, query.page, query.per_page, true);
+      }));
+    }
+    const subject = await this.api.identity(req);
     getBody(req);
     const query = queryInput(req, ['page', 'per_page', 'filters[scope]']);
     return ok(await this.api.articles(subject?.account, query));
@@ -209,6 +226,77 @@ class AuthorController {
 Reflect.defineMetadata('design:paramtypes', [ApiService], AuthorController);
 Controller('api')(AuthorController);
 
+// AdministrationController 集中管理路由的角色優先驗證，避免輸入或目標狀態洩漏給會員。
+class AdministrationController {
+  // constructor 共用 service 與資料庫交易接縫，所有管理請求使用相同身分規則。
+  constructor(api) { this.api = api; }
+
+  // members 在交易中驗權後才讀 GET 本文及搜尋 Query。
+  async members(req) {
+    // readMembers callback 在持有有效身分鎖的期間交給共用 SQL 處理搜尋。
+    return ok(await this.api.adminRead(req, async function readMembers(client) {
+      getBody(req);
+      const query = queryInput(req, ['page', 'per_page', 'filters[keyword]']);
+      return content.members(client, query.page, query.per_page, query['filters[keyword]']);
+    }));
+  }
+
+  // member 先驗管理身分與輸入，管理員目標同不存在資料回 404。
+  async member(req) {
+    // readMember callback 只查核准的一般會員欄位。
+    return ok(await this.api.adminRead(req, async function readMember(client) {
+      getBody(req);
+      queryInput(req);
+      return content.member(client, urlInteger(req.params.member_id, 'member_id'));
+    }));
+  }
+
+  // status 先做端點角色與格式驗證，寫入交易仍重新驗目前管理身分。
+  async status(req) {
+    const subject = await this.api.identity(req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    queryInput(req);
+    const id = urlInteger(req.params.member_id, 'member_id');
+    const body = bodyInput(req, ['status']);
+    await this.api.memberStatus(req, id, body.status);
+    return ok();
+  }
+
+  // comments 包含文章下架及個別下架留言，以管理員目前身分映射恢復權。
+  async comments(req) {
+    // readComments callback 避免在路由逐筆查作者或父文章。
+    return ok(await this.api.adminRead(req, async function readComments(client, viewer) {
+      getBody(req);
+      const query = queryInput(req, ['page', 'per_page']);
+      return content.managementComments(client, viewer, query.page, query.per_page);
+    }));
+  }
+
+  // settings 僅讀共用設定四欄，先驗目前管理身分與 GET 格式。
+  async settings(req) {
+    // readSettings callback 在交易內讀共用設定並轉為固定公開型態。
+    return ok(await this.api.adminRead(req, async function readSettings(client) {
+      getBody(req);
+      queryInput(req);
+      const found = await client.query('SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1');
+      if (!found.rows.length) throw new ApiError('E0104');
+      return lockoutValues(found.rows[0]);
+    }));
+  }
+
+  // updateSettings 要求四欄完整驗證；交易內重驗並只在實際關閉時清鎖。
+  async updateSettings(req) {
+    const subject = await this.api.identity(req, true);
+    if (subject.account.role !== 'admin') throw new ApiError('E0003');
+    queryInput(req);
+    const body = bodyInput(req, ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds']);
+    await this.api.lockoutSettings(req, body);
+    return ok();
+  }
+}
+Reflect.defineMetadata('design:paramtypes', [ApiService], AdministrationController);
+Controller('api')(AdministrationController);
+
 // HealthController 讓 Compose 健康檢查觀察 SQL 依賴，而不洩漏系統錯誤。
 class HealthController {
   // constructor 共用 service 的資料庫池，避免健康檢查另開無界連線。
@@ -246,12 +334,18 @@ route(AuthorController, 'createComment', Post, 'articles/:article_id/comments', 
 route(AuthorController, 'comment', Get, 'comments/:comment_id');
 route(AuthorController, 'editComment', Put, 'comments/:comment_id');
 route(AuthorController, 'commentVisibility', Put, 'comments/:comment_id/visibility');
+route(AdministrationController, 'members', Get, 'members');
+route(AdministrationController, 'member', Get, 'members/:member_id');
+route(AdministrationController, 'status', Put, 'members/:member_id/status');
+route(AdministrationController, 'comments', Get, 'comments');
+route(AdministrationController, 'settings', Get, 'settings/login-lockout');
+route(AdministrationController, 'updateSettings', Put, 'settings/login-lockout');
 route(HealthController, 'up', Get, 'up');
 
 // createApp 組裝 Nest 模組、原始本文、共同 CORS 與錯誤回應；測試可注入隔離 DB。
 async function createApp(db, key, origin = 'http://localhost:8080') {
   class AppModule {}
-  Module({ controllers: [AuthController, ReadController, AuthorController, HealthController],
+  Module({ controllers: [AuthController, ReadController, AuthorController, AdministrationController, HealthController],
     providers: [{ provide: ApiService,
       // useFactory 將本次應用的池與金鑰注入 Nest service，避免每個 controller 重建。
       useFactory: () => new ApiService(db, key) }] })(AppModule);
@@ -296,9 +390,10 @@ async function createApp(db, key, origin = 'http://localhost:8080') {
       if (status === 404) {
         const path = req.originalUrl.split('?')[0];
         const known = ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles',
-          '/api/me/articles', '/api/me/comments'].includes(path) ||
+          '/api/me/articles', '/api/me/comments', '/api/members', '/api/comments', '/api/settings/login-lockout'].includes(path) ||
           /^\/api\/articles\/[^/]+(?:\/comments|\/visibility)?$/.test(path) ||
-          /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path);
+          /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path) ||
+          /^\/api\/members\/[^/]+(?:\/status)?$/.test(path);
         failure = new ApiError(known ? 'E0005' : 'E0004', undefined, undefined, known ? 405 : 404);
       } else if (Number.isInteger(status) && status >= 400 && status < 500) failure = new ApiError('E0005', undefined, undefined, status);
       else {

@@ -93,25 +93,104 @@ async function identity(db, key, req, required = false) {
   return { account: row, claims };
 }
 
-// lockedIdentity 在寫入交易中依帳號→session 鎖序重驗，讓停用、登出及內容寫入有確定先後。
-async function lockedIdentity(client, key, req) {
+// lockedIdentity 在交易中依帳號 ID→session 鎖序重驗，讓管理讀取、停用及內容寫入有確定先後。
+async function lockedIdentity(client, key, req, targetId, allAccounts = false) {
   const authorization = req.headers.authorization || '';
   const parts = authorization.split(' ');
   if (parts.length !== 2 || !/^Bearer$/i.test(parts[0]) || !parts[1]) throw new ApiError('E0002');
   const claims = verifyToken(key, parts[1]);
   // 等待帳號鎖後才讀 session 與資料庫時間，不能沿用交易前已通過的身分。
-  const found = await client.query('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1 FOR UPDATE', [claims.sub]);
+  let found;
+  if (allAccounts) found = await client.query('SELECT id,email,nickname,role,status,created_at FROM accounts ORDER BY id FOR UPDATE');
+  else if (targetId !== undefined) found = await client.query('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=ANY($1::bigint[]) ORDER BY id FOR UPDATE', [[claims.sub, targetId]]);
+  else found = await client.query('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1 FOR UPDATE', [claims.sub]);
   const session = await client.query('SELECT account_id,backend_id,issued_at,expires_at,revoked_at FROM login_sessions WHERE jti=$1 FOR UPDATE', [claims.jti]);
   const now = await client.query('SELECT floor(extract(epoch FROM clock_timestamp()))::bigint AS now');
-  if (!found.rows.length || !session.rows.length) throw new ApiError('E0002');
-  const account = found.rows[0];
+  // find callback 選擇已鎖住的目前身分，避免把目標會員誤當操作管理員。
+  const account = found.rows.find(row => String(row.id) === claims.sub);
+  if (!account || !session.rows.length) throw new ApiError('E0002');
   const row = session.rows[0];
   if (String(row.account_id) !== claims.sub || row.backend_id !== 'nestjs' ||
       row.issued_at.getTime() !== claims.iat * 1000 || row.expires_at.getTime() !== claims.exp * 1000 ||
       Number(now.rows[0].now) < claims.nbf || Number(now.rows[0].now) >= claims.exp) throw new ApiError('E0002');
   if (account.status === 'disabled') throw new ApiError('E0102');
   if (row.revoked_at) throw new ApiError('E0002');
-  return { account, claims };
+  return { account, claims, accounts: found.rows };
+}
+
+// adminRead 在同一交易持有帳號及 session 鎖，讓管理讀取的驗權與資料來自有效身分。
+async function adminRead(db, key, req, read) {
+  // 先裁決無效憑證與角色，再借交易連線；鎖定後仍須重新驗權。
+  const subject = await identity(db, key, req, true);
+  if (subject.account.role !== 'admin') throw new ApiError('E0003');
+  const client = await db.connect();
+  let committed = false;
+  try {
+    await client.query('BEGIN');
+    const viewer = (await lockedIdentity(client, key, req)).account;
+    if (viewer.role !== 'admin') throw new ApiError('E0003');
+    const result = await read(client, viewer);
+    await client.query('COMMIT'); committed = true;
+    return result;
+  } finally {
+    if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
+    client.release();
+  }
+}
+
+// memberStatus 依 ID 鎖管理員與目標，交易內重驗身分；停用才一併撤銷所有舊登入。
+async function memberStatus(db, key, req, id, status) {
+  const client = await db.connect();
+  let committed = false;
+  try {
+    await client.query('BEGIN');
+    const current = await lockedIdentity(client, key, req, id);
+    if (current.account.role !== 'admin') throw new ApiError('E0003');
+    // find callback 僅從同交易鎖住的帳號列取得目標。
+    const target = current.accounts.find(row => Number(row.id) === id);
+    if (!target || target.role !== 'member') throw new ApiError('E0004');
+    // 同值不重做副作用；恢復保留既有鎖定及被撤銷的登入。
+    if (target.status !== status) {
+      await client.query('UPDATE accounts SET status=$1 WHERE id=$2', [status, id]);
+      if (status === 'disabled') await client.query('UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE account_id=$1 AND revoked_at IS NULL', [id]);
+    }
+    await client.query('COMMIT'); committed = true;
+  } finally {
+    if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
+    client.release();
+  }
+}
+
+// lockoutValues 固定輸出四個公開欄位與 JSON 型態，不洩漏儲存細節。
+function lockoutValues(row) {
+  return { enabled: row.enabled, window_minutes: Number(row.window_minutes),
+    failure_threshold: Number(row.failure_threshold), lock_seconds: Number(row.lock_seconds) };
+}
+
+// lockoutSettings 完整覆寫設定；關閉時先依 ID 鎖帳號，再重驗 session 與原子清鎖。
+async function lockoutSettings(db, key, req, body) {
+  const client = await db.connect();
+  let committed = false;
+  try {
+    await client.query('BEGIN');
+    const found = await client.query('SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1 FOR UPDATE');
+    if (!found.rows.length) throw new ApiError('E0104');
+    const previous = lockoutValues(found.rows[0]);
+    const disabling = previous.enabled && !body.enabled;
+    const current = await lockedIdentity(client, key, req, undefined, disabling);
+    if (current.account.role !== 'admin') throw new ApiError('E0003');
+    // 數值修改不碰會員既有期限；只有 true→false 切換清除全會員計數世代。
+    // some callback 逐欄比較完整提交值，確保同值沒有寫入或清鎖副作用。
+    if (Object.keys(body).some(name => body[name] !== previous[name])) {
+      await client.query('UPDATE login_lockout_settings SET enabled=$1,window_minutes=$2,failure_threshold=$3,lock_seconds=$4 WHERE id=1',
+        [body.enabled, body.window_minutes, body.failure_threshold, body.lock_seconds]);
+      if (disabling) await client.query("UPDATE accounts SET failure_epoch=failure_epoch+1,locked_until=NULL WHERE role='member'");
+    }
+    await client.query('COMMIT'); committed = true;
+  } finally {
+    if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
+    client.release();
+  }
 }
 
 // lockRetry 在交易完成後沿用登入連線取資料庫時間，避免滿池時再借連線。
@@ -197,4 +276,4 @@ async function logout(db, subject) {
   }
 }
 
-module.exports = { businessTime, accountData, hashPassword, verifyPassword, issueToken, verifyToken, identity, lockedIdentity, login, logout };
+module.exports = { businessTime, accountData, hashPassword, verifyPassword, issueToken, verifyToken, identity, lockedIdentity, adminRead, memberStatus, lockoutValues, lockoutSettings, login, logout };
