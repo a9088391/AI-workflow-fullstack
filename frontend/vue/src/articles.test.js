@@ -241,6 +241,45 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
+// 作者頁與安全的登入返回目標應逐頁切到 Nuxt，沿用同一後端、JWT 與到期時間。
+test('frontend switch reaches Nuxt author pages with exact IDs and safe login return', (t) => {
+  const paths = [
+    ['/vue/articles/new', '/nuxt/articles/new'],
+    ['/vue/articles/001/edit', '/nuxt/articles/001/edit'],
+    ['/vue/me/articles', '/nuxt/me/articles'],
+    ['/vue/me/comments', '/nuxt/me/comments'],
+    ['/vue/comments/009', '/nuxt/comments/009'],
+    ['/vue/comments/009/edit', '/nuxt/comments/009/edit'],
+  ]
+  for (const [source, destination] of paths) {
+    const app = articleApp(source, 'same-token', '', false, auth.BACKENDS.symfony)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchNuxt.value, true, source)
+    app.page.chooseFrontend({ target: { value: 'nuxt' } })
+    assert.deepEqual(app.redirects, [destination])
+    assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  }
+  const login = articleApp('/vue/login', null, '?return_to=%2Fvue%2Fcomments%2F009%2Fedit')
+  t.after(login.close)
+  assert.equal(login.page.canSwitchNuxt.value, true)
+  login.page.chooseFrontend({ target: { value: 'nuxt' } })
+  assert.deepEqual(login.redirects, ['/nuxt/login?return_to=%2Fnuxt%2Fcomments%2F009%2Fedit'])
+})
+
+// 管理頁與管理返回目標仍不可切換，避免導入 Nuxt 尚未實作的權限畫面。
+test('frontend switch rejects Nuxt management routes and login return targets', (t) => {
+  for (const [path, search] of [['/vue/admin/articles', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Farticles']]) {
+    const app = articleApp(path, 'same-token', search)
+    t.after(app.close)
+    const choice = { target: { value: 'nuxt' } }
+    assert.equal(app.page.canSwitchNuxt.value, false)
+    app.page.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'vue')
+    assert.deepEqual(app.redirects, [])
+    assert.equal(auth.readSession(app.sessionStorage).accessToken, 'same-token')
+  }
+})
+
 // 取消保留文字與憑證；確認後清除憑證並帶合法頁面返回登入，不重送草稿。
 test('backend switch cancels or discards draft without retrying and isolates old responses', async (t) => {
   const cancelled = articleApp('/vue/articles/new')

@@ -18,8 +18,8 @@ export function positiveUrlInteger(value) {
 
 // 只允許本票可呈現的頁面與安全正整數 ID，避免登入後導向外站或未實作頁。
 export function validReturn(path) {
-  if (path === '/nuxt/') return true
-  const match = typeof path === 'string' && path.match(/^\/nuxt\/articles\/([0-9]+)$/)
+  if (['/nuxt/', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments'].includes(path)) return true
+  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
   return Boolean(match && positiveUrlInteger(match[1]) !== null)
 }
 
@@ -37,6 +37,15 @@ export function loginHref(routePath) {
 export function vueFrontendTarget(path) {
   if (path === '/nuxt/' || path === '/nuxt/login' || path === '/nuxt/register' || validReturn(path)) return path.replace(/^\/nuxt/, '/vue')
   return null
+}
+
+// 內容欄位依共同 Unicode 碼點與固定空白集合驗證，不改寫作者輸入。
+export function validateContent(input, kind = 'article') {
+  const errors = {}
+  if (kind === 'article' && (typeof input.title !== 'string' || [...input.title].length < 1 || [...input.title].length > 200 || blank.test(input.title) || input.title.includes('\0'))) errors.title = ['欄位格式或範圍不正確']
+  const maximum = kind === 'article' ? 20000 : 2000
+  if (typeof input.body !== 'string' || [...input.body].length < 1 || [...input.body].length > maximum || blank.test(input.body) || input.body.includes('\0')) errors.body = ['欄位格式或範圍不正確']
+  return errors
 }
 
 // 同源分頁在沒有 JWT 時仍須記得目前後端；壞資料只回首次預設。
@@ -164,7 +173,7 @@ export function emptySuccess(status, body, expectedStatus) {
 // 解析固定錯誤碼與可顯示明細，保留 log_id 供使用者追查。
 export function apiFailure(status, body, fields = []) {
   const code = body?.success === false && typeof body.error_code === 'string' ? body.error_code : ''
-  const known = { E0001: '欄位資料不正確，請確認後再送出', E0002: '登入已逾期，請重新登入', E0003: '沒有權限使用此功能', E0004: '找不到指定資料或 API', E0101: '帳號或密碼錯誤', E0102: '此帳號已停用，請聯絡系統管理員', E0104: '後台認證設定異常，請聯絡系統管理員', E0105: '登入失敗次數過多，請稍後再試', E9999: '系統暫時無法處理，請稍後再試' }
+  const known = { E0001: '欄位資料不正確，請確認後再送出', E0002: '登入已逾期，請重新登入', E0003: '沒有權限使用此功能', E0004: '找不到指定資料或 API', E0101: '帳號或密碼錯誤', E0102: '此帳號已停用，請聯絡系統管理員', E0104: '後台認證設定異常，請聯絡系統管理員', E0105: '登入失敗次數過多，請稍後再試', E0201: '內容已更新，請確認最新內容後再送出', E9999: '系統暫時無法處理，請稍後再試' }
   const errors = {}
   const extra = []
   if (code === 'E0001' && body.errors && typeof body.errors === 'object' && !Array.isArray(body.errors)) {
@@ -222,6 +231,9 @@ export function readList(status, body, page, kind = 'article', articleId = null)
 
 // 單篇文章必須和網址 ID 相符，避免快取或錯誤回應顯示其他資源。
 export function readArticle(status, body, id) { return status === 200 && body?.success === true && body.message === 'OK' && isArticle(body.data) && body.data.id === id ? body.data : null }
+
+// 單則留言必須對上網址 ID；父文章可讀性另外驗證，不能從留言推斷。
+export function readComment(status, body, id) { return status === 200 && body?.success === true && body.message === 'OK' && isComment(body.data) && body.data.id === id ? body.data : null }
 
 // 業務 API 直接呼叫同分頁目前後端，Nuxt 伺服器僅提供頁面外殼。
 export async function apiRequest(path, { method = 'GET', body, token, signal } = {}) {

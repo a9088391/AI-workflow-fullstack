@@ -100,6 +100,9 @@ async function submitLogout() {
         <a href="/nuxt/">所有文章</a>
         <span class="nav-spacer" />
         <template v-if="site.account.value">
+          <a href="/nuxt/articles/new">發文</a>
+          <a href="/nuxt/me/articles">我的文章</a>
+          <a href="/nuxt/me/comments">我的留言</a>
           <span class="reader-name">{{ site.account.value.nickname }}</span>
           <button type="button" class="text-button" :disabled="logoutPending" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
         </template>
@@ -121,6 +124,9 @@ async function submitLogout() {
         <nav aria-label="手機導覽">
           <a href="/nuxt/">所有文章</a>
           <template v-if="site.account.value">
+            <a href="/nuxt/articles/new">發文</a>
+            <a href="/nuxt/me/articles">我的文章</a>
+            <a href="/nuxt/me/comments">我的留言</a>
             <span class="reader-name">{{ site.account.value.nickname }}</span>
             <button type="button" class="text-button" :disabled="logoutPending" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
           </template>

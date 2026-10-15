@@ -11,7 +11,7 @@ import * as contracts from '../utils/contracts.js'
 function guestPage(file, selectedBackend = contracts.API_BASE) {
   const requests = []
   const lifecycle = {}
-  const site = { ready: vue.ref(true), token: vue.ref(null), backend: vue.ref(selectedBackend), leaving: vue.ref(false) }
+  const site = { ready: vue.ref(true), token: vue.ref(null), account: vue.ref(null), dirty: vue.ref(false), backend: vue.ref(selectedBackend), leaving: vue.ref(false) }
   const route = { query: {}, params: { id: '001' } }
   const context = {
     ...vue, ...contracts, AbortController,
@@ -51,7 +51,7 @@ test('Django guest pages read articles and comments through the common routes', 
   await setImmediate()
   assert.equal(list.page.visible.value?.list[0].created_backend, 'django')
 
-  const detail = guestPage('./articles/[id].vue', contracts.BACKENDS.django)
+  const detail = guestPage('./articles/[id]/index.vue', contracts.BACKENDS.django)
   t.after(detail.close)
   assert.equal(detail.requests[0].path, '/api/articles/1')
   detail.requests[0].resolve({ status: 200, body: { success: true, message: 'OK', data: sample } })
@@ -63,7 +63,7 @@ test('Django guest pages read articles and comments through the common routes', 
 })
 
 // 訪客 JWT 一直是 null；改後端仍須取消舊 GET，晚到的舊內容不可顯示。
-for (const file of ['./index.vue', './articles/[id].vue']) {
+for (const file of ['./index.vue', './articles/[id]/index.vue']) {
   test(`guest ${file} ignores old backend response`, async (t) => {
     const app = guestPage(file)
     t.after(app.close)
@@ -81,7 +81,7 @@ for (const file of ['./index.vue', './articles/[id].vue']) {
 }
 
 // guest token 始終為 null；切前端仍需同步撤銷來源列表與詳情 GET。
-for (const file of ['./index.vue', './articles/[id].vue']) {
+for (const file of ['./index.vue', './articles/[id]/index.vue']) {
   test(`guest ${file} aborts read on frontend leave`, async (t) => {
     const app = guestPage(file)
     t.after(app.close)

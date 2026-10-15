@@ -12,7 +12,7 @@ import { useSite } from './composables/useSite.js'
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 
 // 執行真實 Nuxt app 與表單 script；只替換瀏覽器、Nuxt 注入及延遲 HTTP 邊界。
-function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony) {
+function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony, confirmResult = true) {
   const original = { useState: globalThis.useState, computed: globalThis.computed, fetch: globalThis.fetch, storage: Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage') }
   const states = new Map()
   const values = new Map()
@@ -45,8 +45,9 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
     requests.push({ url, options, ...response })
     return response.promise
   }
-  const route = { query: page === 'login' ? { return_to: '/nuxt/articles/001' } : {}, path: page === 'login' ? '/login' : page === 'register' ? '/register' : '/' }
+  const route = { query: page === 'login' ? { return_to: '/nuxt/articles/001' } : {}, path: page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'articles/new' ? '/nuxt/articles/new' : '/' }
   const pathname = page === 'index' ? '/nuxt/' : `/nuxt/${page}`
+  const confirmations = []
   const window = {
     location: { pathname,
       // 留在 VM 時仍記錄會發生的同分頁導向，不讓測試進入網路。
@@ -56,8 +57,8 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
       // 記錄 BFCache 回來後是否真的要求重建 Nuxt 文件。
       reload() { reloads.push(pathname) },
     },
-    // 草稿情境確認捨棄；登入請求可能已送出但不得回寫。
-    confirm() { return true },
+    // 可控制草稿捨棄決定，確認取消時不應開始導覽或清除來源文字。
+    confirm(message) { confirmations.push(message); return confirmResult },
     // 保留 pageshow 監聽，才能模擬同一份文件從 BFCache 回來。
     addEventListener(name, callback) { listeners.set(name, callback) },
     // 卸載後不應再收到舊文件事件。
@@ -82,10 +83,10 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
   const app = scope.run(() => run('./app.vue', '({ site, chooseFrontend, chooseBackend, submitLogout })'))
-  // 表單直接執行真正的 submit，保留 AbortController 與 watcher 時序。
-  const form = page === 'index' ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : '({ email, password, nickname, created, pending, submit })'))
+  // 表單直接執行真正的 submit，作者草稿也與 app 共用同一個 dirty 狀態。
+  const form = page === 'index' ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
-  return { app, form, storage, requests, redirects, reloads,
+  return { app, form, storage, storedValues: values, requests, redirects, reloads, confirmations,
     // 分別觸發一般顯示及 BFCache 恢復，檢查只對後者重新載入。
     pageShow(persisted) { listeners.get('pageshow')?.({ persisted }) },
     // 還原全域注入及 watchers，避免其他測試看到本案例的 JWT。
@@ -155,6 +156,47 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.equal(app.app.site.account.value, null)
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.deepEqual(app.redirects, ['/vue/'])
+})
+
+// 作者表單有草稿時，拒絕捨棄必須保留原文字、選單與共用登入狀態。
+test('cancelled frontend switch keeps new article draft on Nuxt', async (t) => {
+  const app = switchingPage('articles/new', true, BACKENDS.symfony, false)
+  t.after(app.close)
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+  await setImmediate()
+  app.form.title.value = '未儲存標題'
+  app.form.body.value = '未儲存內文'
+  await vue.nextTick()
+  assert.equal(app.app.site.dirty.value, true)
+  const choice = { target: { value: 'vue' } }
+  app.app.chooseFrontend(choice)
+  assert.equal(app.confirmations.length, 1)
+  assert.equal(choice.target.value, 'nuxt')
+  assert.equal(app.form.body.value, '未儲存內文')
+  assert.equal(app.app.site.dirty.value, true)
+  assert.equal(app.app.site.leaving.value, false)
+  assert.deepEqual(app.redirects, [])
+  assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+})
+
+// 明確捨棄後僅導向同類 Vue 頁，草稿不進 URL 或共用登入儲存。
+test('confirmed frontend switch leaves new article without copying its draft', async (t) => {
+  const app = switchingPage('articles/new', true)
+  t.after(app.close)
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+  await setImmediate()
+  app.form.title.value = '私有標題'
+  app.form.body.value = '私有內文'
+  await vue.nextTick()
+  assert.equal(app.app.site.dirty.value, true)
+  app.app.chooseFrontend({ target: { value: 'vue' } })
+  assert.equal(app.confirmations.length, 1)
+  assert.equal(app.app.site.leaving.value, true)
+  assert.equal(app.app.site.dirty.value, false)
+  assert.deepEqual(app.redirects, ['/vue/articles/new'])
+  assert.deepEqual([...app.storedValues.keys()].sort(), [BACKEND_KEY, SESSION_KEY].sort())
+  assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(app.requests.length, 1)
 })
 
 // Vue 選用 ASP.NET Core 後切到 Nuxt 必須沿用原 JWT，切回 Vue 也不能延長到期時間。

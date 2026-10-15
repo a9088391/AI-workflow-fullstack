@@ -1,0 +1,102 @@
+<script setup>
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { apiFailure, apiRequest, formatCountdown, loginData, remainingSeconds, retryAfterSeconds, validateCredentials } from '../utils/contracts.js'
+
+const props = defineProps({ ownerId: { type: Number, default: null } })
+const emit = defineEmits(['restored', 'different'])
+const site = useSite()
+const email = ref('')
+const password = ref('')
+const error = ref('')
+const errors = ref({})
+const summaryElement = ref(null)
+const emailElement = ref(null)
+const passwordElement = ref(null)
+const logId = ref('')
+const pending = ref(false)
+const secondsLeft = ref(0)
+let controller = null
+let timer = null
+let deadline = 0
+
+// 倒數依實際時鐘計算，背景分頁節流不延長登入鎖定提示。
+function tick() {
+  secondsLeft.value = remainingSeconds(deadline)
+  if (secondsLeft.value === 0) { clearInterval(timer); timer = null; if (error.value === '登入暫時鎖定') error.value = '' }
+}
+
+// 只接受伺服器有效 Retry-After，不自造鎖定期限。
+function startCountdown(value) {
+  const seconds = retryAfterSeconds(value)
+  if (seconds === null) return false
+  clearInterval(timer)
+  deadline = Date.now() + seconds * 1000
+  tick()
+  if (secondsLeft.value > 0) timer = setInterval(tick, 250)
+  return true
+}
+
+// 欄位錯誤從摘要導向 Email 或密碼，鍵盤操作不需自行找欄位。
+function focusFirstError() { if (errors.value.email?.length) emailElement.value?.focus(); else if (errors.value.password?.length) passwordElement.value?.focus() }
+
+// 原頁重新登入只恢復同帳號操作；不同帳號交由父表單丟棄舊文字。
+async function submit() {
+  if (pending.value || secondsLeft.value > 0 || site.leaving.value) return
+  const checked = validateCredentials({ email: email.value, password: password.value })
+  if (Object.keys(checked.errors).length) { errors.value = checked.errors; error.value = '請確認 Email 與密碼格式。'; await nextTick(); summaryElement.value?.focus(); return }
+  const request = new AbortController()
+  controller = request
+  const backend = site.backend.value
+  pending.value = true
+  error.value = ''
+  errors.value = {}
+  logId.value = ''
+  try {
+    const response = await apiRequest('/api/auth/login', { method: 'POST', body: { email: checked.email, password: password.value }, signal: request.signal })
+    if (request.signal.aborted || backend !== site.backend.value || site.leaving.value) return
+    const data = loginData(response.status, response.body)
+    if (data) {
+      if (!site.acceptLogin(data)) return
+      password.value = ''
+      email.value = ''
+      if (props.ownerId !== null && data.user.id !== props.ownerId) emit('different')
+      else emit('restored')
+      return
+    }
+    const failure = apiFailure(response.status, response.body, ['email', 'password'])
+    errors.value = failure.errors
+    if (response.status === 429 && failure.code === 'E0105') {
+      if (!startCountdown(response.retryAfter)) error.value = `${failure.message}。無法取得有效倒數秒數，請稍後再試。`
+      else error.value = '登入暫時鎖定'
+    } else {
+      if (response.status === 403 && failure.code === 'E0102') site.forget(failure.message)
+      error.value = failure.message
+    }
+    logId.value = failure.logId
+    if (response.status === 422) { await nextTick(); summaryElement.value?.focus() }
+  } catch {
+    if (!request.signal.aborted) error.value = '無法確認登入結果；請手動重新驗證後再試。'
+  } finally { if (controller === request) { controller = null; pending.value = false } }
+}
+
+watch([site.backend, site.leaving],
+  // 切換後端或前端時立刻取消原登入請求與倒數。
+  () => { controller?.abort(); clearInterval(timer); timer = null; secondsLeft.value = 0 },
+  { flush: 'sync' },
+)
+onBeforeUnmount(
+  // 離開恢復表單時清除計時器與在途請求。
+  () => { controller?.abort(); clearInterval(timer) },
+)
+</script>
+
+<template>
+  <form class="reauth-form" novalidate @submit.prevent="submit">
+    <h2>在原頁重新登入</h2><p>同一帳號登入後，請自行檢查並手動送出。切換帳號會丟棄舊文字。</p>
+    <p v-if="error" ref="summaryElement" class="form-error" tabindex="-1" role="alert">{{ error }}<small v-if="logId">log_id：{{ logId }}</small><button v-if="errors.email?.length || errors.password?.length" type="button" class="inline-button" @click="focusFirstError">前往第一個錯誤欄位</button></p>
+    <p v-if="secondsLeft > 0" class="lock-message">登入暫時鎖定，約剩 {{ formatCountdown(secondsLeft) }}</p>
+    <label for="reauth-email">Email</label><input id="reauth-email" ref="emailElement" v-model="email" type="email" autocomplete="email" :aria-invalid="Boolean(errors.email)" :aria-describedby="errors.email ? 'reauth-email-error' : undefined" :disabled="pending || secondsLeft > 0"><small v-if="errors.email" id="reauth-email-error" class="field-error">{{ errors.email.join('；') }}</small>
+    <label for="reauth-password">密碼</label><input id="reauth-password" ref="passwordElement" v-model="password" type="password" autocomplete="current-password" :aria-invalid="Boolean(errors.password)" :aria-describedby="errors.password ? 'reauth-password-error' : undefined" :disabled="pending || secondsLeft > 0"><small v-if="errors.password" id="reauth-password-error" class="field-error">{{ errors.password.join('；') }}</small>
+    <button class="primary-button" type="submit" :disabled="pending || secondsLeft > 0">{{ pending ? '登入中…' : '重新登入' }}</button>
+  </form>
+</template>

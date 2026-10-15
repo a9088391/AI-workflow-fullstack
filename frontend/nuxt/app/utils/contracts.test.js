@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, apiFailure, apiRequest, backendName, emptySuccess, formatCountdown, isAccount, loginData, loginHref, normalizeEmail, positiveUrlInteger, readArticle, readBackend, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateCredentials, vueFrontendTarget } from './contracts.js'
+import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, apiFailure, apiRequest, backendName, emptySuccess, formatCountdown, isAccount, loginData, loginHref, normalizeEmail, positiveUrlInteger, readArticle, readBackend, readComment, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateContent, validateCredentials, vueFrontendTarget } from './contracts.js'
 import * as vueAuth from '../../../vue/src/auth.js'
 
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
@@ -113,9 +113,23 @@ test('route and credential boundaries', () => {
   assert.equal(new URL(loginHref('/unknown'), 'http://localhost:8080').searchParams.get('return_to'), '/nuxt/')
   assert.equal(vueFrontendTarget('/nuxt/articles/001'), '/vue/articles/001')
   assert.equal(vueFrontendTarget('/nuxt/register'), '/vue/register')
-  for (const path of ['/nuxt/articles/new', '/nuxt/admin/members', '/nuxt/articles/0', '//evil.test']) assert.equal(vueFrontendTarget(path), null)
+  for (const path of ['/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments', '/nuxt/articles/12/edit', '/nuxt/comments/34', '/nuxt/comments/34/edit']) assert.equal(vueFrontendTarget(path), path.replace('/nuxt/', '/vue/'))
+  for (const path of ['/nuxt/admin/members', '/nuxt/articles/0', '//evil.test']) assert.equal(vueFrontendTarget(path), null)
   assert.deepEqual(validateCredentials({ email: ' Reader@Example.Test ', password: 'abcd' }), { email: 'reader@example.test', errors: {} })
   assert.ok(validateCredentials({ email: 'bad', password: 'a', nickname: '　' }, true).errors.nickname)
+})
+
+// 作者頁只接受已知路由與 ID，文字維持原樣並拒絕共同空白及 NUL 邊界。
+test('author route and content boundaries', () => {
+  for (const path of ['/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments', '/nuxt/articles/9/edit', '/nuxt/comments/7', '/nuxt/comments/7/edit']) assert.equal(validReturn(path), true)
+  for (const path of ['/nuxt/comments/0', '/nuxt/articles/1/edit/extra', '/nuxt/me/other', '/nuxt/comments/1?x=1']) assert.equal(validReturn(path), false)
+  assert.equal(new URL(loginHref('/comments/7/edit'), 'http://localhost').searchParams.get('return_to'), '/nuxt/comments/7/edit')
+  assert.deepEqual(validateContent({ title: '第\n一篇', body: '原文\r\n保留' }), {})
+  assert.deepEqual(validateContent({ title: '　', body: '\u0000' }), { title: ['欄位格式或範圍不正確'], body: ['欄位格式或範圍不正確'] })
+  assert.deepEqual(validateContent({ body: '😀'.repeat(2001) }, 'comment'), { body: ['欄位格式或範圍不正確'] })
+  assert.equal(readComment(200, { success: true, message: 'OK', data: { ...article, article_id: 9 } }, 101)?.article_id, 9)
+  assert.equal(readComment(200, { success: true, message: 'OK', data: { ...article, article_id: 9 } }, 102), null)
+  assert.equal(apiFailure(409, { success: false, error_code: 'E0201' }).message, '內容已更新，請確認最新內容後再送出')
 })
 
 // SEC01 只折 ASCII 大寫；K 不得在驗證前變成 k 而登入或註冊另一個帳號。
