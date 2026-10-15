@@ -171,6 +171,7 @@ onBeforeUnmount(
 <template>
   <main class="reading-page author-page">
     <a class="back-link" href="/nuxt/me/comments">← 我的留言</a><div class="author-heading"><div><p class="section-label">會員留言</p><h1>留言詳情</h1></div></div>
+    <a v-if="site.account.value?.role === 'admin'" class="back-link admin-return" href="/nuxt/admin/comments">返回留言管理</a>
     <p v-if="!site.ready.value || loading" class="state-block" role="status">正在讀取留言…</p>
     <div v-else-if="!site.account.value" class="state-block"><p>請先登入，查看可讀的留言。</p><a :href="loginHref(route.path)">前往登入</a></div>
     <div v-else-if="error" class="state-block" role="alert"><p>{{ error }}</p><small v-if="logId">log_id：{{ logId }}</small><button type="button" class="inline-button" @click="load">重新讀取</button></div>

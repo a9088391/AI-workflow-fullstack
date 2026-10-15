@@ -1,6 +1,6 @@
 # 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin／Echo／Fiber／Express
 
-目前 Vue 提供註冊、登入、文章／留言閱讀與會員及管理頁；Nuxt 提供註冊、登入、公開文章列表與詳情，以及作者發文、我的文章／留言、編修與下架／恢復。共同頁面可在同一分頁切換 Vue／Nuxt；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 與 Nuxt 的作者操作在送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
+目前 Vue 與 Nuxt 均提供註冊、登入、公開文章、作者文章／留言，以及會員、文章、留言與登入鎖定設定管理頁。共同頁面可在同一分頁切換 Vue／Nuxt；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 與 Nuxt 的作者操作在送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
@@ -27,7 +27,7 @@ Django API 固定於 `http://localhost:8084`，提供全部 22 項共用操作�
 
 主 Compose 的 Django profile 讓舊票隔離 fixture 預設不啟動 Django，維持原本專用金鑰與埠；`ops/start.sh` 在一般展示與 Ticket 16 專用 fixture 明確啟動它，`ops/stop.sh` 則一併停止。
 
-Flask API 固定於 `http://localhost:8085`，提供全部 22 項共用操作，包括註冊、登入／登出、文章／留言及會員管理與登入鎖定設定。Vue 可選用 Flask 完成作者與管理流程；Nuxt 尚無管理頁。它使用獨立的 `.local/keys/flask.key`，並讀寫同一 PostgreSQL 資料。一般 `ops/start.sh` 會啟動 Flask；舊票隔離 fixture 預設不啟動。容器內可用 `python -m unittest discover -s site_api -t . -p 'test_*.py'` 執行 Flask 專屬單元測試。Ticket 20 與 Ticket 21 的真實 HTTP／SQL 驗證僅可在 `ticket20_test` 隔離 Compose 專案執行，使用 `ops/tests/ticket20_compose.yaml` 與各自的 `ops/tests/ticket20_http.py`、`ops/tests/ticket21_http.py`；腳本會先核對專案、資料庫與後端身分，再建立唯一合成測資。
+Flask API 固定於 `http://localhost:8085`，提供全部 22 項共用操作，包括註冊、登入／登出、文章／留言及會員管理與登入鎖定設定。Vue 可選用 Flask 完成作者與管理流程；Nuxt 尚未支援切換至 Flask。它使用獨立的 `.local/keys/flask.key`，並讀寫同一 PostgreSQL 資料。一般 `ops/start.sh` 會啟動 Flask；舊票隔離 fixture 預設不啟動。容器內可用 `python -m unittest discover -s site_api -t . -p 'test_*.py'` 執行 Flask 專屬單元測試。Ticket 20 與 Ticket 21 的真實 HTTP／SQL 驗證僅可在 `ticket20_test` 隔離 Compose 專案執行，使用 `ops/tests/ticket20_compose.yaml` 與各自的 `ops/tests/ticket20_http.py`、`ops/tests/ticket21_http.py`；腳本會先核對專案、資料庫與後端身分，再建立唯一合成測資。
 
 ```sh
 COMPOSE_PROJECT_NAME=ticket16_test COMPOSE_FILE=compose.yaml:ops/tests/ticket16_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
@@ -130,9 +130,9 @@ Ticket 30 的管理驗證使用獨立 `ticket30_test` 資料卷、`ops/tests/tic
 
 Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
 
-登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Nuxt 尚無管理頁，管理頁不能切到 Nuxt；其他四版前端尚未提供。
+登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Vue 與 Nuxt 的管理頁可在同一分頁對應切換；其他四版前端尚未提供。
 
-管理員可在 `/vue/admin/settings/login-lockout` 讀取與儲存會員登入錯誤鎖定設定；對應端點為 `GET/PUT /api/settings/login-lockout`。設定包含啟用狀態、錯誤次數上限（1–100）、計算視窗（1–60 分鐘）及鎖定時間（1–86400 秒）；儲存時四欄須一起送出。停用鎖定會立即解除既有會員鎖定，但不影響停用帳號的狀態。集中 SQL `0008_login_lockout_settings.sql` 提供設定更新權限，既有資料庫會在下次 `ops/start.sh` 時依前述備份與版本流程套用。寫入結果不明時，頁面保留輸入並提示管理員手動重讀確認，不會自動重送。
+管理員可在 `/vue/admin/settings/login-lockout` 或 `/nuxt/admin/settings/login-lockout` 讀取與儲存會員登入錯誤鎖定設定；對應端點為 `GET/PUT /api/settings/login-lockout`。設定包含啟用狀態、錯誤次數上限（1–100）、計算視窗（1–60 分鐘）及鎖定時間（1–86400 秒）；儲存時四欄須一起送出。停用鎖定會立即解除既有會員鎖定，但不影響停用帳號的狀態。集中 SQL `0008_login_lockout_settings.sql` 提供設定更新權限，既有資料庫會在下次 `ops/start.sh` 時依前述備份與版本流程套用。寫入結果不明時，頁面保留輸入並提示管理員手動重讀確認，不會自動重送。
 
 文章頁路徑為 `/vue/`、`/vue/articles/{article_id}`、`/vue/articles/new`、`/vue/articles/{article_id}/edit`、`/vue/me/articles`。發文遇登入失效時，文字只保留在原頁記憶體；同帳號重登後可手動送出，換帳號則清除原草稿。重新整理或關頁不保留草稿；寫入結果不明時須先到我的文章查證，不自動重送。
 

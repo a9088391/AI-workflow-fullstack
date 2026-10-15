@@ -16,11 +16,11 @@ export function positiveUrlInteger(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : null
 }
 
-// 只允許本票可呈現的頁面與安全正整數 ID，避免登入後導向外站或未實作頁。
+// 只允許已實作的語意頁與安全正整數 ID，避免登入後導向外站或未實作頁。
 export function validReturn(path) {
-  if (['/nuxt/', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments'].includes(path)) return true
-  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
-  return Boolean(match && positiveUrlInteger(match[1]) !== null)
+  if (['/nuxt/', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments', '/nuxt/admin/members', '/nuxt/admin/articles', '/nuxt/admin/comments', '/nuxt/admin/settings/login-lockout'].includes(path)) return true
+  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles\/([0-9]+)(?:\/edit)?|comments\/([0-9]+)(?:\/edit)?|admin\/members\/([0-9]+))$/)
+  return Boolean(match && positiveUrlInteger(match[1] || match[2] || match[3]) !== null)
 }
 
 // Vue Router 的 route.path 不含 /nuxt 基底，產生登入網址前須補回並驗證目標。
@@ -33,7 +33,7 @@ export function loginHref(routePath) {
   return `/nuxt/login?return_to=${encodeURIComponent(target)}`
 }
 
-// 只把兩版都已完成的頁面映成同一語意路徑，保留網址中的原始文章 ID。
+// 只把兩版都已完成的頁面映成同一語意路徑，保留網址中的原始資源 ID。
 export function vueFrontendTarget(path) {
   if (path === '/nuxt/' || path === '/nuxt/login' || path === '/nuxt/register' || validReturn(path)) return path.replace(/^\/nuxt/, '/vue')
   return null

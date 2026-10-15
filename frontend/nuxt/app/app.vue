@@ -46,7 +46,9 @@ function chooseFrontend(event) {
   if (event.target.value === 'nuxt') return
   if (!frontendTarget.value) { event.target.value = 'nuxt'; return }
   if (logoutPending.value) { event.target.value = 'nuxt'; notice.value = '登出處理中，請等待結果後再切換。'; return }
-  if (site.dirty.value && !window.confirm('尚有未儲存文字，確定捨棄並切換前端嗎？')) { event.target.value = 'nuxt'; return }
+  // 已送出的管理寫入可能仍在伺服器完成，確認後只撤銷本頁請求與畫面狀態。
+  const warning = site.adminPending.value ? '管理操作已送出，伺服器仍可能完成；確定捨棄目前畫面並切換前端嗎？' : '尚有未儲存內容或未確認的操作，確定捨棄並切換前端嗎？'
+  if ((site.adminPending.value || site.dirty.value) && !window.confirm(warning)) { event.target.value = 'nuxt'; return }
   // 文件真正離開前同步作廢來源認證與表單／內容請求，舊回應不得再導回 Nuxt。
   site.leaveFrontend()
   const returnTarget = window.location.pathname === '/nuxt/login' && validReturn(route.query.return_to) ? vueFrontendTarget(route.query.return_to) : null
@@ -54,11 +56,13 @@ function chooseFrontend(event) {
   window.location.assign(`${frontendTarget.value}${query}`)
 }
 
-// 後端切換先確認草稿，再清除憑證並回到登入；返回目標只允許已實作的本機頁。
+// 後端切換先確認草稿或在途管理寫入，再清除憑證並回到登入。
 function chooseBackend(event) {
   const next = event.target.value
   if (next === site.backend.value) return
-  if (site.dirty.value && !window.confirm('尚有未儲存文字，確定捨棄並切換後端嗎？')) { event.target.value = site.backend.value; return }
+  // 瀏覽器撤銷請求不保證伺服器撤銷已送出的 PUT，使用者需先確認這層不確定性。
+  const warning = site.adminPending.value ? '管理操作已送出，伺服器仍可能完成；確定捨棄目前畫面並切換後端嗎？' : '尚有未儲存內容或未確認的操作，確定捨棄並切換後端嗎？'
+  if ((site.adminPending.value || site.dirty.value) && !window.confirm(warning)) { event.target.value = site.backend.value; return }
   if (!site.switchBackend(next)) {
     event.target.value = site.backend.value
     notice.value = '無法保存後端選擇；目前仍使用原後端。'
@@ -72,7 +76,8 @@ function chooseBackend(event) {
 
 // 共用登出控制等候後端撤銷結果，失敗可重試且不誤報完成。
 async function submitLogout() {
-  if (logoutPending.value) return
+  if (logoutPending.value || site.adminPending.value) return
+  if (site.dirty.value && !window.confirm('尚有未儲存內容或未確認的操作，確定捨棄並登出嗎？')) return
   logoutPending.value = true
   notice.value = ''
   noticeLogId.value = ''
@@ -103,8 +108,14 @@ async function submitLogout() {
           <a href="/nuxt/articles/new">發文</a>
           <a href="/nuxt/me/articles">我的文章</a>
           <a href="/nuxt/me/comments">我的留言</a>
+          <template v-if="site.account.value.role === 'admin'">
+            <a href="/nuxt/admin/members">會員管理</a>
+            <a href="/nuxt/admin/articles">文章管理</a>
+            <a href="/nuxt/admin/comments">留言管理</a>
+            <a href="/nuxt/admin/settings/login-lockout">鎖定設定</a>
+          </template>
           <span class="reader-name">{{ site.account.value.nickname }}</span>
-          <button type="button" class="text-button" :disabled="logoutPending" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
+          <button type="button" class="text-button" :disabled="logoutPending || site.adminPending.value" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
         </template>
         <template v-else>
           <a href="/nuxt/login">登入</a>
@@ -127,8 +138,14 @@ async function submitLogout() {
             <a href="/nuxt/articles/new">發文</a>
             <a href="/nuxt/me/articles">我的文章</a>
             <a href="/nuxt/me/comments">我的留言</a>
+            <template v-if="site.account.value.role === 'admin'">
+              <a href="/nuxt/admin/members">會員管理</a>
+              <a href="/nuxt/admin/articles">文章管理</a>
+              <a href="/nuxt/admin/comments">留言管理</a>
+              <a href="/nuxt/admin/settings/login-lockout">鎖定設定</a>
+            </template>
             <span class="reader-name">{{ site.account.value.nickname }}</span>
-            <button type="button" class="text-button" :disabled="logoutPending" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
+            <button type="button" class="text-button" :disabled="logoutPending || site.adminPending.value" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
           </template>
           <template v-else>
             <a href="/nuxt/login">登入</a>
@@ -144,7 +161,10 @@ async function submitLogout() {
       <a v-else :href="loginHref(route.path)">前往登入</a>
     </div>
     <div v-if="notice" class="site-status" role="status">{{ notice }} <small v-if="noticeLogId">log_id：{{ noticeLogId }}</small></div>
-    <NuxtPage />
+    <div :class="{ 'admin-layout': route.path.startsWith('/admin') && site.account.value?.role === 'admin' }">
+      <aside v-if="route.path.startsWith('/admin') && site.account.value?.role === 'admin'" class="admin-sidebar" aria-label="管理後台"><h2>管理後台</h2><nav aria-label="管理導覽"><a href="/nuxt/admin/members" :aria-current="route.path.startsWith('/admin/members') ? 'page' : undefined">會員管理</a><a href="/nuxt/admin/articles" :aria-current="route.path === '/admin/articles' ? 'page' : undefined">文章管理</a><a href="/nuxt/admin/comments" :aria-current="route.path === '/admin/comments' ? 'page' : undefined">留言管理</a><a href="/nuxt/admin/settings/login-lockout" :aria-current="route.path === '/admin/settings/login-lockout' ? 'page' : undefined">系統設定</a></nav></aside>
+      <NuxtPage />
+    </div>
     <footer class="footer"><span>文章集 / Nuxt</span><span>留下文字，也留下時間。</span></footer>
   </div>
 </template>

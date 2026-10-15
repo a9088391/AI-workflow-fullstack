@@ -6,10 +6,13 @@ import { runInNewContext } from 'node:vm'
 import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as contracts from './utils/contracts.js'
+import * as admin from './utils/admin.js'
 import { BACKEND_KEY, BACKENDS, SESSION_KEY, readSession } from './utils/contracts.js'
 import { useSite } from './composables/useSite.js'
 
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
+const administrator = { ...account, role: 'admin' }
+const settings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 }
 
 // 執行真實 Nuxt app 與表單 script；只替換瀏覽器、Nuxt 注入及延遲 HTTP 邊界。
 function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony, confirmResult = true) {
@@ -45,7 +48,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
     requests.push({ url, options, ...response })
     return response.promise
   }
-  const route = { query: page === 'login' ? { return_to: '/nuxt/articles/001' } : {}, path: page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'articles/new' ? '/nuxt/articles/new' : '/' }
+  const route = { query: page === 'login' ? { return_to: '/nuxt/articles/001' } : {}, path: page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'articles/new' ? '/nuxt/articles/new' : page === 'admin/settings/login-lockout' ? '/admin/settings/login-lockout' : '/' }
   const pathname = page === 'index' ? '/nuxt/' : `/nuxt/${page}`
   const confirmations = []
   const window = {
@@ -64,7 +67,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
     // 卸載後不應再收到舊文件事件。
     removeEventListener(name) { listeners.delete(name) },
   }
-  const context = { ...vue, ...contracts, AbortController, window, useSite, useRoute,
+  const context = { ...vue, ...contracts, ...admin, AbortController, window, useSite, useRoute,
     // 收集掛載與清理，順序與 Nuxt app、頁面載入一致。
     onMounted(callback) { callbacks.mounted.push(callback) },
     // 同分頁離開前，測試仍可觀察已取消的舊請求。
@@ -83,8 +86,8 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
   const app = scope.run(() => run('./app.vue', '({ site, chooseFrontend, chooseBackend, submitLogout })'))
-  // 表單直接執行真正的 submit，作者草稿也與 app 共用同一個 dirty 狀態。
-  const form = page === 'index' ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : '({ title, body, pending, submit })'))
+  // 表單直接執行正式 submit/save，作者與管理草稿都共用 app 的 dirty 狀態。
+  const form = page === 'index' ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
   return { app, form, storage, storedValues: values, requests, redirects, reloads, confirmations,
     // 分別觸發一般顯示及 BFCache 恢復，檢查只對後者重新載入。
@@ -105,6 +108,16 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
 // 依真實 Fetch envelope 完成單一延遲回應，不觸發第二次 API 寫入。
 function respond(request, status, body) {
   request.resolve(new Response(JSON.stringify(body), { status }))
+}
+
+// 先經正式 /me 與設定 GET 建立管理員畫面，切換測試才會有可編輯草稿。
+async function readyAdminSettings(app) {
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: administrator })
+  await setImmediate()
+  assert.equal(app.requests[1].url, `${BACKENDS.symfony}/api/settings/login-lockout`)
+  respond(app.requests[1], 200, { success: true, message: 'OK', data: settings })
+  await setImmediate()
+  assert.equal(app.form.current.value.window_minutes, 5)
 }
 
 // 切換前端已選定 Vue 後，舊 Nuxt 登入即使回 200 也不可寫入 JWT 或導回 Nuxt。
@@ -197,6 +210,98 @@ test('confirmed frontend switch leaves new article without copying its draft', a
   assert.deepEqual([...app.storedValues.keys()].sort(), [BACKEND_KEY, SESSION_KEY].sort())
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.equal(app.requests.length, 1)
+})
+
+// 管理 PUT 尚在途也能確認捨棄切換；舊成功回應不可觸發讀回或回寫新頁。
+for (const target of ['frontend', 'backend']) {
+  test(`confirmed ${target} switch aborts pending admin write and ignores late success`, async (t) => {
+    const app = switchingPage('admin/settings/login-lockout', true)
+    t.after(app.close)
+    await readyAdminSettings(app)
+    app.form.draft.value.window_minutes = 6
+    await vue.nextTick()
+    const writing = app.form.save()
+    assert.equal(app.requests[2].options.method, 'PUT')
+    assert.equal(app.app.site.adminPending.value, true)
+    const selection = { target: { value: target === 'frontend' ? 'vue' : BACKENDS.laravel } }
+    if (target === 'frontend') app.app.chooseFrontend(selection)
+    else app.app.chooseBackend(selection)
+    assert.equal(app.confirmations.length, 1)
+    assert.match(app.confirmations[0], /已送出.*仍可能/)
+    assert.equal(app.requests[2].options.signal.aborted, true)
+    assert.deepEqual(app.redirects, [target === 'frontend' ? '/vue/admin/settings/login-lockout' : '/nuxt/login?return_to=%2Fnuxt%2Fadmin%2Fsettings%2Flogin-lockout'])
+    respond(app.requests[2], 200, { success: true, message: 'OK', data: {} })
+    await writing
+    assert.equal(app.requests.length, 3)
+    assert.equal(app.form.notice.value, '')
+    assert.equal(app.form.unknown.value, false)
+    if (target === 'frontend') assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+    else assert.equal(app.storage.getItem(SESSION_KEY), null)
+  })
+
+  // 取消時保留原後端、憑證與在途請求，選單回到原值，讓結果正常落在原頁。
+  test(`cancelled ${target} switch keeps pending admin write`, async (t) => {
+    const app = switchingPage('admin/settings/login-lockout', true, BACKENDS.symfony, false)
+    t.after(app.close)
+    await readyAdminSettings(app)
+    app.form.draft.value.window_minutes = 6
+    await vue.nextTick()
+    const writing = app.form.save()
+    const selection = { target: { value: target === 'frontend' ? 'vue' : BACKENDS.laravel } }
+    if (target === 'frontend') app.app.chooseFrontend(selection)
+    else app.app.chooseBackend(selection)
+    assert.equal(app.confirmations.length, 1)
+    assert.equal(selection.target.value, target === 'frontend' ? 'nuxt' : BACKENDS.symfony)
+    assert.equal(app.requests[2].options.signal.aborted, false)
+    assert.equal(app.app.site.backend.value, BACKENDS.symfony)
+    assert.equal(app.app.site.leaving.value, false)
+    assert.deepEqual(app.redirects, [])
+    respond(app.requests[2], 422, { success: false, error_code: 'E0001', errors: { window_minutes: ['欄位格式或範圍不正確'] } })
+    await writing
+    assert.equal(app.form.draft.value.window_minutes, 6)
+    assert.equal(app.app.site.adminPending.value, false)
+  })
+}
+
+// PUT 已成功但讀回仍在途時，切換後端也要忽略舊 GET 與舊 save 的後續提示。
+test('backend switch invalidates pending admin readback continuation', async (t) => {
+  const app = switchingPage('admin/settings/login-lockout', true)
+  t.after(app.close)
+  await readyAdminSettings(app)
+  app.form.draft.value.window_minutes = 6
+  await vue.nextTick()
+  const writing = app.form.save()
+  respond(app.requests[2], 200, { success: true, message: 'OK', data: {} })
+  await setImmediate()
+  assert.equal(app.requests[3].url, `${BACKENDS.symfony}/api/settings/login-lockout`)
+  assert.equal(app.app.site.adminPending.value, true)
+  app.app.chooseBackend({ target: { value: BACKENDS.laravel } })
+  assert.equal(app.requests[3].options.signal.aborted, true)
+  respond(app.requests[3], 200, { success: true, message: 'OK', data: { ...settings, window_minutes: 6 } })
+  await writing
+  assert.equal(app.form.current.value, null)
+  assert.equal(app.form.notice.value, '')
+  assert.equal(app.app.site.backend.value, BACKENDS.laravel)
+  assert.equal(app.storage.getItem(SESSION_KEY), null)
+})
+
+// 草稿重讀失敗後即使畫面暫無目前值，切換語意路由仍須要求捨棄確認。
+test('failed settings reread still confirms frontend route switch', async (t) => {
+  const app = switchingPage('admin/settings/login-lockout', true)
+  t.after(app.close)
+  await readyAdminSettings(app)
+  app.form.draft.value.window_minutes = 6
+  await vue.nextTick()
+  const reread = app.form.load()
+  await vue.nextTick()
+  assert.equal(app.form.current.value, null)
+  assert.equal(app.app.site.dirty.value, true)
+  respond(app.requests[2], 500, { success: false, error_code: 'E9999', log_id: 'trace-1' })
+  await reread
+  assert.equal(app.app.site.dirty.value, true)
+  app.app.chooseFrontend({ target: { value: 'vue' } })
+  assert.equal(app.confirmations.length, 1)
+  assert.deepEqual(app.redirects, ['/vue/admin/settings/login-lockout'])
 })
 
 // Vue 選用 ASP.NET Core 後切到 Nuxt 必須沿用原 JWT，切回 Vue 也不能延長到期時間。

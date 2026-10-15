@@ -22,6 +22,7 @@ export function useSite() {
   const sequence = useState('site-sequence', initialZero)
   const backend = useState('site-backend', initialBackend)
   const dirty = useState('site-dirty', initialFalse)
+  const adminPending = useState('site-admin-pending', initialFalse)
   const leaving = useState('site-leaving', initialFalse)
   let verifyController = null
   let logoutController = null
@@ -146,5 +147,5 @@ export function useSite() {
     }
   }
 
-  return { account, authError, backend, checking, credential, dirty, leaving, ready, token, initialize, verify, forget, acceptLogin, leaveFrontend, logout, switchBackend }
+  return { account, adminPending, authError, backend, checking, credential, dirty, leaving, ready, token, initialize, verify, forget, acceptLogin, leaveFrontend, logout, switchBackend }
 }

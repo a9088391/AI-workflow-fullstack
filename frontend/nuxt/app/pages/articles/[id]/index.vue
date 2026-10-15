@@ -269,6 +269,7 @@ onBeforeUnmount(
 <template>
   <main class="reading-page">
     <a class="back-link" href="/nuxt/">← 所有文章</a>
+    <a v-if="site.account.value?.role === 'admin'" class="back-link admin-return" href="/nuxt/admin/articles">返回文章管理</a>
     <ReauthForm v-if="!site.account.value && commentOwner !== null" :owner-id="commentOwner" @restored="restoredComment" @different="clearComment" />
     <p v-if="loading && !article" class="state-block" role="status">正在載入文章…</p>
     <div v-else-if="error" class="state-block" role="alert"><p>{{ error }}</p><small v-if="logId">log_id：{{ logId }}</small><div class="state-actions"><button type="button" class="inline-button" @click="load">重新讀取</button><a href="/nuxt/">返回文章列表</a><a v-if="error.includes('登入')" :href="loginHref(route.path)">重新登入</a></div></div>

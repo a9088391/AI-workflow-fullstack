@@ -266,16 +266,22 @@ test('frontend switch reaches Nuxt author pages with exact IDs and safe login re
   assert.deepEqual(login.redirects, ['/nuxt/login?return_to=%2Fnuxt%2Fcomments%2F009%2Fedit'])
 })
 
-// 管理頁與管理返回目標仍不可切換，避免導入 Nuxt 尚未實作的權限畫面。
-test('frontend switch rejects Nuxt management routes and login return targets', (t) => {
-  for (const [path, search] of [['/vue/admin/articles', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Farticles']]) {
+// 五種管理頁與安全返回目標都應切到 Nuxt 同類頁，保留原 ID、後端與 JWT。
+test('frontend switch reaches Nuxt management routes and login return targets', (t) => {
+  for (const [path, search, destination] of [
+    ['/vue/admin/members', '', '/nuxt/admin/members'],
+    ['/vue/admin/members/002', '', '/nuxt/admin/members/002'],
+    ['/vue/admin/articles', '', '/nuxt/admin/articles'],
+    ['/vue/admin/comments', '', '/nuxt/admin/comments'],
+    ['/vue/admin/settings/login-lockout', '', '/nuxt/admin/settings/login-lockout'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F002', '/nuxt/login?return_to=%2Fnuxt%2Fadmin%2Fmembers%2F002'],
+  ]) {
     const app = articleApp(path, 'same-token', search)
     t.after(app.close)
     const choice = { target: { value: 'nuxt' } }
-    assert.equal(app.page.canSwitchNuxt.value, false)
+    assert.equal(app.page.canSwitchNuxt.value, true)
     app.page.chooseFrontend(choice)
-    assert.equal(choice.target.value, 'vue')
-    assert.deepEqual(app.redirects, [])
+    assert.deepEqual(app.redirects, [destination])
     assert.equal(auth.readSession(app.sessionStorage).accessToken, 'same-token')
   }
 })
