@@ -33,7 +33,7 @@ case "${COMPOSE_FILE:-}" in
 esac
 
 # 既有資料若有待套用 SQL，先停所有本專案寫入，讓備份代表一致的更新前狀態。
-docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue nginx >/dev/null
+docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-react nginx >/dev/null
 docker compose up -d --wait db
 PROJECT_WRITERS_STOPPED=1 docker compose up --build --exit-code-from sql sql
 
@@ -66,11 +66,14 @@ if [ "${1:-}" = '--backend-only' ]; then
         echo 'Laravel／Symfony／ASP.NET Core 後端已就緒；前端尚未啟動'
     fi
 else
-    docker compose up -d --build --wait $backend_services frontend-vue nginx
+    # 一般展示啟動 React；舊票隔離 fixture 保留原先僅 Vue 的服務範圍。
+    frontend_services="frontend-vue frontend-react"
+    case "${COMPOSE_FILE:-}" in *ops/tests/*) frontend_services="frontend-vue" ;; esac
+    docker compose up -d --build --wait $backend_services $frontend_services nginx
     if [ "$backend_services" = "laravel flask" ]; then
         echo 'Vue／Laravel／Flask 專用展示已就緒：http://localhost:8080/vue/；Flask API：http://localhost:8085'
     elif [ "$backend_services" = "laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs" ]; then
-        echo 'Vue／Laravel 展示已就緒：http://localhost:8080/vue/；Symfony API：http://localhost:8082；ASP.NET Core API：http://localhost:8083；Django API：http://localhost:8084；Flask API：http://localhost:8085；FastAPI API：http://localhost:8086；Gin API：http://localhost:8087；Echo API：http://localhost:8088；Fiber API：http://localhost:8089；Express API：http://localhost:8090；Fastify API：http://localhost:8091；NestJS API：http://localhost:8092'
+        echo 'Vue／React／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/react/；Symfony API：http://localhost:8082；ASP.NET Core API：http://localhost:8083；Django API：http://localhost:8084；Flask API：http://localhost:8085；FastAPI API：http://localhost:8086；Gin API：http://localhost:8087；Echo API：http://localhost:8088；Fiber API：http://localhost:8089；Express API：http://localhost:8090；Fastify API：http://localhost:8091；NestJS API：http://localhost:8092'
     elif [ "$backend_services" = "laravel fiber" ]; then
         echo 'Vue／Laravel／Fiber 專用展示已就緒：http://localhost:18311/vue/；Fiber API：http://localhost:8089'
     elif [ "$backend_services" = "laravel express" ]; then

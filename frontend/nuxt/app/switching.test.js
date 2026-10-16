@@ -85,9 +85,9 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   }
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
-  const app = scope.run(() => run('./app.vue', '({ site, chooseFrontend, chooseBackend, submitLogout })'))
-  // 表單直接執行正式 submit/save，作者與管理草稿都共用 app 的 dirty 狀態。
-  const form = page === 'index' ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
+  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, chooseFrontend, chooseBackend, submitLogout })'))
+  // 有表單的頁面執行正式 submit/save；唯讀文章詳情只需 app 切換狀態。
+  const form = page === 'index' || /^articles\/[0-9]+$/.test(page) ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
   return { app, form, storage, storedValues: values, requests, redirects, reloads, confirmations,
     // 分別觸發一般顯示及 BFCache 恢復，檢查只對後者重新載入。
@@ -169,6 +169,92 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.equal(app.app.site.account.value, null)
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.deepEqual(app.redirects, ['/vue/'])
+})
+
+// React 切換只在已完成頁啟用，沿用原 Symfony JWT 與到期時間並作廢晚到 /me。
+test('React choice keeps implemented route, shared session and ignores delayed me', async (t) => {
+  for (const [page, target] of [['index', '/react/'], ['register', '/react/register'], ['articles/001', '/react/articles/001']]) {
+    const app = switchingPage(page, true)
+    t.after(app.close)
+    assert.equal(app.app.reactTarget.value, target)
+    app.app.chooseFrontend({ target: { value: 'react' } })
+    assert.deepEqual(app.redirects, [target])
+    assert.equal(app.requests[0].options.signal.aborted, true)
+    respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+    await setImmediate()
+    assert.equal(app.app.site.account.value, null)
+    assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  }
+})
+
+// 登入返回目標保留原 ID；舊登入成功不能在切到 React 後寫回 Nuxt。
+test('React login switch keeps safe return and invalidates late login', async (t) => {
+  const app = switchingPage('login')
+  t.after(app.close)
+  app.form.email.value = 'reader@example.test'
+  app.form.password.value = 'abcd'
+  await vue.nextTick()
+  const pending = app.form.submit()
+  app.app.chooseFrontend({ target: { value: 'react' } })
+  assert.deepEqual(app.redirects, ['/react/login?return_to=%2Freact%2Farticles%2F001'])
+  assert.equal(app.requests[0].options.signal.aborted, true)
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'late-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: account } })
+  await pending
+  assert.equal(app.storage.getItem(SESSION_KEY), null)
+})
+
+// 取消保留登入文字；註冊已送出後切換只作廢來源結果，不重送或寫入憑證。
+test('React choice cancels draft and ignores late registration', async (t) => {
+  const cancelled = switchingPage('login', false, BACKENDS.symfony, false)
+  t.after(cancelled.close)
+  cancelled.form.email.value = 'reader@example.test'
+  await vue.nextTick()
+  const choice = { target: { value: 'react' } }
+  cancelled.app.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'nuxt')
+  assert.equal(cancelled.form.email.value, 'reader@example.test')
+  assert.deepEqual(cancelled.redirects, [])
+  const registering = switchingPage('register')
+  t.after(registering.close)
+  registering.form.email.value = 'new@example.test'
+  registering.form.password.value = 'abcd'
+  registering.form.nickname.value = '新會員'
+  await vue.nextTick()
+  const pending = registering.form.submit()
+  registering.app.chooseFrontend({ target: { value: 'react' } })
+  assert.deepEqual(registering.redirects, ['/react/register'])
+  assert.equal(registering.requests[0].options.signal.aborted, true)
+  respond(registering.requests[0], 201, { success: true, message: 'OK', data: {} })
+  await pending
+  assert.equal(registering.form.created.value, false)
+  assert.deepEqual(registering.redirects, ['/react/register'])
+})
+
+// React 不提供作者頁；手動變更停用選項也不能導向錯誤的列表。
+test('React choice rejects unimplemented Nuxt author page', (t) => {
+  const app = switchingPage('articles/new', true)
+  t.after(app.close)
+  assert.equal(app.app.reactTarget.value, null)
+  const choice = { target: { value: 'react' } }
+  app.app.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'nuxt')
+  assert.deepEqual(app.redirects, [])
+})
+
+// 伺服器尚未確認撤銷 JWT 時，React 選項也必須等待登出結果。
+test('React choice waits for pending logout', async (t) => {
+  const app = switchingPage('index', true)
+  t.after(app.close)
+  respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+  await setImmediate()
+  const logout = app.app.submitLogout()
+  const choice = { target: { value: 'react' } }
+  app.app.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'nuxt')
+  assert.deepEqual(app.redirects, [])
+  respond(app.requests[1], 200, { success: true, message: 'OK', data: {} })
+  await logout
+  assert.equal(app.storage.getItem(SESSION_KEY), null)
 })
 
 // 作者表單有草稿時，拒絕捨棄必須保留原文字、選單與共用登入狀態。

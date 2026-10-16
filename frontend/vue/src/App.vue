@@ -32,6 +32,8 @@ const returnTo = target && localPage(target) && target !== '/vue/login' && targe
 // Nuxt 已提供同組 15 種語意頁；登入返回目標只接受已實作的對應頁。
 const nuxtPages = ['articles', 'login', 'register', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
 const canSwitchNuxtPage = nuxtPages.includes(page) && (page !== 'login' || !target || nuxtPages.includes(articlePage(returnTo)))
+// React 目前只有列表、帳號與文章閱讀頁；登入返回目標也必須落在這些已完成頁面。
+const canSwitchReactPage = ['articles', 'register', 'login', 'article'].includes(page) && (page !== 'login' || target === null || ['articles', 'article'].includes(articlePage(target)))
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'
 const commentResource = page === 'comment' || page === 'comment-edit'
@@ -937,16 +939,18 @@ function toggleVersions() {
   if (versionsOpen.value) navOpen.value = false
 }
 
-// 只在 Nuxt 已有同類頁面時保留語意路徑與原始 ID；其他頁先保持目前頁面。
+// 只在目標已有同類頁面時保留語意路徑與原始 ID；其他頁保持目前頁面。
 function chooseFrontend(event) {
   if (event.target.value === 'vue') return
-  if (!canSwitchNuxt.value) { event.target.value = 'vue'; return }
+  const next = event.target.value
+  if (!(next === 'nuxt' && canSwitchNuxt.value || next === 'react' && canSwitchReactPage)) { event.target.value = 'vue'; return }
+  if (logoutPending.value) { event.target.value = 'vue'; return }
   if (hasDraft.value && !window.confirm('尚有未儲存文字，確定捨棄並切換前端嗎？')) { event.target.value = 'vue'; return }
   // 使用者確認捨棄後停止本頁等待；既送出的寫入結果仍須在原後端查證。
   submitted.value = true
   onPageHide()
-  const destination = path.replace(/^\/vue/, '/nuxt')
-  const nextReturn = page === 'login' && target && returnTo !== '/vue/' ? `?return_to=${encodeURIComponent(returnTo.replace(/^\/vue/, '/nuxt'))}` : ''
+  const destination = path.replace(/^\/vue/, `/${next}`)
+  const nextReturn = page === 'login' && target && returnTo !== '/vue/' ? `?return_to=${encodeURIComponent(returnTo.replace(/^\/vue/, `/${next}`))}` : ''
   window.location.assign(`${destination}${nextReturn}`)
 }
 
@@ -1337,7 +1341,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="versionsOpen" id="version-panel" class="version-panel">
         <div class="version-panel-inner">
-          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : nestBackend || fastifyBackend || expressBackend || fiberBackend || flaskBackend || fastapiBackend || ginBackend || echoBackend ? '（此後端尚未提供）' : '（此頁尚未提供）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">{{ nestBackend ? 'Nuxt 尚未支援目前選擇的 NestJS 後端；請留在 Vue。' : fastifyBackend ? 'Nuxt 尚未支援目前選擇的 Fastify 後端；請留在 Vue。' : expressBackend ? 'Nuxt 尚未支援目前選擇的 Express 後端；請留在 Vue。' : fiberBackend ? 'Nuxt 尚未支援目前選擇的 Fiber 後端；請留在 Vue。' : echoBackend ? 'Nuxt 尚未支援目前選擇的 Echo 後端；請留在 Vue。' : ginBackend ? 'Nuxt 尚未支援目前選擇的 Gin 後端；請留在 Vue。' : flaskBackend ? 'Nuxt 尚未支援目前選擇的 Flask 後端；請留在 Vue。' : fastapiBackend ? 'Nuxt 尚未支援目前選擇的 FastAPI 後端；請留在 Vue。' : '已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留。' }}</p></div>
+          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : nestBackend || fastifyBackend || expressBackend || fiberBackend || flaskBackend || fastapiBackend || ginBackend || echoBackend ? '（此後端尚未提供）' : '（此頁尚未提供）' }}</option><option value="react" :disabled="!canSwitchReactPage">React＋Vite{{ canSwitchReactPage ? '' : '（此頁尚未提供）' }}</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select><p id="frontend-help" class="muted">{{ nestBackend ? 'Nuxt 尚未支援目前選擇的 NestJS 後端；請留在 Vue。' : fastifyBackend ? 'Nuxt 尚未支援目前選擇的 Fastify 後端；請留在 Vue。' : expressBackend ? 'Nuxt 尚未支援目前選擇的 Express 後端；請留在 Vue。' : fiberBackend ? 'Nuxt 尚未支援目前選擇的 Fiber 後端；請留在 Vue。' : echoBackend ? 'Nuxt 尚未支援目前選擇的 Echo 後端；請留在 Vue。' : ginBackend ? 'Nuxt 尚未支援目前選擇的 Gin 後端；請留在 Vue。' : flaskBackend ? 'Nuxt 尚未支援目前選擇的 Flask 後端；請留在 Vue。' : fastapiBackend ? 'Nuxt 尚未支援目前選擇的 FastAPI 後端；請留在 Vue。' : '已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留。' }}</p></div>
           <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option><option :value="BACKENDS.flask">Flask</option><option :value="BACKENDS.fastapi">FastAPI</option><option :value="BACKENDS.gin">Gin</option><option :value="BACKENDS.echo">Echo</option><option :value="BACKENDS.fiber">Fiber</option><option :value="BACKENDS.express">Express</option><option :value="BACKENDS.fastify">Fastify</option><option :value="BACKENDS.nestjs">NestJS</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
           <button class="panel-close" type="button" @click="closePanel('versions')">關閉</button>
         </div>

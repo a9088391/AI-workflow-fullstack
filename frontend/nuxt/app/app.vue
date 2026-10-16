@@ -1,6 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { BACKENDS, loginHref, validReturn, vueFrontendTarget } from './utils/contracts.js'
+import { BACKENDS, loginHref, reactFrontendTarget, validReturn, vueFrontendTarget } from './utils/contracts.js'
 
 const site = useSite()
 const route = useRoute()
@@ -8,12 +8,14 @@ const logoutPending = ref(false)
 const notice = ref('')
 const noticeLogId = ref('')
 const frontendTarget = ref(null)
+const reactTarget = ref(null)
 
 // 掛載後才能讀同一分頁的 sessionStorage，伺服器只傳不含憑證的外殼。
 onMounted(
   // 首頁與深層頁都先向目前後端確認既有登入，實際瀏覽器路徑供切換保留 ID。
   () => {
     frontendTarget.value = vueFrontendTarget(window.location.pathname)
+    reactTarget.value = reactFrontendTarget(window.location.pathname, route.query.return_to)
     window.addEventListener('beforeunload', warnOnLeave)
     window.addEventListener('pageshow', restoreFromCache)
     site.initialize()
@@ -41,19 +43,21 @@ function warnOnLeave(event) {
   event.returnValue = ''
 }
 
-// 兩版共同頁面使用同分頁導覽，原後端、JWT 和到期時間保持原樣。
+// 只導向目標已完成的同類頁面，原後端、JWT 和到期時間保持原樣。
 function chooseFrontend(event) {
   if (event.target.value === 'nuxt') return
-  if (!frontendTarget.value) { event.target.value = 'nuxt'; return }
+  const target = event.target.value === 'vue' ? frontendTarget.value : event.target.value === 'react' ? reactTarget.value : null
+  if (!target) { event.target.value = 'nuxt'; return }
   if (logoutPending.value) { event.target.value = 'nuxt'; notice.value = '登出處理中，請等待結果後再切換。'; return }
   // 已送出的管理寫入可能仍在伺服器完成，確認後只撤銷本頁請求與畫面狀態。
   const warning = site.adminPending.value ? '管理操作已送出，伺服器仍可能完成；確定捨棄目前畫面並切換前端嗎？' : '尚有未儲存內容或未確認的操作，確定捨棄並切換前端嗎？'
   if ((site.adminPending.value || site.dirty.value) && !window.confirm(warning)) { event.target.value = 'nuxt'; return }
   // 文件真正離開前同步作廢來源認證與表單／內容請求，舊回應不得再導回 Nuxt。
   site.leaveFrontend()
+  if (event.target.value === 'react') { window.location.assign(target); return }
   const returnTarget = window.location.pathname === '/nuxt/login' && validReturn(route.query.return_to) ? vueFrontendTarget(route.query.return_to) : null
   const query = returnTarget ? `?return_to=${encodeURIComponent(returnTarget)}` : ''
-  window.location.assign(`${frontendTarget.value}${query}`)
+  window.location.assign(`${target}${query}`)
 }
 
 // 後端切換先確認草稿或在途管理寫入，再清除憑證並回到登入。
@@ -125,7 +129,7 @@ async function submitLogout() {
       <details class="version-controls">
         <summary>切換版本</summary>
         <div class="version-fields">
-          <div><label for="nuxt-frontend-version">前端版本</label><select id="nuxt-frontend-version" value="nuxt" @change="chooseFrontend"><option value="nuxt">Nuxt（目前使用）</option><option value="vue" :disabled="!frontendTarget">Vue 3＋Vite{{ frontendTarget ? '' : '（此頁不可切換）' }}</option><option disabled>React＋Vite（尚未提供）</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select></div>
+          <div><label for="nuxt-frontend-version">前端版本</label><select id="nuxt-frontend-version" value="nuxt" @change="chooseFrontend"><option value="nuxt">Nuxt（目前使用）</option><option value="vue" :disabled="!frontendTarget">Vue 3＋Vite{{ frontendTarget ? '' : '（此頁不可切換）' }}</option><option value="react" :disabled="!reactTarget">React＋Vite{{ reactTarget ? '' : '（此頁不可切換）' }}</option><option disabled>Next.js（尚未提供）</option><option disabled>Angular（尚未提供）</option><option disabled>SvelteKit（尚未提供）</option></select></div>
           <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version" :value="site.backend.value" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option></select></div>
           <p>切換後端會清除目前登入並要求重新登入。</p>
         </div>

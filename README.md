@@ -1,6 +1,6 @@
-# 會員文章展示：Vue／Nuxt 與 Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin／Echo／Fiber／Express
+# 會員文章展示：Vue／Nuxt／React 與十二個共用後端
 
-目前 Vue 與 Nuxt 均提供註冊、登入、公開文章、作者文章／留言，以及會員、文章、留言與登入鎖定設定管理頁。共同頁面可在同一分頁切換 Vue／Nuxt；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 與 Nuxt 的作者操作在送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
+目前 Vue 與 Nuxt 均提供註冊、登入、公開文章、作者文章／留言，以及會員、文章、留言與登入鎖定設定管理頁。React 目前提供註冊、登入、公開文章與唯讀留言；發文、留言寫入、作者與管理頁尚未提供。已完成的共同頁面可在同一分頁切換前端；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue 與 Nuxt 的作者操作在送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
@@ -10,7 +10,7 @@
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫各後端固定入口的 `/api/...`，包含 Fiber 的 `http://localhost:8089/api/...`、Express 的 `http://localhost:8090/api/...` 與 NestJS 的 `http://localhost:8092/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`；React 位於 `frontend/react/`，容器監聽 `0.0.0.0:4173` 並提供 `/react/`。日常 `ops/start.sh` 啟動 React，入口為 `http://localhost:8080/react/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫各後端固定入口的 `/api/...`，包含 Fiber 的 `http://localhost:8089/api/...`、Express 的 `http://localhost:8090/api/...` 與 NestJS 的 `http://localhost:8092/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
 Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。切換後端會清除原登入並轉到登入頁，重新登入後返回合法的本機頁面；不會把舊 JWT 送給新後端。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
 

@@ -241,6 +241,88 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
+// React 僅接收已完成頁；同一後端憑證、到期時間及原始文章 ID 都不得改動。
+test('React frontend switch keeps supported routes and exact shared session', async (t) => {
+  for (const [source, search, destination] of [
+    ['/vue/', '', '/react/'],
+    ['/vue/register', '', '/react/register'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/react/login?return_to=%2Freact%2Farticles%2F001'],
+    ['/vue/articles/001', '', '/react/articles/001'],
+  ]) {
+    const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchReactPage, true, source)
+    app.page.chooseFrontend({ target: { value: 'react' } })
+    assert.deepEqual(app.redirects, [destination])
+    assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.nestjs, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+    if (app.requests[0]) {
+      await respond(app.requests[0], 200, success(member))
+      assert.equal(app.page.account.value, null)
+    }
+  }
+})
+
+// 作者、管理和未知路徑仍留在 Vue；非法目標不能暗中改成文章列表。
+test('React frontend choice rejects unfinished paths and protected login returns', (t) => {
+  for (const [source, search] of [['/vue/articles/new', ''], ['/vue/articles/001/edit', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'], ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0']]) {
+    const app = articleApp(source, 'same-token', search)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchReactPage, false, source)
+    const choice = { target: { value: 'react' } }
+    app.page.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'vue')
+    assert.deepEqual(app.redirects, [])
+  }
+})
+
+// 取消捨棄時保留登入草稿；確認切換後舊登入回應不能補寫憑證。
+test('React choice respects draft cancellation and invalidates late login', async (t) => {
+  const cancelled = articleApp('/vue/login', null, '', false)
+  t.after(cancelled.close)
+  cancelled.page.email.value = 'reader@example.test'
+  const choice = { target: { value: 'react' } }
+  cancelled.page.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'vue')
+  assert.deepEqual(cancelled.redirects, [])
+  const switched = articleApp('/vue/login', null, '', true)
+  t.after(switched.close)
+  switched.page.email.value = 'reader@example.test'
+  switched.page.password.value = 'abcd'
+  const login = switched.page.submitLogin()
+  switched.page.chooseFrontend({ target: { value: 'react' } })
+  assert.deepEqual(switched.redirects, ['/react/login'])
+  await respond(switched.requests[0], 200, success({ access_token: 'late-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await login
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+})
+
+// 註冊晚到成功不可導回 Vue；登出在途仍須留在原頁等待結果。
+test('React choice ignores late registration and waits for pending logout', async (t) => {
+  const registering = articleApp('/vue/register', null, '', true)
+  t.after(registering.close)
+  registering.page.email.value = 'new@example.test'
+  registering.page.password.value = 'abcd'
+  registering.page.nickname.value = '新會員'
+  const pending = registering.page.submitRegistration()
+  registering.page.chooseFrontend({ target: { value: 'react' } })
+  assert.deepEqual(registering.redirects, ['/react/register'])
+  await respond(registering.requests[0], 201, success({}))
+  await pending
+  assert.deepEqual(registering.redirects, ['/react/register'])
+  const loggingOut = articleApp('/vue/', 'same-token')
+  t.after(loggingOut.close)
+  await respond(loggingOut.requests[0], 200, success(member))
+  const logout = loggingOut.page.submitLogout()
+  const choice = { target: { value: 'react' } }
+  loggingOut.page.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'vue')
+  assert.deepEqual(loggingOut.redirects, [])
+  const logoutRequest = loggingOut.requests.at(-1)
+  assert.match(logoutRequest.url, /\/api\/auth\/logout$/)
+  await respond(logoutRequest, 200, success({}))
+  await logout
+})
+
 // 作者頁與安全的登入返回目標應逐頁切到 Nuxt，沿用同一後端、JWT 與到期時間。
 test('frontend switch reaches Nuxt author pages with exact IDs and safe login return', (t) => {
   const paths = [
