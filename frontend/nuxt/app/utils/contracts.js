@@ -39,16 +39,16 @@ export function vueFrontendTarget(path) {
   return null
 }
 
-// 只映射 React 已完成的公開、帳號與作者頁，拒絕管理或非法 ID 以免導向錯誤資源。
+// 只映射 React 已完成的公開、帳號、作者與管理頁，並拒絕非法 ID 或外站返回目標。
 export function reactFrontendTarget(path, returnTo = null) {
-  if (['/nuxt/', '/nuxt/register', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments'].includes(path)) return path.replace(/^\/nuxt/, '/react')
+  if (['/nuxt/', '/nuxt/register', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments', '/nuxt/admin/members', '/nuxt/admin/articles', '/nuxt/admin/comments', '/nuxt/admin/settings/login-lockout'].includes(path)) return path.replace(/^\/nuxt/, '/react')
   if (path === '/nuxt/login') {
     const target = returnTo !== null && validReturn(returnTo) ? reactFrontendTarget(returnTo) : null
     if (returnTo !== null && !target) return null
     return `/react/login${target && target !== '/react/' ? `?return_to=${encodeURIComponent(target)}` : ''}`
   }
-  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
-  return match && positiveUrlInteger(match[1]) !== null ? path.replace(/^\/nuxt/, '/react') : null
+  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:(?:articles|comments)\/([0-9]+)(?:\/edit)?|admin\/members\/([0-9]+))$/)
+  return match && positiveUrlInteger(match[1] || match[2]) !== null ? path.replace(/^\/nuxt/, '/react') : null
 }
 
 // 內容欄位依共同 Unicode 碼點與固定空白集合驗證，不改寫作者輸入。

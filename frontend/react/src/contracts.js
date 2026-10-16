@@ -83,8 +83,10 @@ export function positiveId(value) {
 
 // 登入返回與跨前端切換只接受已完成的語意頁面，阻止外站及不合法 ID。
 export function validReturn(path) {
-  if (['/react/', '/react/articles/new', '/react/me/articles', '/react/me/comments'].includes(path)) return true
+  if (['/react/', '/react/articles/new', '/react/me/articles', '/react/me/comments', '/react/admin/members', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout'].includes(path)) return true
   if (typeof path !== 'string') return false
+  const member = path.match(/^\/react\/admin\/members\/([0-9]+)$/)
+  if (member) return positiveId(member[1]) !== null
   const match = path.match(/^\/react\/(articles|comments)\/([0-9]+)(\/edit)?$/)
   return Boolean(match && positiveId(match[2]) !== null)
 }
@@ -197,9 +199,34 @@ export function validList(data, page, kind = 'article') {
   return Array.isArray(data?.list) && p && p.page === page && p.per_page === 20
     && Number.isSafeInteger(p.total) && p.total >= 0 && p.total_pages === Math.ceil(p.total / 20)
     && data.list.every(
-      // 每筆都需是完整文章或留言，不能只檢查外層 envelope。
-      (item) => validContent(item, kind),
+      // 每筆都需符合指定資源型態，不能只檢查外層 envelope。
+      (item) => kind === 'member' ? validMember(item) : validContent(item, kind),
     )
+}
+
+// 管理會員資料只接受完整的一般會員，避免錯誤回應或管理員資料出現在清單。
+export function validMember(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Number.isSafeInteger(value.id) && value.id > 0
+    && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
+    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30
+    && value.role === 'member' && ['active', 'disabled'].includes(value.status) && timestamp.test(value.created_at)
+}
+
+// 設定四欄須完整且同時符合後端範圍，才可作為表單的伺服器基準。
+export function validLockout(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && typeof value.enabled === 'boolean'
+    && Number.isInteger(value.window_minutes) && value.window_minutes >= 1 && value.window_minutes <= 60
+    && Number.isInteger(value.failure_threshold) && value.failure_threshold >= 1 && value.failure_threshold <= 100
+    && Number.isInteger(value.lock_seconds) && value.lock_seconds >= 1 && value.lock_seconds <= 86400
+}
+
+// 本地提示維持四欄原子提交；欄位型態與範圍由後端再次驗證。
+export function validateLockout(value) {
+  const errors = {}
+  for (const [name, max] of [['window_minutes', 60], ['failure_threshold', 100], ['lock_seconds', 86400]]) {
+    if (typeof value[name] !== 'string' || !/^[0-9]+$/.test(value[name]) || Number(value[name]) < 1 || Number(value[name]) > max) errors[name] = [`請輸入 1–${max} 的整數`]
+  }
+  return errors
 }
 
 // 首頁零留言與單頁無須導覽；任何超頁都需提供返回第一頁入口。

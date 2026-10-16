@@ -242,15 +242,16 @@ test('React choice reaches Nuxt author page with the original shared session', (
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
 })
 
-// 管理頁尚未加入 React；即使手動選擇停用項也不得導頁。
-test('React choice rejects Nuxt admin page', (t) => {
+// 管理頁已可切到 React；保留目前後端與原登入期限，不重新簽發 JWT。
+test('React choice reaches Nuxt admin page with the original shared session', (t) => {
   const app = switchingPage('admin/settings/login-lockout', true)
   t.after(app.close)
-  assert.equal(app.app.reactTarget.value, null)
+  assert.equal(app.app.reactTarget.value, '/react/admin/settings/login-lockout')
   const choice = { target: { value: 'react' } }
   app.app.chooseFrontend(choice)
-  assert.equal(choice.target.value, 'nuxt')
-  assert.deepEqual(app.redirects, [])
+  assert.equal(choice.target.value, 'react')
+  assert.deepEqual(app.redirects, ['/react/admin/settings/login-lockout'])
+  assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
 })
 
 // 伺服器尚未確認撤銷 JWT 時，React 選項也必須等待登出結果。

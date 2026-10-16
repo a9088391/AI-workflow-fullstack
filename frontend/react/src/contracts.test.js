@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, validContent, validList, validReturn, validateAccount, validateContent } from './contracts.js'
+import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
 
 // 模擬同一分頁的 sessionStorage，以確實檢查跨框架共享格式與清除順序。
 function storage() {
@@ -55,8 +55,26 @@ test('return target and frontend mapping', () => {
   for (const path of ['/react/articles/new', '/react/articles/7/edit', '/react/me/articles', '/react/me/comments', '/react/comments/009', '/react/comments/9/edit']) assert.equal(validReturn(path), true, path)
   assert.equal(frontendTarget('/react/comments/009/edit', 'nuxt'), '/nuxt/comments/009/edit')
   assert.equal(frontendTarget('/react/login', 'vue', '/react/articles/new'), '/vue/login?return_to=%2Fvue%2Farticles%2Fnew')
-  for (const path of ['//evil.test', '/react/admin/members', '/react/articles/0', '/react/articles/-1', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/articles/new/edit']) assert.equal(validReturn(path), false)
+  for (const path of ['/react/admin/members', '/react/admin/members/0007', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout']) assert.equal(validReturn(path), true, path)
+  assert.equal(frontendTarget('/react/admin/members/0007', 'vue'), '/vue/admin/members/0007')
+  assert.equal(frontendTarget('/react/login', 'nuxt', '/react/admin/settings/login-lockout'), '/nuxt/login?return_to=%2Fnuxt%2Fadmin%2Fsettings%2Flogin-lockout')
+  for (const path of ['//evil.test', '/react/admin/members/0', '/react/admin/members/-1', '/react/admin/members/9007199254740992', '/react/admin/settings/nope', '/react/articles/0', '/react/articles/-1', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/articles/new/edit']) assert.equal(validReturn(path), false)
   assert.equal(positiveId('07'), 7)
+})
+
+// 管理回應只有完整一般會員與四欄設定可呈現；錯誤型態不得視為空列表。
+test('admin member and lockout envelopes reject incomplete or wrong-role data', () => {
+  const member = { id: 7, email: 'demo@example.test', nickname: '陳', role: 'member', status: 'disabled', created_at: '2026-10-16 10:00:00' }
+  const list = { list: [member], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }
+  assert.equal(validMember(member), true)
+  assert.equal(validList(list, 1, 'member'), true)
+  assert.equal(validList({ ...list, list: [{ ...member, role: 'admin' }] }, 1, 'member'), false)
+  assert.equal(validList({ list: [], pagination: { page: 4, per_page: 20, total: 1, total_pages: 1 } }, 4, 'member'), true)
+  assert.equal(validMember({ ...member, status: 'unknown' }), false)
+  assert.equal(validLockout({ enabled: false, window_minutes: 1, failure_threshold: 100, lock_seconds: 86400 }), true)
+  assert.equal(validLockout({ enabled: 'false', window_minutes: 1, failure_threshold: 100, lock_seconds: 86400 }), false)
+  assert.deepEqual(validateLockout({ window_minutes: '1', failure_threshold: '100', lock_seconds: '86400' }), {})
+  assert.deepEqual(Object.keys(validateLockout({ window_minutes: '0', failure_threshold: '101', lock_seconds: '1.5' })).sort(), ['failure_threshold', 'lock_seconds', 'window_minutes'])
 })
 
 // 同時測試 Unicode 碼點、純空白與原文字保留；UTF-16 長度不能代替契約。

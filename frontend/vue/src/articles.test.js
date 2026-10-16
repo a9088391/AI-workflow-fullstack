@@ -241,7 +241,7 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
-// React 已完成作者頁；切換只搬移語意路徑和原始 ID，不改後端憑證或到期時間。
+// React 已完成作者與管理頁；切換只搬移語意路徑和原始 ID，不改後端憑證或到期時間。
 test('React frontend switch keeps supported routes and exact shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/react/'],
@@ -256,6 +256,16 @@ test('React frontend switch keeps supported routes and exact shared session', as
     ['/vue/comments/009/edit', '', '/react/comments/009/edit'],
     ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009%2Fedit', '/react/login?return_to=%2Freact%2Fcomments%2F009%2Fedit'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew', '/react/login?return_to=%2Freact%2Farticles%2Fnew'],
+    ['/vue/admin/members', '', '/react/admin/members'],
+    ['/vue/admin/members/001', '', '/react/admin/members/001'],
+    ['/vue/admin/articles', '', '/react/admin/articles'],
+    ['/vue/admin/comments', '', '/react/admin/comments'],
+    ['/vue/admin/settings/login-lockout', '', '/react/admin/settings/login-lockout'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers', '/react/login?return_to=%2Freact%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F001', '/react/login?return_to=%2Freact%2Fadmin%2Fmembers%2F001'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Farticles', '/react/login?return_to=%2Freact%2Fadmin%2Farticles'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fcomments', '/react/login?return_to=%2Freact%2Fadmin%2Fcomments'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fsettings%2Flogin-lockout', '/react/login?return_to=%2Freact%2Fadmin%2Fsettings%2Flogin-lockout'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -270,9 +280,9 @@ test('React frontend switch keeps supported routes and exact shared session', as
   }
 })
 
-// React 管理頁尚未完成；未知或非法 ID 不能暗中改成文章列表。
-test('React frontend choice rejects admin, unknown and invalid paths and login returns', (t) => {
-  for (const [source, search] of [['/vue/admin/members', ''], ['/vue/admin/articles', ''], ['/vue/unknown', ''], ['/vue/articles/0/edit', ''], ['/vue/comments/9007199254740992', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'], ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'], ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'], ['/vue/login', '?return_to=https%3A%2F%2Fevil.test']]) {
+// React 切換拒絕未知頁、非法資源 ID 與外站登入返回目標。
+test('React frontend choice rejects unknown and invalid paths and login returns', (t) => {
+  for (const [source, search] of [['/vue/unknown', ''], ['/vue/admin/unknown', ''], ['/vue/admin/members/0', ''], ['/vue/admin/members/9007199254740992', ''], ['/vue/articles/0/edit', ''], ['/vue/comments/9007199254740992', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F0'], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F9007199254740992'], ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'], ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'], ['/vue/login', '?return_to=https%3A%2F%2Fevil.test']]) {
     const app = articleApp(source, 'same-token', search)
     t.after(app.close)
     assert.equal(app.page.canSwitchReactPage, false, source)

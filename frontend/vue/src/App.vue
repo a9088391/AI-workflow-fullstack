@@ -32,8 +32,8 @@ const returnTo = target && localPage(target) && target !== '/vue/login' && targe
 // Nuxt 已提供同組 15 種語意頁；登入返回目標只接受已實作的對應頁。
 const nuxtPages = ['articles', 'login', 'register', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
 const canSwitchNuxtPage = nuxtPages.includes(page) && (page !== 'login' || !target || nuxtPages.includes(articlePage(returnTo)))
-// React 已有公開、帳號與作者頁；登入返回目標仍排除未完成的管理頁與非法 ID。
-const reactReturnPages = ['articles', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit']
+// React 已有相同的公開、帳號、作者與管理語意頁；登入返回仍須是合法已知路徑。
+const reactReturnPages = ['articles', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
 const canSwitchReactPage = (page === 'register' || page === 'login' || reactReturnPages.includes(page)) && (page !== 'login' || target === null || reactReturnPages.includes(articlePage(target)))
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'
