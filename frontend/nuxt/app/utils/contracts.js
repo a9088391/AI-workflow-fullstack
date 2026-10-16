@@ -39,15 +39,15 @@ export function vueFrontendTarget(path) {
   return null
 }
 
-// React 只接收已完成的公開與帳號頁；登入返回目標若是未完成頁就停用切換。
+// 只映射 React 已完成的公開、帳號與作者頁，拒絕管理或非法 ID 以免導向錯誤資源。
 export function reactFrontendTarget(path, returnTo = null) {
-  if (path === '/nuxt/' || path === '/nuxt/register') return path.replace(/^\/nuxt/, '/react')
+  if (['/nuxt/', '/nuxt/register', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments'].includes(path)) return path.replace(/^\/nuxt/, '/react')
   if (path === '/nuxt/login') {
     const target = returnTo !== null && validReturn(returnTo) ? reactFrontendTarget(returnTo) : null
     if (returnTo !== null && !target) return null
     return `/react/login${target && target !== '/react/' ? `?return_to=${encodeURIComponent(target)}` : ''}`
   }
-  const match = typeof path === 'string' && path.match(/^\/nuxt\/articles\/([0-9]+)$/)
+  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
   return match && positiveUrlInteger(match[1]) !== null ? path.replace(/^\/nuxt/, '/react') : null
 }
 

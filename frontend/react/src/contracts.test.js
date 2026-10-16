@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BACKENDS, BACKEND_KEY, SESSION_KEY, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, validContent, validList, validReturn, validateAccount } from './contracts.js'
+import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, validContent, validList, validReturn, validateAccount, validateContent } from './contracts.js'
 
 // 模擬同一分頁的 sessionStorage，以確實檢查跨框架共享格式與清除順序。
 function storage() {
@@ -52,8 +52,45 @@ test('return target and frontend mapping', () => {
   assert.equal(frontendTarget('/react/login', 'nuxt', '/react/articles/7'), '/nuxt/login?return_to=%2Fnuxt%2Farticles%2F7')
   assert.equal(frontendTarget('/react/login', 'vue'), '/vue/login')
   assert.equal(frontendTarget('/react/', '__proto__'), null)
-  for (const path of ['//evil.test', '/react/admin/members', '/react/articles/0', '/react/articles/-1', '/react/articles/9007199254740992', '/react/articles/7/edit']) assert.equal(validReturn(path), false)
+  for (const path of ['/react/articles/new', '/react/articles/7/edit', '/react/me/articles', '/react/me/comments', '/react/comments/009', '/react/comments/9/edit']) assert.equal(validReturn(path), true, path)
+  assert.equal(frontendTarget('/react/comments/009/edit', 'nuxt'), '/nuxt/comments/009/edit')
+  assert.equal(frontendTarget('/react/login', 'vue', '/react/articles/new'), '/vue/login?return_to=%2Fvue%2Farticles%2Fnew')
+  for (const path of ['//evil.test', '/react/admin/members', '/react/articles/0', '/react/articles/-1', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/articles/new/edit']) assert.equal(validReturn(path), false)
   assert.equal(positiveId('07'), 7)
+})
+
+// 同時測試 Unicode 碼點、純空白與原文字保留；UTF-16 長度不能代替契約。
+test('author content validates exact plain-text bounds without rewriting input', () => {
+  assert.deepEqual(validateContent({ title: '😀', body: '第一行\r\n第二行' }), {})
+  assert.deepEqual(validateContent({ body: '😀'.repeat(2000) }, 'comment'), {})
+  assert.deepEqual(validateContent({ title: '  ', body: '內容' }), { title: ['欄位格式或範圍不正確'] })
+  assert.deepEqual(validateContent({ title: '標題', body: '內容\0' }), { body: ['欄位格式或範圍不正確'] })
+  assert.deepEqual(validateContent({ body: '😀'.repeat(2001) }, 'comment'), { body: ['欄位格式或範圍不正確'] })
+})
+
+// 管理員自己的下架內容不享有接管捷徑，且父文章不可見時不能編修留言。
+test('author and administrator actions keep ownership and parent visibility boundaries', () => {
+  const own = { author: { id: 4 }, visibility: 'hidden', can_restore: false }
+  const other = { author: { id: 5 }, visibility: 'hidden', can_restore: true }
+  const admin = { id: 4, role: 'admin' }
+  assert.equal(canEditContent(own, admin), true)
+  assert.equal(canEditContent(other, admin), false)
+  assert.equal(canEditContent(own, admin, false), false)
+  assert.equal(canHideContent(own, admin), false)
+  assert.equal(canHideContent(other, admin), true)
+  assert.equal(canRestoreContent(own, admin), false)
+  assert.equal(canRestoreContent(other, admin), true)
+  assert.equal(canHideContent(other, { id: 6, role: 'member' }), false)
+})
+
+// 已知 ID、JWT 或重讀世代變更時，舊 GET 不能在新畫面上短暫顯示。
+test('private read result belongs to current credential and request generation', () => {
+  const first = { backend: BACKENDS.laravel[1], credential: { accessToken: 'old' }, path: '/api/comments/7', currentPage: null, enabled: true, kind: 'comment', expectedId: '7', revision: 0 }
+  assert.equal(ownsRead(first, first), true)
+  assert.equal(ownsRead(first, { ...first, credential: { accessToken: 'new' } }), false)
+  assert.equal(ownsRead(first, { ...first, expectedId: '8', path: '/api/comments/8' }), false)
+  assert.equal(ownsRead(first, { ...first, revision: 1 }), false)
+  assert.equal(ownsRead(first, { ...first, enabled: false }), false)
 })
 
 // 無效帳密與暱稱必須先擋下，不能發請求造成錯誤鎖定計數。

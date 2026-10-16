@@ -230,9 +230,21 @@ test('React choice cancels draft and ignores late registration', async (t) => {
   assert.deepEqual(registering.redirects, ['/react/register'])
 })
 
-// React 不提供作者頁；手動變更停用選項也不能導向錯誤的列表。
-test('React choice rejects unimplemented Nuxt author page', (t) => {
+// React 已有發文頁，選單可切換且沿用同分頁 JWT 與原到期時間。
+test('React choice reaches Nuxt author page with the original shared session', (t) => {
   const app = switchingPage('articles/new', true)
+  t.after(app.close)
+  assert.equal(app.app.reactTarget.value, '/react/articles/new')
+  const choice = { target: { value: 'react' } }
+  app.app.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'react')
+  assert.deepEqual(app.redirects, ['/react/articles/new'])
+  assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+})
+
+// 管理頁尚未加入 React；即使手動選擇停用項也不得導頁。
+test('React choice rejects Nuxt admin page', (t) => {
+  const app = switchingPage('admin/settings/login-lockout', true)
   t.after(app.close)
   assert.equal(app.app.reactTarget.value, null)
   const choice = { target: { value: 'react' } }

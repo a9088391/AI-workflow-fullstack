@@ -241,13 +241,21 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
-// React 僅接收已完成頁；同一後端憑證、到期時間及原始文章 ID 都不得改動。
+// React 已完成作者頁；切換只搬移語意路徑和原始 ID，不改後端憑證或到期時間。
 test('React frontend switch keeps supported routes and exact shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/react/'],
     ['/vue/register', '', '/react/register'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/react/login?return_to=%2Freact%2Farticles%2F001'],
     ['/vue/articles/001', '', '/react/articles/001'],
+    ['/vue/articles/new', '', '/react/articles/new'],
+    ['/vue/articles/001/edit', '', '/react/articles/001/edit'],
+    ['/vue/me/articles', '', '/react/me/articles'],
+    ['/vue/me/comments', '', '/react/me/comments'],
+    ['/vue/comments/009', '', '/react/comments/009'],
+    ['/vue/comments/009/edit', '', '/react/comments/009/edit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009%2Fedit', '/react/login?return_to=%2Freact%2Fcomments%2F009%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew', '/react/login?return_to=%2Freact%2Farticles%2Fnew'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -262,9 +270,9 @@ test('React frontend switch keeps supported routes and exact shared session', as
   }
 })
 
-// 作者、管理和未知路徑仍留在 Vue；非法目標不能暗中改成文章列表。
-test('React frontend choice rejects unfinished paths and protected login returns', (t) => {
-  for (const [source, search] of [['/vue/articles/new', ''], ['/vue/articles/001/edit', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'], ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0']]) {
+// React 管理頁尚未完成；未知或非法 ID 不能暗中改成文章列表。
+test('React frontend choice rejects admin, unknown and invalid paths and login returns', (t) => {
+  for (const [source, search] of [['/vue/admin/members', ''], ['/vue/admin/articles', ''], ['/vue/unknown', ''], ['/vue/articles/0/edit', ''], ['/vue/comments/9007199254740992', ''], ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'], ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'], ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'], ['/vue/login', '?return_to=https%3A%2F%2Fevil.test']]) {
     const app = articleApp(source, 'same-token', search)
     t.after(app.close)
     assert.equal(app.page.canSwitchReactPage, false, source)

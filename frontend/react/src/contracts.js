@@ -81,12 +81,15 @@ export function positiveId(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : null
 }
 
-// 只允許本票已實作頁面作為登入返回目標，不接受外站或未完成頁面。
+// 登入返回與跨前端切換只接受已完成的語意頁面，阻止外站及不合法 ID。
 export function validReturn(path) {
-  return path === '/react/' || Boolean(typeof path === 'string' && /^\/react\/articles\/([0-9]+)$/.test(path) && positiveId(path.slice('/react/articles/'.length)) !== null)
+  if (['/react/', '/react/articles/new', '/react/me/articles', '/react/me/comments'].includes(path)) return true
+  if (typeof path !== 'string') return false
+  const match = path.match(/^\/react\/(articles|comments)\/([0-9]+)(\/edit)?$/)
+  return Boolean(match && positiveId(match[2]) !== null)
 }
 
-// 前端切換只搬移目前頁面語意與文章 ID，頁碼及表單內容不跨版本搬運。
+// 前端切換只搬移合法頁面語意與既有 ID；頁碼與表單內容留在原版。
 export function frontendTarget(path, frontend, returnTo = '/react/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (path === '/react/login' && returnTo === '/react/') return `/${frontend}/login`
@@ -97,6 +100,40 @@ export function frontendTarget(path, frontend, returnTo = '/react/') {
     return target
   }
   return `/${frontend}/`
+}
+
+// 文字欄位先按共同 Unicode 碼點與空白規則檢查，伺服器仍負責最終驗證。
+export function validateContent(input, kind = 'article') {
+  const errors = {}
+  const fields = kind === 'article' ? { title: 200, body: 20000 } : { body: 2000 }
+  for (const [name, max] of Object.entries(fields)) {
+    const value = input[name]
+    if (typeof value !== 'string' || [...value].length < 1 || [...value].length > max || blank.test(value) || value.includes('\0')) errors[name] = ['欄位格式或範圍不正確']
+  }
+  return errors
+}
+
+// 編修僅屬內容作者；留言另須先確認父文章公開，管理角色不能越過作者規則。
+export function canEditContent(item, account, parentVisible = true) {
+  return Boolean(item && account && item.author?.id === account.id && parentVisible)
+}
+
+// 管理員可下架他人內容並接管其既有下架，自己的內容仍依作者規則。
+export function canHideContent(item, account) {
+  return Boolean(item && account && (item.author?.id === account.id || account.role === 'admin')
+    && (item.visibility === 'visible' || account.role === 'admin' && item.author.id !== account.id))
+}
+
+// 恢復權由目前後端資料決定；UI 只顯示入口，實際操作再由後端重驗。
+export function canRestoreContent(item, account) {
+  return Boolean(item && account && (item.author?.id === account.id || account.role === 'admin') && item.visibility === 'hidden' && item.can_restore)
+}
+
+// 私有讀取僅可顯示原請求身分、路徑與重讀世代的結果，切換時不閃出舊資料。
+export function ownsRead(result, owner) {
+  return result.backend === owner.backend && result.credential === owner.credential && result.path === owner.path
+    && result.currentPage === owner.currentPage && result.enabled === owner.enabled && result.kind === owner.kind
+    && result.expectedId === owner.expectedId && result.revision === owner.revision
 }
 
 // Email 僅修剪 ASCII 空格、折 ASCII 大寫，避免與後端規則分歧。
