@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
+import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsNextRoute, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
 
 // 模擬同一分頁的 sessionStorage，以確實檢查跨框架共享格式與清除順序。
 function storage() {
@@ -21,6 +21,9 @@ test('shared session schema and backend switch', () => {
   assert.equal(saveSession(s, BACKENDS.laravel[1], 'jwt', '2026-10-16 18:00:00'), true)
   assert.equal(s.values.get(BACKEND_KEY), BACKENDS.laravel[1])
   assert.deepEqual(JSON.parse(s.values.get(SESSION_KEY)), { backend: BACKENDS.laravel[1], accessToken: 'jwt', expiresAt: '2026-10-16 18:00:00' })
+  assert.deepEqual(readSession(s), { backend: BACKENDS.laravel[1], accessToken: 'jwt', expiresAt: '2026-10-16 18:00:00' })
+  // 前端網址映射本身不可動共用儲存，原 JWT 與到期時間供新前端重驗。
+  assert.equal(frontendTarget('/react/articles/7', 'next'), '/next/articles/7')
   assert.deepEqual(readSession(s), { backend: BACKENDS.laravel[1], accessToken: 'jwt', expiresAt: '2026-10-16 18:00:00' })
   assert.equal(selectBackend(s, BACKENDS.nestjs[1]), true)
   assert.equal(readSession(s), null)
@@ -60,6 +63,22 @@ test('return target and frontend mapping', () => {
   assert.equal(frontendTarget('/react/login', 'nuxt', '/react/admin/settings/login-lockout'), '/nuxt/login?return_to=%2Fnuxt%2Fadmin%2Fsettings%2Flogin-lockout')
   for (const path of ['//evil.test', '/react/admin/members/0', '/react/admin/members/-1', '/react/admin/members/9007199254740992', '/react/admin/settings/nope', '/react/articles/0', '/react/articles/-1', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/articles/new/edit']) assert.equal(validReturn(path), false)
   assert.equal(positiveId('07'), 7)
+})
+
+// Next 選單只開放本票四種共同頁面；受保護返回目標不可帶到未完成路由。
+test('Next menu availability and safe frontend targets', () => {
+  for (const [path, target] of [['/react/', '/next/'], ['/react/register', '/next/register'], ['/react/login', '/next/login'], ['/react/articles/0007', '/next/articles/0007']]) {
+    assert.equal(supportsNextRoute(path), true, path)
+    assert.equal(frontendTarget(path, 'next'), target, path)
+  }
+  for (const path of ['/react/articles/new', '/react/articles/7/edit', '/react/me/articles', '/react/me/comments', '/react/comments/9', '/react/comments/9/edit', '/react/admin/members', '/react/admin/members/7', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/unknown']) {
+    assert.equal(supportsNextRoute(path), false, path)
+    assert.equal(frontendTarget(path, 'next'), null, path)
+  }
+  assert.equal(frontendTarget('/react/login', 'next', '/react/articles/0007'), '/next/login?return_to=%2Fnext%2Farticles%2F0007')
+  assert.equal(frontendTarget('/react/login', 'next', '/react/articles/new'), '/next/login')
+  assert.equal(frontendTarget('/react/login', 'next', '/react/admin/members'), '/next/login')
+  assert.equal(frontendTarget('/react/login', 'next', '//evil.test'), '/next/login')
 })
 
 // 管理回應只有完整一般會員與四欄設定可呈現；錯誤型態不得視為空列表。

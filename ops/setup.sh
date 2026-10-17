@@ -12,7 +12,7 @@ cleanup() {
         printf '\n'
     fi
     if [ ! -f ".local/setup-complete-$project_name" ]; then
-        docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-react nginx >/dev/null 2>&1 || true
+        docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-nuxt frontend-react frontend-next nginx >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -68,13 +68,13 @@ unset admin_password
 touch ".local/setup-complete-$project_name"
 
 if [ "${1:-}" != '--backend-only' ]; then
-    # 舊票隔離 Compose 只啟動當時存在的 Vue；一般首次設定同時啟動 React。
-    frontend_services="frontend-vue frontend-react"
+    # 舊票隔離 Compose 只啟動當時存在的 Vue；一般首次設定啟動已完成前端。
+    frontend_services="frontend-vue frontend-nuxt frontend-react frontend-next"
     case "${COMPOSE_FILE:-}" in *ops/tests/*) frontend_services="frontend-vue" ;; esac
     docker compose up -d --build --wait $frontend_services nginx
     if [ "$frontend_services" = 'frontend-vue' ]; then
         echo 'Vue／Laravel 展示已就緒：http://localhost:8080/vue/'
     else
-        echo 'Vue／React／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/react/'
+        echo 'Vue／Nuxt／React／Next.js／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/nuxt/、http://localhost:8080/react/、http://localhost:8080/next/'
     fi
 fi

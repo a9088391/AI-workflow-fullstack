@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { BACKENDS, FRONTENDS, canEditContent, canHideContent, canRestoreContent, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, request, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, validAccount, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
+import { BACKENDS, FRONTENDS, canEditContent, canHideContent, canRestoreContent, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, request, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsNextRoute, validAccount, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
 
 const pathname = window.location.pathname
 const params = new URLSearchParams(window.location.search)
@@ -709,6 +709,8 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const logoutController = useRef(null)
   const navToggle = useRef(null)
+  // 目前頁面若無 Next 對應路由，保留選項可見但不可切換。
+  const nextReady = supportsNextRoute(pathname)
   // 工具列在後端變更時重建，舊登出請求不得撤銷新後端畫面狀態。
   useEffect(() => {
     // 離開舊後端或頁面時取消仍在途的登出請求。
@@ -724,7 +726,7 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
     return !draft.dirty || window.confirm(draft.pending ? '請求已送出，切換後仍可能完成。要捨棄目前表單並切換嗎？' : '目前表單有未儲存文字。要捨棄並切換嗎？')
   }
 
-  // 目前前端已知頁面轉成同語意網址；Nuxt 不支援某些後端時保持選單原值。
+  // 目前前端已完成頁面轉成同語意網址；未完成目標路由保持選單原值。
   function switchFrontend(event) {
     const next = event.target.value
     if (next === 'react') return
@@ -776,11 +778,15 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   }
 
   return <><header className="site-header"><a className="brand" href="/react/">文章集<span> / REACT</span></a><div className="current">目前前端　<strong>React＋Vite</strong><br />目前後端　<strong>{name}</strong></div><details className="switches"><summary>切換版本</summary><div className="switch-panel"><label htmlFor="frontend">目前前端</label><select id="frontend" value={front} onChange={switchFrontend}>{Object.entries(FRONTENDS).map(
-    // 固定六版仍列在選單；尚未完成版本禁止誤導為可操作頁面。
-    ([id, label]) => <option key={id} value={id} disabled={['next', 'angular', 'sveltekit'].includes(id) || id === 'nuxt' && !Object.values(BACKENDS).slice(0, 4).some(
-      // Nuxt 現階段只支援四個已驗證後端，其他來源不強制改選。
-      (entry) => entry[1] === backend,
-    )}>{label}{['next', 'angular', 'sveltekit'].includes(id) ? '（尚未提供）' : ''}</option>,
+    // 六版入口保持可見；只啟用目前頁面在目標版已完成且可用的選項。
+    ([id, label]) => {
+      const unavailable = ['angular', 'sveltekit'].includes(id) || id === 'next' && !nextReady
+      const nuxtDisabled = id === 'nuxt' && !Object.values(BACKENDS).slice(0, 4).some(
+        // Nuxt 現階段只支援四個已驗證後端，其他來源不強制改選。
+        (entry) => entry[1] === backend,
+      )
+      return <option key={id} value={id} disabled={unavailable || nuxtDisabled}>{label}{id === 'next' && !nextReady ? '（此頁尚未提供）' : unavailable ? '（尚未提供）' : ''}</option>
+    },
   )}</select><label htmlFor="backend">目前後端</label><select id="backend" value={backend} onChange={switchBackend}>{Object.entries(BACKENDS).map(
     // 十二個後端共享 API 路徑，只需更換固定基底。
     ([id, [label, url]]) => <option key={id} value={url}>{label}</option>,

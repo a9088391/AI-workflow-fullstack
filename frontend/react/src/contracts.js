@@ -91,14 +91,22 @@ export function validReturn(path) {
   return Boolean(match && positiveId(match[2]) !== null)
 }
 
-// 前端切換只搬移合法頁面語意與既有 ID；頁碼與表單內容留在原版。
+// Next 本票只完成公開閱讀與帳號頁；選單及網址映射共用此判斷以免進入未完成頁。
+export function supportsNextRoute(path) {
+  if (path === '/react/' || path === '/react/register' || path === '/react/login') return true
+  const article = typeof path === 'string' && path.match(/^\/react\/articles\/([0-9]+)$/)
+  return Boolean(article && positiveId(article[1]) !== null)
+}
+
+// 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。
 export function frontendTarget(path, frontend, returnTo = '/react/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
+  if (frontend === 'next' && !supportsNextRoute(path)) return null
   if (path === '/react/login' && returnTo === '/react/') return `/${frontend}/login`
-  const current = path === '/react/login' && validReturn(returnTo) ? returnTo : path
+  const current = path === '/react/login' && validReturn(returnTo) && (frontend !== 'next' || supportsNextRoute(returnTo)) ? returnTo : path
   if (current === '/react/' || current === '/react/register' || current === '/react/login' || validReturn(current)) {
     const target = current.replace(/^\/react/, `/${frontend}`)
-    if (path === '/react/login' && current !== '/react/') return `/${frontend}/login?return_to=${encodeURIComponent(target)}`
+    if (path === '/react/login' && current !== '/react/' && current !== path) return `/${frontend}/login?return_to=${encodeURIComponent(target)}`
     return target
   }
   return `/${frontend}/`

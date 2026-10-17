@@ -15,7 +15,7 @@ const administrator = { ...account, role: 'admin' }
 const settings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 }
 
 // 執行真實 Nuxt app 與表單 script；只替換瀏覽器、Nuxt 注入及延遲 HTTP 邊界。
-function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony, confirmResult = true) {
+function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony, confirmResult = true, loginReturn = '/nuxt/articles/001') {
   const original = { useState: globalThis.useState, computed: globalThis.computed, fetch: globalThis.fetch, storage: Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage') }
   const states = new Map()
   const values = new Map()
@@ -48,7 +48,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
     requests.push({ url, options, ...response })
     return response.promise
   }
-  const route = { query: page === 'login' ? { return_to: '/nuxt/articles/001' } : {}, path: page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'articles/new' ? '/nuxt/articles/new' : page === 'admin/settings/login-lockout' ? '/admin/settings/login-lockout' : '/' }
+  const route = { query: page === 'login' ? { return_to: loginReturn } : {}, path: page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'articles/new' ? '/nuxt/articles/new' : page === 'admin/settings/login-lockout' ? '/admin/settings/login-lockout' : '/' }
   const pathname = page === 'index' ? '/nuxt/' : `/nuxt/${page}`
   const confirmations = []
   const window = {
@@ -85,7 +85,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   }
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
-  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, chooseFrontend, chooseBackend, submitLogout })'))
+  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, chooseFrontend, chooseBackend, submitLogout })'))
   // 有表單的頁面執行正式 submit/save；唯讀文章詳情只需 app 切換狀態。
   const form = page === 'index' || /^articles\/[0-9]+$/.test(page) ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
@@ -252,6 +252,34 @@ test('React choice reaches Nuxt admin page with the original shared session', (t
   assert.equal(choice.target.value, 'react')
   assert.deepEqual(app.redirects, ['/react/admin/settings/login-lockout'])
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+})
+
+// Next.js 已完成頁面可直接切換；不改目前後端、JWT 或原登入期限。
+test('Next.js choice reaches completed Nuxt pages with the original shared session', (t) => {
+  // 選單以同一個經驗證的 target 決定 disabled，避免畫面可選卻被處理器拒絕。
+  const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
+  assert.match(template, /<option value="next" :disabled="!nextTarget">Next\.js/)
+  for (const [page, target] of [['index', '/next/'], ['register', '/next/register'], ['login', '/next/login?return_to=%2Fnext%2Farticles%2F001'], ['articles/001', '/next/articles/001']]) {
+    const app = switchingPage(page, true)
+    t.after(app.close)
+    assert.equal(app.app.nextTarget.value, target)
+    app.app.chooseFrontend({ target: { value: 'next' } })
+    assert.deepEqual(app.redirects, [target])
+    assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  }
+})
+
+// 未完成頁與不安全登入目標皆停用 Next.js 選項，即使手動觸發事件也不得導覽。
+test('Next.js choice blocks unsupported pages and login returns', (t) => {
+  for (const [page, loginReturn] of [['articles/new'], ['admin/settings/login-lockout'], ['login', '/nuxt/articles/new'], ['login', '/nuxt/admin/members'], ['login', '/nuxt/articles/0'], ['login', 'https://evil.test']]) {
+    const app = switchingPage(page, false, BACKENDS.symfony, true, loginReturn)
+    t.after(app.close)
+    assert.equal(app.app.nextTarget.value, null)
+    const choice = { target: { value: 'next' } }
+    app.app.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'nuxt')
+    assert.deepEqual(app.redirects, [])
+  }
 })
 
 // 伺服器尚未確認撤銷 JWT 時，React 選項也必須等待登出結果。

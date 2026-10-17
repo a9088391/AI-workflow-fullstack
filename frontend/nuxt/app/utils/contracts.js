@@ -51,6 +51,21 @@ export function reactFrontendTarget(path, returnTo = null) {
   return match && positiveUrlInteger(match[1] || match[2]) !== null ? path.replace(/^\/nuxt/, '/react') : null
 }
 
+// Next.js 本票只接收公開列表、帳號頁與合法單篇 ID；登入返回不能帶到尚未完成的作者或管理頁。
+export function nextFrontendTarget(path, returnTo = null) {
+  if (path === '/nuxt/' || path === '/nuxt/register') return path.replace(/^\/nuxt/, '/next')
+  if (path === '/nuxt/login') {
+    // 登入先映射返回頁；作者、管理與非法目標都不能繞過選單限制。
+    if (returnTo === null || returnTo === undefined) return '/next/login'
+    const target = nextFrontendTarget(returnTo)
+    return target && (target === '/next/' || /^\/next\/articles\/[0-9]+$/.test(target))
+      ? `/next/login${target === '/next/' ? '' : `?return_to=${encodeURIComponent(target)}`}` : null
+  }
+  // 單篇網址只保留安全正整數原始字串，讓前導零跨前端仍對應同一資源。
+  const article = typeof path === 'string' && path.match(/^\/nuxt\/articles\/([0-9]+)$/)
+  return article && positiveUrlInteger(article[1]) !== null ? path.replace(/^\/nuxt/, '/next') : null
+}
+
 // 內容欄位依共同 Unicode 碼點與固定空白集合驗證，不改寫作者輸入。
 export function validateContent(input, kind = 'article') {
   const errors = {}

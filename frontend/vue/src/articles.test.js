@@ -293,6 +293,54 @@ test('React frontend choice rejects unknown and invalid paths and login returns'
   }
 })
 
+// Next.js 僅在本票已有的公開與帳號頁開放，登入目標保留安全的原文章 ID 與共用登入期限。
+test('Next.js frontend choice keeps completed routes and exact shared session', async (t) => {
+  for (const [source, search, destination] of [
+    ['/vue/', '', '/next/'],
+    ['/vue/register', '', '/next/register'],
+    ['/vue/login', '', '/next/login'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/next/login?return_to=%2Fnext%2Farticles%2F001'],
+    ['/vue/articles/001', '', '/next/articles/001'],
+  ]) {
+    const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchNextPage, true, source)
+    app.page.versionsOpen.value = true
+    assert.match(await renderArticleApp(app), /<option value="next">Next\.js<\/option>/)
+    app.page.chooseFrontend({ target: { value: 'next' } })
+    assert.deepEqual(app.redirects, [destination])
+    assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.nestjs, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+    if (app.requests[0]) {
+      await respond(app.requests[0], 200, success(member))
+      assert.equal(app.page.account.value, null)
+    }
+  }
+})
+
+// 作者、管理與非法返回目標都不能藉由手動改 select 進入未完成的 Next.js 路由。
+test('Next.js frontend choice disables unsupported pages and unsafe login returns', async (t) => {
+  for (const [source, search] of [
+    ['/vue/articles/new', ''], ['/vue/articles/001/edit', ''], ['/vue/me/articles', ''],
+    ['/vue/comments/9', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''],
+    ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
+    ['/vue/login', '?return_to=https%3A%2F%2Fevil.test'],
+  ]) {
+    const app = articleApp(source, null, search)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchNextPage, false, source)
+    app.page.versionsOpen.value = true
+    assert.match(await renderArticleApp(app), /<option value="next" disabled>Next\.js（此頁尚未提供）<\/option>/)
+    const previousRedirects = [...app.redirects]
+    const choice = { target: { value: 'next' } }
+    app.page.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'vue')
+    assert.deepEqual(app.redirects, previousRedirects)
+  }
+})
+
 // 取消捨棄時保留登入草稿；確認切換後舊登入回應不能補寫憑證。
 test('React choice respects draft cancellation and invalidates late login', async (t) => {
   const cancelled = articleApp('/vue/login', null, '', false)
