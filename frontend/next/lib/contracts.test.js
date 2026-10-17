@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apiFailure, apiRequest, BACKEND_KEY, BACKENDS, canSwitchFrontend, clearSessionIfOwned, emptySuccess, formatCountdown, frontendTarget, loginData, pageNumber, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, SESSION_KEY, successData, validReturn, validateAccount } from './contracts.js'
+import { apiFailure, apiRequest, BACKEND_KEY, BACKENDS, canEditContent, canHideContent, canRestoreContent, canSwitchFrontend, clearSessionIfOwned, emptySuccess, formatCountdown, frontendTarget, loginData, pageNumber, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, SESSION_KEY, successData, validReturn, validateAccount, validateContent } from './contracts.js'
 
 // 模擬同分頁儲存，核對跨前端共用 schema 與後端切換順序。
 function storage() {
@@ -42,14 +42,17 @@ test('invalid backend and session data fail closed', () => {
   assert.equal(selectBackend(tab, 'https://attacker.invalid'), false)
 })
 
-// 導覽只接受本票完成的語意頁與合法 ID，不可把登入後返回目標改成外站。
+// 導覽只接受已完成的語意頁與合法 ID，不可把登入後返回目標改成外站。
 test('route and frontend targets preserve only approved completed pages', () => {
   assert.equal(validReturn('/next/articles/0009'), true)
   assert.equal(validReturn('https://attacker.invalid'), false)
   assert.equal(validReturn('/next/articles/0'), false)
-  assert.equal(validReturn('/next/articles/new'), false)
+  for (const path of ['/next/articles/new', '/next/articles/007/edit', '/next/me/articles', '/next/me/comments', '/next/comments/009', '/next/comments/009/edit']) assert.equal(validReturn(path), true, path)
+  for (const path of ['/next/articles/0/edit', '/next/comments/9007199254740992', '/next/admin/members', '//evil.test']) assert.equal(validReturn(path), false, path)
   assert.equal(positiveId('9007199254740992'), null)
   assert.equal(frontendTarget('/next/articles/0009', 'vue'), '/vue/articles/0009')
+  assert.equal(frontendTarget('/next/comments/009/edit', 'vue'), '/vue/comments/009/edit')
+  assert.equal(frontendTarget('/next/login', 'react', '/next/me/comments'), '/react/login?return_to=%2Freact%2Fme%2Fcomments')
   assert.equal(frontendTarget('/next/login', 'react', '/next/articles/9'), '/react/login?return_to=%2Freact%2Farticles%2F9')
   assert.equal(frontendTarget('/next/login', 'react', '//attacker.invalid'), '/react/login')
   assert.equal(frontendTarget('/next/register', 'nuxt'), '/nuxt/register')
@@ -58,6 +61,25 @@ test('route and frontend targets preserve only approved completed pages', () => 
   assert.equal(frontendTarget('/next/login', 'react', '/next'), '/react/login')
   assert.equal(pageNumber('0'), 1)
   assert.equal(pageNumber('5'), 5)
+})
+
+// 內容檢查、作者編修與恢復入口依核准欄位和權限處理。
+test('author content validation and controls use actual authorship and server restore flag', () => {
+  assert.deepEqual(validateContent({ title: '😀', body: '第一行\r\n第二行' }), {})
+  assert.deepEqual(validateContent({ body: '😀'.repeat(2000) }, 'comment'), {})
+  assert.deepEqual(validateContent({ title: '  ', body: '內容' }), { title: ['欄位格式或範圍不正確'] })
+  assert.deepEqual(validateContent({ title: '標題', body: '含\0字元' }), { body: ['欄位格式或範圍不正確'] })
+  assert.deepEqual(validateContent({ body: '😀'.repeat(2001) }, 'comment'), { body: ['欄位格式或範圍不正確'] })
+  const own = { id: 2, role: 'admin' }
+  const other = { id: 3, role: 'member' }
+  const item = { author: { id: 2 }, visibility: 'hidden', can_restore: false }
+  assert.equal(canEditContent(item, own), true)
+  assert.equal(canEditContent(item, own, false), false)
+  assert.equal(canEditContent(item, other), false)
+  assert.equal(canHideContent(item, own), false)
+  assert.equal(canRestoreContent(item, own), false)
+  assert.equal(canRestoreContent({ ...item, can_restore: true }, own), true)
+  assert.equal(canRestoreContent({ ...item, can_restore: true }, other), false)
 })
 
 // Nuxt 只能承接目前已支援的四個後端，否則切換會使共用登入失效。
@@ -112,6 +134,9 @@ test('article and comment response validation distinguishes invalid data from ov
   const comments = { list: [comment], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }
   assert.deepEqual(successData(200, envelope(comments), 'comments', 1, 8), comments)
   assert.equal(successData(200, envelope(comments), 'comments', 1, 9), null)
+  assert.deepEqual(successData(200, envelope(comments), 'my-comments', 1), comments)
+  assert.deepEqual(successData(200, envelope(comment), 'comment', 8), comment)
+  assert.equal(successData(200, envelope(comment), 'comment', 9), null)
 })
 
 // 登入與寫入只接受指定成功 envelope；欄位明細和追蹤碼完整保留。

@@ -293,14 +293,28 @@ test('React frontend choice rejects unknown and invalid paths and login returns'
   }
 })
 
-// Next.js 僅在本票已有的公開與帳號頁開放，登入目標保留安全的原文章 ID 與共用登入期限。
-test('Next.js frontend choice keeps completed routes and exact shared session', async (t) => {
+// Next.js 開放已完成的公開、帳號與作者頁；登入返回保留原始 ID 與共用登入期限。
+test('Next.js frontend choice keeps public and author routes with the exact shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/next/'],
     ['/vue/register', '', '/next/register'],
     ['/vue/login', '', '/next/login'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/next/login?return_to=%2Fnext%2Farticles%2F001'],
     ['/vue/articles/001', '', '/next/articles/001'],
+    ['/vue/articles/new', '', '/next/articles/new'],
+    ['/vue/articles/001/edit', '', '/next/articles/001/edit'],
+    ['/vue/articles/9007199254740991/edit', '', '/next/articles/9007199254740991/edit'],
+    ['/vue/me/articles', '', '/next/me/articles'],
+    ['/vue/me/comments', '', '/next/me/comments'],
+    ['/vue/comments/009', '', '/next/comments/009'],
+    ['/vue/comments/009/edit', '', '/next/comments/009/edit'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew', '/next/login?return_to=%2Fnext%2Farticles%2Fnew'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001%2Fedit', '/next/login?return_to=%2Fnext%2Farticles%2F001%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fme%2Farticles', '/next/login?return_to=%2Fnext%2Fme%2Farticles'],
+    ['/vue/login', '?return_to=%2Fvue%2Fme%2Fcomments', '/next/login?return_to=%2Fnext%2Fme%2Fcomments'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009', '/next/login?return_to=%2Fnext%2Fcomments%2F009'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009%2Fedit', '/next/login?return_to=%2Fnext%2Fcomments%2F009%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F9007199254740991%2Fedit', '/next/login?return_to=%2Fnext%2Farticles%2F9007199254740991%2Fedit'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -317,15 +331,17 @@ test('Next.js frontend choice keeps completed routes and exact shared session', 
   }
 })
 
-// 作者、管理與非法返回目標都不能藉由手動改 select 進入未完成的 Next.js 路由。
-test('Next.js frontend choice disables unsupported pages and unsafe login returns', async (t) => {
+// Next.js 仍拒絕管理、未知、非法 ID 與外站登入返回，手動改 select 也不能繞過限制。
+test('Next.js frontend choice rejects admin, unknown, invalid IDs, and unsafe login returns', async (t) => {
   for (const [source, search] of [
-    ['/vue/articles/new', ''], ['/vue/articles/001/edit', ''], ['/vue/me/articles', ''],
-    ['/vue/comments/9', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''],
+    ['/vue/admin/members', ''], ['/vue/admin/members/001', ''], ['/vue/admin/articles', ''],
+    ['/vue/admin/comments', ''], ['/vue/admin/settings/login-lockout', ''], ['/vue/unknown', ''],
     ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
-    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew'],
+    ['/vue/articles/0/edit', ''], ['/vue/articles/9007199254740992/edit', ''],
+    ['/vue/comments/0', ''], ['/vue/comments/9007199254740992/edit', ''],
     ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'],
     ['/vue/login', '?return_to=https%3A%2F%2Fevil.test'],
   ]) {
     const app = articleApp(source, null, search)

@@ -65,18 +65,19 @@ test('return target and frontend mapping', () => {
   assert.equal(positiveId('07'), 7)
 })
 
-// Next 選單只開放本票四種共同頁面；受保護返回目標不可帶到未完成路由。
+// Next 已完成作者頁；管理路由與無效 ID 仍不得成為切換或登入返回目標。
 test('Next menu availability and safe frontend targets', () => {
-  for (const [path, target] of [['/react/', '/next/'], ['/react/register', '/next/register'], ['/react/login', '/next/login'], ['/react/articles/0007', '/next/articles/0007']]) {
+  for (const [path, target] of [['/react/', '/next/'], ['/react/register', '/next/register'], ['/react/login', '/next/login'], ['/react/articles/0007', '/next/articles/0007'], ['/react/articles/new', '/next/articles/new'], ['/react/articles/007/edit', '/next/articles/007/edit'], ['/react/me/articles', '/next/me/articles'], ['/react/me/comments', '/next/me/comments'], ['/react/comments/009', '/next/comments/009'], ['/react/comments/009/edit', '/next/comments/009/edit']]) {
     assert.equal(supportsNextRoute(path), true, path)
     assert.equal(frontendTarget(path, 'next'), target, path)
   }
-  for (const path of ['/react/articles/new', '/react/articles/7/edit', '/react/me/articles', '/react/me/comments', '/react/comments/9', '/react/comments/9/edit', '/react/admin/members', '/react/admin/members/7', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/unknown']) {
+  for (const path of ['/react/admin/members', '/react/admin/members/7', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/comments/9007199254740992', '/react/articles/new/edit', '/react/unknown']) {
     assert.equal(supportsNextRoute(path), false, path)
     assert.equal(frontendTarget(path, 'next'), null, path)
   }
   assert.equal(frontendTarget('/react/login', 'next', '/react/articles/0007'), '/next/login?return_to=%2Fnext%2Farticles%2F0007')
-  assert.equal(frontendTarget('/react/login', 'next', '/react/articles/new'), '/next/login')
+  assert.equal(frontendTarget('/react/login', 'next', '/react/articles/new'), '/next/login?return_to=%2Fnext%2Farticles%2Fnew')
+  assert.equal(frontendTarget('/react/login', 'next', '/react/comments/009/edit'), '/next/login?return_to=%2Fnext%2Fcomments%2F009%2Fedit')
   assert.equal(frontendTarget('/react/login', 'next', '/react/admin/members'), '/next/login')
   assert.equal(frontendTarget('/react/login', 'next', '//evil.test'), '/next/login')
 })

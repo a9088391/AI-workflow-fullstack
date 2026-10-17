@@ -51,19 +51,20 @@ export function reactFrontendTarget(path, returnTo = null) {
   return match && positiveUrlInteger(match[1] || match[2]) !== null ? path.replace(/^\/nuxt/, '/react') : null
 }
 
-// Next.js 本票只接收公開列表、帳號頁與合法單篇 ID；登入返回不能帶到尚未完成的作者或管理頁。
+// Next.js 接收公開、帳號與作者頁，管理路徑仍封閉；登入返回重用白名單以保留安全路徑與原始 ID。
 export function nextFrontendTarget(path, returnTo = null) {
-  if (path === '/nuxt/' || path === '/nuxt/register') return path.replace(/^\/nuxt/, '/next')
+  // 精確比對靜態作者頁，避免 /articles/new 被資源 ID 路徑誤認。
+  if (['/nuxt/', '/nuxt/register', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments'].includes(path)) return path.replace(/^\/nuxt/, '/next')
   if (path === '/nuxt/login') {
-    // 登入先映射返回頁；作者、管理與非法目標都不能繞過選單限制。
+    // 返回頁重用同一白名單，但不能再次導向登入或註冊造成循環。
     if (returnTo === null || returnTo === undefined) return '/next/login'
     const target = nextFrontendTarget(returnTo)
-    return target && (target === '/next/' || /^\/next\/articles\/[0-9]+$/.test(target))
+    return target && target !== '/next/login' && target !== '/next/register'
       ? `/next/login${target === '/next/' ? '' : `?return_to=${encodeURIComponent(target)}`}` : null
   }
-  // 單篇網址只保留安全正整數原始字串，讓前導零跨前端仍對應同一資源。
-  const article = typeof path === 'string' && path.match(/^\/nuxt\/articles\/([0-9]+)$/)
-  return article && positiveUrlInteger(article[1]) !== null ? path.replace(/^\/nuxt/, '/next') : null
+  // 僅支援文章與留言資源；驗證正整數後保留原始 ID（含合法前導零）。
+  const resource = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles\/([0-9]+)(?:\/edit)?|comments\/([0-9]+)(?:\/edit)?)$/)
+  return resource && positiveUrlInteger(resource[1] || resource[2]) !== null ? path.replace(/^\/nuxt/, '/next') : null
 }
 
 // 內容欄位依共同 Unicode 碼點與固定空白集合驗證，不改寫作者輸入。

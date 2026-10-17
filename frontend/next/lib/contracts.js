@@ -88,14 +88,14 @@ export function positiveId(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : null
 }
 
-// 本票可返回的目的地只有文章列表與已實作的單篇閱讀頁。
+// 登入返回只接受已完成的作者頁與合法 ID，避免開放式轉址。
 export function validReturn(path) {
-  if (path === '/next/' || path === '/next') return true
-  const match = typeof path === 'string' && path.match(/^\/next\/articles\/([0-9]+)$/)
+  if (['/next/', '/next', '/next/articles/new', '/next/me/articles', '/next/me/comments'].includes(path)) return true
+  const match = typeof path === 'string' && path.match(/^\/next\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
   return Boolean(match && positiveId(match[1]) !== null)
 }
 
-// 切換版本只搬移本票已完成的頁面語意與文章 ID，登入目標另安全映射。
+// 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。
 export function frontendTarget(path, frontend, returnTo = '/next/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (path === '/next/login') {
@@ -186,6 +186,34 @@ export function validContent(item, kind = 'article') {
     && ['visible', 'hidden'].includes(item.visibility) && typeof item.can_restore === 'boolean'
 }
 
+// 純文字按共同 Unicode 碼點與固定空白集合檢查，原值仍交後端最終驗證。
+export function validateContent(input, kind = 'article') {
+  const errors = {}
+  const fields = kind === 'comment' ? { body: 2000 } : { title: 200, body: 20000 }
+  // 不修剪或轉換文字，避免前端默默變更使用者的內容。
+  for (const [name, max] of Object.entries(fields)) {
+    const value = input[name]
+    if (typeof value !== 'string' || !value.length || [...value].length > max || blank.test(value) || value.includes('\0')) errors[name] = ['欄位格式或範圍不正確']
+  }
+  return errors
+}
+
+// 管理員自己的內容仍按作者規則編修，留言內文另需父文章確定公開。
+export function canEditContent(item, account, parentVisible = true) {
+  return Boolean(item && account && item.author.id === account.id && parentVisible)
+}
+
+// 管理員可以下架別人的內容；自己的內容仍只按作者權限處理。
+export function canHideContent(item, account) {
+  return Boolean(item && account && (item.author.id === account.id || account.role === 'admin')
+    && (item.visibility === 'visible' || account.role === 'admin' && item.author.id !== account.id))
+}
+
+// 恢復入口採伺服器的 can_restore，但實際權限仍由寫入端點重驗。
+export function canRestoreContent(item, account) {
+  return Boolean(item && account && (item.author.id === account.id || account.role === 'admin') && item.visibility === 'hidden' && item.can_restore)
+}
+
 // 分頁資料須維持伺服器頁碼與總數，才能區分真空與合法超頁。
 export function validList(data, page, kind = 'article', articleId = null) {
   const p = data?.pagination
@@ -202,7 +230,8 @@ export function successData(status, body, kind, expected, articleId = null) {
   if (status !== 200 || body?.success !== true || body.message !== 'OK') return null
   if (kind === 'account') return validAccount(body.data) ? body.data : null
   if (kind === 'article') return validContent(body.data) && body.data.id === expected ? body.data : null
-  return validList(body.data, expected, kind === 'comments' ? 'comment' : 'article', articleId) ? body.data : null
+  if (kind === 'comment') return validContent(body.data, 'comment') && body.data.id === expected ? body.data : null
+  return validList(body.data, expected, ['comments', 'my-comments'].includes(kind) ? 'comment' : 'article', articleId) ? body.data : null
 }
 
 // 登入必須同時取得 JWT、原期限和完整身分資料，才可保存共用登入。

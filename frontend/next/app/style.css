@@ -3,7 +3,7 @@
 html{scroll-behavior:smooth}
 body{margin:0}
 a{color:inherit;text-underline-offset:.2em}
-button,input,select{font:inherit}
+button,input,select,textarea{font:inherit}
 button,select{cursor:pointer}
 button:disabled,select:disabled{cursor:not-allowed;opacity:.58}
 :focus-visible{outline:3px solid #d62e26;outline-offset:3px}
@@ -81,9 +81,17 @@ button:disabled,select:disabled{cursor:not-allowed;opacity:.58}
 .form-intro>p:last-child{color:#4e4e4e;font-size:clamp(17px,2vw,25px);margin:0}
 .account-form{display:grid;gap:8px}
 .account-form label{font-size:19px;font-weight:800;margin-top:12px}
-.account-form input{border:1px solid #171717;background:#fff;border-radius:0;min-height:56px;width:100%;padding:10px 14px;font-size:18px}
+.account-form input,.account-form textarea{border:1px solid #171717;background:#fff;border-radius:0;min-height:56px;width:100%;padding:10px 14px;font-size:18px}
 .account-form input:disabled{background:#e5e5e5}
-.account-form input[aria-invalid=true]{border:2px solid #c7251f}
+.account-form input[aria-invalid=true],.account-form textarea[aria-invalid=true]{border:2px solid #c7251f}
+.account-form textarea{resize:vertical;line-height:1.7}
+.editor-page,.composer,.related,.comparison{min-width:0}
+.editor-page>.section-heading{margin-bottom:24px}
+.author-actions,.related,.comparison{border-top:1px solid #777;padding:18px 0;margin:20px 0}
+.author-actions button,.comparison button,.related button,.composer button{margin-right:10px;margin-bottom:10px}
+.composer{border-top:2px solid #171717;padding-top:28px;margin-top:30px}
+.composer h3,.related h2,.comparison h2{font-size:clamp(24px,3vw,34px);line-height:1.2;margin:0 0 12px}
+.comparison .body-text{white-space:pre-wrap;overflow-wrap:anywhere;border-left:1px solid #777;padding-left:14px}
 .field-error{color:#a31b15;font-weight:700;overflow-wrap:anywhere}
 .hint{margin:0 0 8px;font-size:13px;color:#555}
 .red-button{display:inline-flex;align-items:center;justify-content:space-between;gap:20px;border:1px solid #d62e26;background:#d62e26;color:#fff;padding:15px 24px;font-size:24px;font-weight:900;text-decoration:none;min-height:58px;margin-top:19px;transition:transform .16s ease-out,background-color .16s ease-out}

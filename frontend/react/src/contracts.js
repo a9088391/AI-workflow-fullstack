@@ -91,11 +91,9 @@ export function validReturn(path) {
   return Boolean(match && positiveId(match[2]) !== null)
 }
 
-// Next 本票只完成公開閱讀與帳號頁；選單及網址映射共用此判斷以免進入未完成頁。
+// Next 已完成公開與作者頁；沿用安全路由驗證但排除尚未完成的管理頁。
 export function supportsNextRoute(path) {
-  if (path === '/react/' || path === '/react/register' || path === '/react/login') return true
-  const article = typeof path === 'string' && path.match(/^\/react\/articles\/([0-9]+)$/)
-  return Boolean(article && positiveId(article[1]) !== null)
+  return path === '/react/register' || path === '/react/login' || validReturn(path) && !path.startsWith('/react/admin/')
 }
 
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。
