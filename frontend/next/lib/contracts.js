@@ -88,11 +88,11 @@ export function positiveId(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : null
 }
 
-// 登入返回只接受已完成的作者頁與合法 ID，避免開放式轉址。
+// 登入返回只接受已完成的作者／管理語意頁與合法 ID，避免開放式轉址。
 export function validReturn(path) {
-  if (['/next/', '/next', '/next/articles/new', '/next/me/articles', '/next/me/comments'].includes(path)) return true
-  const match = typeof path === 'string' && path.match(/^\/next\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
-  return Boolean(match && positiveId(match[1]) !== null)
+  if (['/next/', '/next', '/next/articles/new', '/next/me/articles', '/next/me/comments', '/next/admin/members', '/next/admin/articles', '/next/admin/comments', '/next/admin/settings/login-lockout'].includes(path)) return true
+  const match = typeof path === 'string' && path.match(/^\/next\/(?:(?:articles|comments)\/([0-9]+)(?:\/edit)?|admin\/members\/([0-9]+))$/)
+  return Boolean(match && positiveId(match[1] || match[2]) !== null)
 }
 
 // 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。
@@ -173,6 +173,42 @@ export function validAccount(value) {
     && (value.role === 'member' || value.role === 'admin') && value.status === 'active' && timestamp.test(value.created_at)
 }
 
+// 管理列表須容納停用的一般會員，但不得把管理員或不完整資料當成會員。
+export function validMember(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Number.isSafeInteger(value.id) && value.id > 0
+    && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
+    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30 && !blank.test(value.nickname)
+    && value.role === 'member' && ['active', 'disabled'].includes(value.status) && timestamp.test(value.created_at)
+}
+
+// 設定讀回只接受四個核准欄位與界限，避免用損壞回應覆蓋表單。
+export function validLockoutSettings(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 4
+    && typeof value.enabled === 'boolean' && Number.isInteger(value.window_minutes) && value.window_minutes >= 1 && value.window_minutes <= 60
+    && Number.isInteger(value.failure_threshold) && value.failure_threshold >= 1 && value.failure_threshold <= 100
+    && Number.isInteger(value.lock_seconds) && value.lock_seconds >= 1 && value.lock_seconds <= 86400
+}
+
+// 表單原字串先驗證十進位與上限，再組成 API 要求的完整四欄數值。
+export function parseLockoutDraft(draft) {
+  const errors = {}
+  const limits = { window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 }
+  for (const [name, max] of Object.entries(limits)) {
+    // 空字串、指數與小數不可先經 Number 轉型而誤成合法整數。
+    if (typeof draft?.[name] !== 'string' || !/^[0-9]+$/.test(draft[name]) || Number(draft[name]) < 1 || Number(draft[name]) > max) errors[name] = [`請輸入 1–${max} 的整數`]
+  }
+  if (Object.keys(errors).length) return { body: null, errors }
+  const body = { enabled: draft.enabled, window_minutes: Number(draft.window_minutes), failure_threshold: Number(draft.failure_threshold), lock_seconds: Number(draft.lock_seconds) }
+  return validLockoutSettings(body) ? { body, errors } : { body: null, errors: { enabled: ['設定欄位不完整'] } }
+}
+
+// 搜尋只修剪 U+0020；過長值由介面攔下，不交給後端產生可避免的 422。
+export function memberKeyword(value) {
+  if (typeof value !== 'string') return null
+  const keyword = value.replace(/^ +| +$/g, '')
+  return [...keyword].length <= 254 ? keyword : null
+}
+
 // 文章與留言的共用欄位必須完整，才可顯示伺服器文字。
 export function validContent(item, kind = 'article') {
   return item && typeof item === 'object' && !Array.isArray(item) && Number.isSafeInteger(item.id) && item.id > 0
@@ -221,7 +257,7 @@ export function validList(data, page, kind = 'article', articleId = null) {
     && Number.isSafeInteger(p.total) && p.total >= 0 && p.total_pages === Math.ceil(p.total / 20)
     && data.list.every(
       // 每筆都須是契約資源；留言另須屬於目前文章。
-      (item) => validContent(item, kind) && (articleId === null || item.article_id === articleId),
+      (item) => (kind === 'member' ? validMember(item) : validContent(item, kind)) && (articleId === null || item.article_id === articleId),
     )
 }
 
@@ -229,9 +265,11 @@ export function validList(data, page, kind = 'article', articleId = null) {
 export function successData(status, body, kind, expected, articleId = null) {
   if (status !== 200 || body?.success !== true || body.message !== 'OK') return null
   if (kind === 'account') return validAccount(body.data) ? body.data : null
+  if (kind === 'member') return validMember(body.data) && body.data.id === expected ? body.data : null
+  if (kind === 'lockout-settings') return validLockoutSettings(body.data) ? body.data : null
   if (kind === 'article') return validContent(body.data) && body.data.id === expected ? body.data : null
   if (kind === 'comment') return validContent(body.data, 'comment') && body.data.id === expected ? body.data : null
-  return validList(body.data, expected, ['comments', 'my-comments'].includes(kind) ? 'comment' : 'article', articleId) ? body.data : null
+  return validList(body.data, expected, kind === 'members' ? 'member' : ['comments', 'my-comments', 'managed-comments'].includes(kind) ? 'comment' : 'article', articleId) ? body.data : null
 }
 
 // 登入必須同時取得 JWT、原期限和完整身分資料，才可保存共用登入。

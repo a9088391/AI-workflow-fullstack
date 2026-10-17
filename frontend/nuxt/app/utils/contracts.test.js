@@ -21,8 +21,8 @@ test('React frontend targets preserve author and admin routes and reject invalid
   for (const path of ['/nuxt/admin/unknown', '/nuxt/admin/members/0', '/nuxt/admin/members/9007199254740992', '/nuxt/admin/members/001/edit', '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/comments/0/edit', '/nuxt/comments/9007199254740992', '/nuxt/unknown']) assert.equal(reactFrontendTarget(path), null, path)
 })
 
-// Next.js 接收已完成的公開、帳號與作者頁；登入返回只保留合法目標的原始 ID。
-test('Next.js frontend target maps public and author routes and rejects unsupported returns', () => {
+// Next.js 接收已完成的公開、帳號、作者與管理頁；登入返回只保留合法目標的原始 ID。
+test('Next.js frontend target maps public, author, and admin routes and rejects unsafe returns', () => {
   for (const [source, target] of [
     ['/nuxt/', '/next/'], ['/nuxt/register', '/next/register'], ['/nuxt/login', '/next/login'],
     ['/nuxt/articles/001', '/next/articles/001'], ['/nuxt/articles/new', '/next/articles/new'],
@@ -30,6 +30,9 @@ test('Next.js frontend target maps public and author routes and rejects unsuppor
     ['/nuxt/me/articles', '/next/me/articles'],
     ['/nuxt/me/comments', '/next/me/comments'], ['/nuxt/comments/009', '/next/comments/009'],
     ['/nuxt/comments/009/edit', '/next/comments/009/edit'],
+    ['/nuxt/admin/members', '/next/admin/members'], ['/nuxt/admin/members/001', '/next/admin/members/001'],
+    ['/nuxt/admin/articles', '/next/admin/articles'], ['/nuxt/admin/comments', '/next/admin/comments'],
+    ['/nuxt/admin/settings/login-lockout', '/next/admin/settings/login-lockout'],
   ]) assert.equal(nextFrontendTarget(source), target)
   assert.equal(nextFrontendTarget('/nuxt/login', '/nuxt/'), '/next/login')
   assert.equal(nextFrontendTarget('/nuxt/login', '/nuxt/articles/001'), '/next/login?return_to=%2Fnext%2Farticles%2F001')
@@ -37,15 +40,18 @@ test('Next.js frontend target maps public and author routes and rejects unsuppor
     const expected = route.replace('/nuxt/', '/next/')
     assert.equal(nextFrontendTarget('/nuxt/login', route), `/next/login?return_to=${encodeURIComponent(expected)}`, route)
   }
+  for (const route of ['/nuxt/admin/members', '/nuxt/admin/members/001', '/nuxt/admin/articles', '/nuxt/admin/comments', '/nuxt/admin/settings/login-lockout']) {
+    assert.equal(nextFrontendTarget('/nuxt/login', route), `/next/login?return_to=${encodeURIComponent(route.replace('/nuxt/', '/next/'))}`, route)
+  }
   for (const target of [
-    '/nuxt/admin/members', '/nuxt/admin/members/001', '/nuxt/admin/articles', '/nuxt/admin/comments',
-    '/nuxt/admin/settings/login-lockout', '/nuxt/articles/0', '/nuxt/articles/9007199254740992',
+    '/nuxt/admin/unknown', '/nuxt/admin/members/0', '/nuxt/admin/members/9007199254740992',
+    '/nuxt/admin/members/1/edit', '/nuxt/articles/0', '/nuxt/articles/9007199254740992',
     '/nuxt/articles/0/edit', '/nuxt/comments/0', '/nuxt/comments/9007199254740992/edit',
-    '/nuxt/unknown', '/nuxt/register', 'https://evil.test', '//evil.test',
+    '/nuxt/unknown', '/nuxt/register', '/nuxt/login', 'https://evil.test', '//evil.test',
   ]) assert.equal(nextFrontendTarget('/nuxt/login', target), null, target)
   for (const path of [
-    '/nuxt/admin/members', '/nuxt/admin/members/0', '/nuxt/admin/articles', '/nuxt/admin/comments',
-    '/nuxt/admin/members/001', '/nuxt/admin/settings/login-lockout', '/nuxt/articles/0', '/nuxt/articles/9007199254740992',
+    '/nuxt/admin/unknown', '/nuxt/admin/members/0', '/nuxt/admin/members/9007199254740992',
+    '/nuxt/admin/members/001/edit', '/nuxt/articles/0', '/nuxt/articles/9007199254740992',
     '/nuxt/articles/9007199254740992/edit', '/nuxt/comments/0/edit', '/nuxt/comments/9007199254740992',
     '/nuxt/comments/7/extra', '/nuxt/unknown',
   ]) assert.equal(nextFrontendTarget(path), null, path)

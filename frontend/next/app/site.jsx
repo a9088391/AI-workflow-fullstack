@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { apiFailure, apiRequest, BACKENDS, canEditContent, canHideContent, canRestoreContent, canSwitchFrontend, emptySuccess, formatCountdown, FRONTENDS, frontendTarget, loginData, ownsSession, pageNumber, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, successData, validReturn, validateAccount, validateContent, clearSessionIfOwned } from '../lib/contracts.js'
+import { apiFailure, apiRequest, BACKENDS, canEditContent, canHideContent, canRestoreContent, canSwitchFrontend, emptySuccess, formatCountdown, FRONTENDS, frontendTarget, loginData, memberKeyword, ownsSession, pageNumber, parseLockoutDraft, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, successData, validReturn, validateAccount, validateContent, clearSessionIfOwned } from '../lib/contracts.js'
 
 const CREATED_ARTICLE_NOTICE_KEY = 'articleCollection.next.createdArticleNotice'
 
@@ -16,7 +16,7 @@ function ErrorNotice({ error, retry, focusRef }) {
     <strong>{error.message}</strong>
     {error.errors && Object.keys(error.errors).length > 0 && <ul>{Object.entries(error.errors).map(
       // 已知欄位可聚焦，其他伺服器明細仍須完整顯示。
-      ([name, messages]) => <li key={name}>{['email', 'password', 'nickname', 'title', 'body'].includes(name)
+      ([name, messages]) => <li key={name}>{['email', 'password', 'nickname', 'title', 'body', 'keyword', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)
         ? <button type="button" className="text-button" data-field={name} onClick={focusField}>{name}：{messages.join('；')}</button>
         : `${name}：${messages.join('；')}`}</li>,
     )}</ul>}
@@ -67,11 +67,11 @@ function useApiRead(backend, credential, path, kind, expected, articleId, enable
 }
 
 // 以 API 原頁碼及總數導覽，超頁仍提供第一頁入口。
-function Pagination({ pagination, base, fragment = '' }) {
+function Pagination({ pagination, base, fragment = '', query = '' }) {
   if (!pagination || (pagination.total_pages <= 1 && pagination.page <= 1)) return null
   const number = pagination.page
   // 保留目前資源路徑，只更換列表頁碼。
-  function href(page) { return `${base}?page=${page}${fragment}` }
+  function href(page) { return `${base}?page=${page}${query ? `&${query}` : ''}${fragment}` }
   return <nav className="pagination" aria-label="分頁">
     <span>第 {number} 頁／共 {pagination.total_pages} 頁，{pagination.total} 筆</span>
     {number > 1 && <a href={href(number - 1)}>上一頁</a>}
@@ -411,6 +411,7 @@ function ArticlePage({ backend, credential, account, ready, id, page, onAuthFail
   }
   return <div className="editorial-layout"><ArticleRail /><article className="article-column detail">
     <a className="back-link" href="/next/">← 返回文章列表</a>
+    {account?.role === 'admin' && <a className="back-link admin-return" href="/next/admin/articles">← 返回文章管理</a>}
     {read.loading && <p className="notice" role="status">正在載入文章…</p>}
     <ErrorNotice error={read.error} retry={read.reload} />
     {read.data && <><header><p className="eyebrow">ARTICLE / 文章閱讀</p><h1>{read.data.title}</h1><ArticleMeta item={read.data} /><p>{read.data.visibility === 'hidden' ? '已下架' : '公開'}</p></header>
@@ -427,13 +428,163 @@ function ArticlePage({ backend, credential, account, ready, id, page, onAuthFail
 function CommentDetail({ id, backend, credential, account, ready, onAuthFailure, formNavigation }) {
   const read = useApiRead(backend, credential, `/api/comments/${id}`, 'comment', positiveId(id), null, ready, onAuthFailure)
   const parent = useApiRead(backend, credential, `/api/articles/${read.data?.article_id || 0}`, 'article', read.data?.article_id, null, ready && Boolean(read.data), onAuthFailure)
-  return <div className="editorial-layout"><ArticleRail /><main className="article-column detail"><a className="back-link" href="/next/me/comments">← 返回我的留言</a><div className="section-heading"><h1>留言詳情</h1></div>
+  return <div className="editorial-layout"><ArticleRail /><main className="article-column detail"><a className="back-link" href="/next/me/comments">← 返回我的留言</a>{account?.role === 'admin' && <a className="back-link admin-return" href="/next/admin/comments">← 返回留言管理</a>}<div className="section-heading"><h1>留言詳情</h1></div>
     {ready && read.loading && <p role="status" className="notice">正在讀取留言…</p>}<ErrorNotice error={read.error} retry={read.reload} />
     {read.data && <><ArticleMeta item={read.data} /><p>{read.data.visibility === 'hidden' ? '已下架' : '公開'}</p><p className="article-body body-text">{read.data.body}</p>
       <section className="related"><h2>所屬文章</h2>{parent.loading && <p role="status">正在讀取文章…</p>}{parent.data && <p><a href={`/next/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}</p>}{parent.error && <><p className="notice">所屬文章目前無法讀取。</p><button className="outline-button" type="button" onClick={parent.reload}>單獨重試文章讀取</button></>}</section>
       {canEditContent(read.data, account, parent.data?.visibility === 'visible') && <a className="back-link" href={`/next/comments/${id}/edit`}>編輯留言</a>}
       {account && <VisibilityAction item={read.data} kind="comment" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} formNavigation={formNavigation} onRefresh={read.reload} />}</>}
   </main></div>
+}
+
+// 管理入口沿用同一組語意頁，避免在窄螢幕塞入過長的單列導覽。
+function AdminMenu() {
+  return <details className="admin-menu"><summary>管理</summary><nav aria-label="管理導覽"><a href="/next/admin/members">會員</a><a href="/next/admin/articles">文章</a><a href="/next/admin/comments">留言</a><a href="/next/admin/settings/login-lockout">鎖定設定</a></nav></details>
+}
+
+// 瑞士式側欄與清楚的操作區延伸到管理頁，資料仍由各頁獨立讀取。
+function AdminFrame({ title, children }) {
+  return <div className="editorial-layout admin-layout"><aside className="article-rail" aria-label="管理介面"><p className="rail-kicker">THE ARTICLE COLLECTION</p><p className="rail-title">管理<br />中心</p><p className="rail-foot">會員・文章・留言</p></aside><main className="article-column admin-page"><div className="section-heading"><h1>{title}</h1><p className="eyebrow">ADMINISTRATION / 管理</p></div><a className="back-link" href="/next/">← 返回文章列表</a>{children}</main></div>
+}
+
+// 管理員身分只控制前端顯示與請求時機，實際授權仍由各 API 重驗。
+function AdminAccess({ ready, authStatus, account }) {
+  if (ready) return null
+  return <p className="notice" role="status">{account && account.role !== 'admin' ? '沒有權限使用管理功能。' : authStatus === 'checking' ? '正在驗證登入…' : authStatus === 'error' ? '目前無法確認登入，請先重新驗證。' : authStatus === 'disabled' ? '此帳號已停用，不能使用管理功能。' : authStatus === 'expired' ? '請重新登入以繼續管理操作。' : '請先登入以使用管理功能。'}</p>
+}
+
+// 會員搜尋只保留核准的 keyword；網址頁碼在搜尋時回第一頁。
+function AdminMembers({ backend, credential, account, authStatus, ready, page, keyword: rawKeyword, onAuthFailure }) {
+  const keyword = memberKeyword(rawKeyword)
+  const [input, setInput] = useState(rawKeyword)
+  const [searchError, setSearchError] = useState(null)
+  const searchRef = useRef(null)
+  const filter = keyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(keyword)}` : ''
+  const read = useApiRead(backend, credential, `/api/members?page=${page}&per_page=20${filter}`, 'members', page, null, ready && keyword !== null, onAuthFailure)
+  // 搜尋驗證失敗時聚焦摘要，可由其中的欄位按鈕回到輸入。
+  useEffect(() => { if (searchError) searchRef.current?.focus() }, [searchError])
+  // 只將修剪後的字面值放進網址，未知字元由 URL 編碼而非自行解讀。
+  function search(event) {
+    event.preventDefault()
+    const next = memberKeyword(input)
+    if (next === null) { setSearchError({ message: '搜尋關鍵字不得超過 254 個字。', errors: { keyword: ['最多 254 個 Unicode 字元'] } }); return }
+    window.location.assign(`/next/admin/members${next ? `?keyword=${encodeURIComponent(next)}` : ''}`)
+  }
+  // 搜尋字串變動後移除舊的長度錯誤，保留輸入直到送出。
+  function changeSearch(event) { setInput(event.target.value); setSearchError(null) }
+  return <AdminFrame title="會員管理"><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
+    <form className="admin-toolbar" onSubmit={search}><label htmlFor="keyword">搜尋暱稱或 Email</label><input id="keyword" value={input} onChange={changeSearch} aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'keyword-error' : undefined} /><button className="outline-button" type="submit">搜尋會員</button>{searchError && <p id="keyword-error" className="field-error">最多 254 個 Unicode 字元</p>}</form>
+    <ErrorNotice error={searchError || (keyword === null ? { message: '網址中的搜尋關鍵字過長，請修正後再搜尋。' } : null)} focusRef={searchRef} />
+    {keyword !== null && <>{read.loading && <p className="notice" role="status">正在載入會員…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <>
+      {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
+        // 列表只連到一般會員詳情，不在前端推測狀態寫入結果。
+        (member) => <li className="admin-row" key={member.id}><div><small>會員 #{member.id}</small><h2><a href={`/next/admin/members/${member.id}`}>{member.nickname}</a></h2></div><p className="break">{member.email}</p><p>{member.status === 'active' ? '啟用' : '停用'}</p><a href={`/next/admin/members/${member.id}`}>查看詳情</a></li>,
+      )}</ol> : <p className="notice">{page > read.data.pagination.total_pages && read.data.pagination.total > 0 ? '此頁沒有會員資料。' : keyword ? '沒有符合搜尋條件的會員。' : '目前尚無會員。'}</p>}
+      <Pagination pagination={read.data.pagination} base="/next/admin/members" query={keyword ? `keyword=${encodeURIComponent(keyword)}` : ''} />
+    </>}</>}
+  </>}</AdminFrame>
+}
+
+// 停用／恢復後只相信重新讀取的伺服器狀態；不把空成功回應當成新狀態。
+function AdminMember({ id, backend, credential, account, authStatus, ready, onAuthFailure, formNavigation }) {
+  const numericId = positiveId(id)
+  const read = useApiRead(backend, credential, `/api/members/${id}`, 'member', numericId, null, ready, onAuthFailure)
+  const write = useAuthorWrite(backend, credential, account, onAuthFailure, formNavigation, `member-status-${id}`)
+  const [checking, setChecking] = useState(false)
+  // 寫入未確認時須由人重新讀回，不能自動重送同一狀態。
+  async function change() {
+    if (!read.data || write.pending || write.uncertain || write.conflict || !window.confirm(`確定${read.data.status === 'active' ? '停用' : '恢復'}這位會員嗎？`)) return
+    const status = read.data.status === 'active' ? 'disabled' : 'active'
+    const result = await write.send(`/api/members/${id}/status`, 'PUT', { status }, 200, ['status'])
+    if (result.ok) { setChecking(false); read.reload() }
+  }
+  // 查證啟動時清除先前資料，讀取完成後才可解鎖下一次手動操作。
+  function check() { setChecking(true); read.reload() }
+  // 使用者親自比對最新狀態後解鎖，下一次點擊仍須再次確認。
+  function accept() { if (read.data && !read.loading && !read.error) { write.checked(); setChecking(false) } }
+  return <AdminFrame title="會員詳情"><a className="back-link" href="/next/admin/members">← 返回會員列表</a><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
+    {read.loading && <p className="notice" role="status">正在讀取會員…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <div className="admin-detail"><p><strong>會員 ID</strong><span>{read.data.id}</span></p><p><strong>暱稱</strong><span>{read.data.nickname}</span></p><p><strong>Email</strong><span>{read.data.email}</span></p><p><strong>角色</strong><span>一般會員</span></p><p><strong>狀態</strong><span>{read.data.status === 'active' ? '啟用' : '停用'}</span></p><p><strong>加入時間</strong><span>{read.data.created_at}</span></p></div>}
+    <ErrorNotice error={write.error} />{(write.uncertain || write.conflict) && <div className="notice"><p>結果尚未確認。請重新讀取並核對會員狀態，不會自動重送。</p><button type="button" className="outline-button" onClick={check} disabled={read.loading}>重讀會員狀態</button>{checking && read.data && <button type="button" className="outline-button" onClick={accept}>已核對最新狀態</button>}</div>}
+    {read.data && <button type="button" className="red-button" onClick={change} disabled={write.pending || write.uncertain || write.conflict}>{write.pending ? '處理中…' : read.data.status === 'active' ? '停用會員' : '恢復會員'}</button>}
+  </>}</AdminFrame>
+}
+
+// 管理列表使用既有內容詳情與可見性控制，避免開放修改其他作者內文。
+function AdminContent({ kind, backend, credential, account, authStatus, ready, page, onAuthFailure }) {
+  const article = kind === 'article'
+  const route = article ? 'articles' : 'comments'
+  const path = article ? `/api/articles?page=${page}&per_page=20&filters%5Bscope%5D=management` : `/api/comments?page=${page}&per_page=20`
+  const read = useApiRead(backend, credential, path, article ? 'articles' : 'managed-comments', page, null, ready, onAuthFailure)
+  return <AdminFrame title={article ? '文章管理' : '留言管理'}><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
+    {read.loading && <p className="notice" role="status">正在載入{article ? '文章' : '留言'}…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <>
+      {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
+        // 完整內文和版本操作留在已知 ID 詳情，列表只呈現可辨識摘要。
+        (item) => <li className="admin-row" key={item.id}><div><small>{article ? '文章' : '留言'} #{item.id}</small><h2><a href={`/next/${route}/${item.id}`}>{article ? item.title : `留言 #${item.id}`}</a></h2></div><p>作者 {item.author.nickname}<br />建立於 {BACKENDS[item.created_backend][0]}</p><p>{item.visibility === 'hidden' ? '已下架' : '公開'}</p><a href={`/next/${route}/${item.id}`}>查看詳情</a><p className="excerpt">{item.body}</p></li>,
+      )}</ol> : <p className="notice">{page > read.data.pagination.total_pages && read.data.pagination.total > 0 ? '此頁沒有資料。' : `目前尚無${article ? '文章' : '留言'}。`}</p>}
+      <Pagination pagination={read.data.pagination} base={`/next/admin/${route}`} />
+    </>}
+  </>}</AdminFrame>
+}
+
+// 設定表單保留未送出的值；PUT 期間停用輸入，成功後才以讀回四欄取代草稿。
+function AdminSettings({ backend, credential, account, authStatus, ready, onAuthFailure, formNavigation }) {
+  const read = useApiRead(backend, credential, '/api/settings/login-lockout', 'lockout-settings', null, null, ready, onAuthFailure)
+  const write = useAuthorWrite(backend, credential, account, onAuthFailure, formNavigation, 'lockout-settings')
+  const [draft, setDraft] = useState(null)
+  const [ownerId, setOwnerId] = useState(null)
+  const [localError, setLocalError] = useState(null)
+  const [checking, setChecking] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const errorRef = useRef(null)
+  const sameAccount = ownerId === null || ownerId === account?.id
+  // 首次讀入與成功寫入後使用伺服器值；其他情況保留待查證的草稿。
+  useEffect(() => {
+    if (!read.data || !account || draft) return
+    setDraft({ enabled: read.data.enabled, window_minutes: String(read.data.window_minutes), failure_threshold: String(read.data.failure_threshold), lock_seconds: String(read.data.lock_seconds) })
+    setOwnerId(account.id)
+  }, [read.data, account, draft])
+  // 送出驗證失敗後把焦點交給摘要，讓鍵盤使用者可選欄位並保留草稿。
+  useEffect(() => { if (ready && sameAccount && (localError || write.error)) errorRef.current?.focus() }, [ready, sameAccount, localError, write.error])
+  // 本地欄位更新只影響草稿，切換選單仍會提示捨棄未儲存設定。
+  function change(name, value) {
+    // 函式式更新保留其他三欄，快速輸入時不以過期草稿覆蓋它們。
+    setDraft((current) => ({ ...current, [name]: value }))
+    setLocalError(null); setSaved(false); write.clearError(); write.markDirty(true)
+  }
+  // 勾選變更只更新布林欄，不清除停用期間仍需保存的數值。
+  function changeEnabled(event) { change('enabled', event.target.checked) }
+  // 數值欄保留原字串供錯誤修正，送出時才驗證並轉換。
+  function changeNumber(event) { change(event.target.id, event.target.value) }
+  // 三個數值須為界限內的十進位整數；停用開關仍一同送出原數值。
+  async function save(event) {
+    event.preventDefault()
+    if (!ready || !sameAccount || !draft || write.pending || write.uncertain) return
+    const { body, errors } = parseLockoutDraft(draft)
+    if (Object.keys(errors).length) { setLocalError({ message: '欄位資料不正確，請確認後再送出。', errors }); return }
+    const result = await write.send('/api/settings/login-lockout', 'PUT', body, 200, Object.keys(body))
+    if (result.ok) { setDraft(null); write.markDirty(false); setSaved(true); read.reload() }
+  }
+  // 已送出但結果不明時只查證完整設定，不替使用者重送 PUT。
+  function check() { setChecking(true); read.reload() }
+  // 手動核對伺服器完整值後才解除鎖，保留原草稿讓使用者自行決定。
+  function accept() { if (read.data && !read.loading && !read.error && sameAccount) { write.checked(); setChecking(false) } }
+  return <AdminFrame title="登入鎖定設定"><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
+    {read.loading && <p className="notice" role="status">正在讀取設定…</p>}<ErrorNotice error={read.error} retry={read.reload} />{saved && !read.loading && read.data && <p className="notice success" role="status">已儲存；以下數值已重新向伺服器讀取。</p>}
+    {!sameAccount && <p className="notice error">登入帳號已變更，舊帳號的設定草稿不可由目前帳號送出。請重新開啟此頁。</p>}
+    {draft && sameAccount && <form className="account-form settings-form" onSubmit={save}><ErrorNotice error={localError || write.error} focusRef={errorRef} /><label className="setting-toggle"><input id="enabled" type="checkbox" checked={draft.enabled} onChange={changeEnabled} disabled={write.pending} aria-invalid={Boolean((localError || write.error)?.errors?.enabled)} aria-describedby={(localError || write.error)?.errors?.enabled ? 'enabled-error' : undefined} />啟用會員登入錯誤鎖定</label>
+      {(localError || write.error)?.errors?.enabled && <p id="enabled-error" className="field-error">{(localError || write.error).errors.enabled.join('；')}</p>}
+      <p className="hint">停用仍保留以下三個數值；重新啟用時沿用。</p>
+      {[['window_minutes', '累計失敗時間（分鐘）', 60], ['failure_threshold', '觸發鎖定次數', 100], ['lock_seconds', '鎖定秒數', 86400]].map(
+        // 各欄保留可見標籤、上限與 422 明細的焦點目標。
+        ([name, label, max]) => <div className="setting-field" key={name}><label htmlFor={name}>{label}</label><input id={name} inputMode="numeric" value={draft[name]} onChange={changeNumber} disabled={write.pending} aria-invalid={Boolean((localError || write.error)?.errors?.[name])} aria-describedby={(localError || write.error)?.errors?.[name] ? `${name}-error` : undefined} /><p className="hint">1–{max}</p>{(localError || write.error)?.errors?.[name]?.map(
+          // 伺服器欄位錯誤保持在相應輸入旁，同時於摘要可聚焦。
+          (message, index) => <p id={index === 0 ? `${name}-error` : undefined} className="field-error" key={message}>{message}</p>,
+        )}</div>,
+      )}
+      {(write.uncertain || write.conflict) && <div className="notice"><p>結果尚未確認。請重讀並核對目前設定，不會自動重送。</p><button className="outline-button" type="button" onClick={check} disabled={read.loading}>重讀目前設定</button>{checking && read.data && <><p>伺服器目前：{read.data.enabled ? '啟用' : '停用'}，{read.data.window_minutes} 分鐘／{read.data.failure_threshold} 次／{read.data.lock_seconds} 秒。</p><button className="outline-button" type="button" onClick={accept}>已核對目前設定</button></>}</div>}
+      <button className="red-button" type="submit" disabled={write.pending || write.uncertain || write.conflict}>{write.pending ? '儲存中…' : '儲存設定'}</button>
+    </form>}
+  </>}</AdminFrame>
 }
 
 // 註冊與登入使用相同單欄表單；鎖定與伺服器錯誤只套在當次登入。
@@ -581,8 +732,12 @@ export default function Site({ path, query }) {
   const commentId = comment && positiveId(comment[1]) !== null ? comment[1] : null
   const commentEdit = path.match(/^\/next\/comments\/([0-9]+)\/edit$/)
   const commentEditId = commentEdit && positiveId(commentEdit[1]) !== null ? commentEdit[1] : null
+  const member = path.match(/^\/next\/admin\/members\/([0-9]+)$/)
+  const memberId = member && positiveId(member[1]) !== null ? member[1] : null
+  const adminPath = validReturn(path) && path.startsWith('/next/admin/')
   const authorPath = path === '/next/articles/new' || path === '/next/me/articles' || path === '/next/me/comments' || Boolean(articleId || articleEditId || commentId || commentEditId)
   const authorReady = authStatus === 'active' && Boolean(account)
+  const adminReady = authorReady && account.role === 'admin'
   // 本人驗證暫時失敗仍可嘗試公開文章；只在已確認登入時附上 JWT。
   const ready = backend !== null && ['guest', 'active', 'expired', 'disabled', 'error'].includes(authStatus)
   // BFCache 恢復的舊元件可能持有過期後端或 JWT，重載後重新讀取並驗證。
@@ -740,7 +895,7 @@ export default function Site({ path, query }) {
     setAuthError(null)
   }
   return <div className="site-shell"><a className="skip-link" href="#main-content">跳至主要內容</a><header className="site-header">
-    <div className="brand-row"><a className="brand" href="/next/">文章集<span aria-hidden="true">.</span></a><nav className="desktop-nav" aria-label="主要導覽"><a aria-current={path === '/next/' ? 'page' : undefined} href="/next/">所有文章</a>{account ? <><a href="/next/articles/new">發表文章</a><a href="/next/me/articles">我的文章</a><a href="/next/me/comments">我的留言</a></> : <><a href="/next/login">登入</a><a href="/next/register">註冊</a></>}</nav></div>
+    <div className="brand-row"><a className="brand" href="/next/">文章集<span aria-hidden="true">.</span></a><nav className="desktop-nav" aria-label="主要導覽"><a aria-current={path === '/next/' ? 'page' : undefined} href="/next/">所有文章</a>{account ? <><a href="/next/articles/new">發表文章</a><a href="/next/me/articles">我的文章</a><a href="/next/me/comments">我的留言</a>{account.role === 'admin' && <AdminMenu />}</> : <><a href="/next/login">登入</a><a href="/next/register">註冊</a></>}</nav></div>
     <div className="header-controls"><div className="current-labels"><span>目前前端 <strong>Next.js</strong></span><span>目前後端 <strong>{backend ? Object.values(BACKENDS).find(
       // 從固定清單找顯示名稱，不把不可信儲存值直接印到畫面。
       (entry) => entry[1] === backend,
@@ -756,9 +911,9 @@ export default function Site({ path, query }) {
       {account && <span className="account-name">{account.nickname}</span>}
       {account && <button type="button" className="text-button logout" onClick={logout} disabled={logoutPending}>{logoutPending ? '登出中…' : '登出'}</button>}
     </div>
-    <details className="mobile-nav"><summary>選單</summary><nav aria-label="行動導覽"><a href="/next/">所有文章</a>{account ? <><a href="/next/articles/new">發表文章</a><a href="/next/me/articles">我的文章</a><a href="/next/me/comments">我的留言</a></> : <><a href="/next/login">登入</a><a href="/next/register">註冊</a></>}</nav></details>
+    <details className="mobile-nav"><summary>選單</summary><nav aria-label="行動導覽"><a href="/next/">所有文章</a>{account ? <><a href="/next/articles/new">發表文章</a><a href="/next/me/articles">我的文章</a><a href="/next/me/comments">我的留言</a>{account.role === 'admin' && <AdminMenu />}</> : <><a href="/next/login">登入</a><a href="/next/register">註冊</a></>}</nav></details>
   </header>
-  <div className="status-area"><ErrorNotice error={notice} />{authStatus === 'checking' && <p className="notice" role="status">正在驗證登入…</p>}{authError && <ErrorNotice error={authError} retry={authStatus === 'error' ? retryAuth : null} />}{authorPath && authStatus === 'expired' ? <AccountForm mode="login" backend={backend} returnTo={path} formNavigation={formNavigation} onLogin={inlineLogin} /> : authStatus === 'expired' && <a href={`/next/login?return_to=${encodeURIComponent(validReturn(path) ? path : '/next/')}`}>重新登入</a>}{authorPath && authStatus === 'guest' && <p className="notice">請先<a href={`/next/login?return_to=${encodeURIComponent(path)}`}>登入</a>使用作者頁。</p>}</div>
+  <div className="status-area"><ErrorNotice error={notice} />{authStatus === 'checking' && <p className="notice" role="status">正在驗證登入…</p>}{authError && <ErrorNotice error={authError} retry={authStatus === 'error' ? retryAuth : null} />}{(authorPath || adminPath) && authStatus === 'expired' ? <AccountForm mode="login" backend={backend} returnTo={path} formNavigation={formNavigation} onLogin={inlineLogin} /> : authStatus === 'expired' && <a href={`/next/login?return_to=${encodeURIComponent(validReturn(path) ? path : '/next/')}`}>重新登入</a>}{(authorPath || adminPath) && authStatus === 'guest' && <p className="notice">請先<a href={`/next/login?return_to=${encodeURIComponent(path)}`}>登入</a>。</p>}</div>
   <div id="main-content">{path === '/next/' || path === '/next' ? <ArticleList backend={backend} credential={account ? credential : null} ready={ready} page={page} onAuthFailure={handleAuthFailure} />
     : articleId ? <ArticlePage backend={backend} credential={account ? credential : null} account={account} ready={ready} id={articleId} page={page} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
       : path === '/next/articles/new' ? <ContentEditor kind="article" backend={backend} credential={credential} account={account} ready={authorReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
@@ -766,6 +921,10 @@ export default function Site({ path, query }) {
       : commentEditId ? <ContentEditor kind="comment" id={commentEditId} backend={backend} credential={credential} account={account} ready={authorReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
       : commentId ? <CommentDetail id={commentId} backend={backend} credential={credential} account={account} ready={authorReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
       : path === '/next/me/articles' || path === '/next/me/comments' ? <MyContent kind={path.endsWith('articles') ? 'article' : 'comment'} backend={backend} credential={credential} account={account} authStatus={authStatus} ready={authorReady} page={page} onAuthFailure={handleAuthFailure} />
+      : path === '/next/admin/members' ? <AdminMembers backend={backend} credential={credential} account={account} authStatus={authStatus} ready={adminReady} page={page} keyword={typeof query.keyword === 'string' ? query.keyword : ''} onAuthFailure={handleAuthFailure} />
+      : memberId ? <AdminMember id={memberId} backend={backend} credential={credential} account={account} authStatus={authStatus} ready={adminReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
+      : path === '/next/admin/articles' || path === '/next/admin/comments' ? <AdminContent kind={path.endsWith('articles') ? 'article' : 'comment'} backend={backend} credential={credential} account={account} authStatus={authStatus} ready={adminReady} page={page} onAuthFailure={handleAuthFailure} />
+      : path === '/next/admin/settings/login-lockout' ? <AdminSettings backend={backend} credential={credential} account={account} authStatus={authStatus} ready={adminReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
       : path === '/next/login' || path === '/next/register' ? <AccountForm mode={path === '/next/register' ? 'register' : 'login'} backend={backend} returnTo={returnTo} registered={query.registered === '1'} formNavigation={formNavigation} />
         : <main className="missing"><p className="eyebrow">404 / PAGE NOT FOUND</p><h1>找不到頁面</h1><p>此路徑尚未提供可閱讀的頁面。</p><a className="red-button" href="/next/">返回文章列表 <span aria-hidden="true">↗</span></a></main>}</div>
   <footer className="site-footer"><span>文章集 / NEXT.JS EDITION</span><span>閱讀是另一種記錄。</span></footer></div>

@@ -254,8 +254,8 @@ test('React choice reaches Nuxt admin page with the original shared session', (t
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
 })
 
-// Next.js 已完成的公開與作者頁可直接切換；不改目前後端、JWT 或原登入期限。
-test('Next.js choice reaches public and author pages with the original shared session', (t) => {
+// Next.js 的公開、作者與管理頁可直接切換；不改目前後端、JWT 或原登入期限。
+test('Next.js choice reaches public, author, and admin pages with the original shared session', (t) => {
   // 選單以同一個經驗證的 target 決定 disabled，避免畫面可選卻被處理器拒絕。
   const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
   assert.match(template, /<option value="next" :disabled="!nextTarget">Next\.js/)
@@ -263,6 +263,8 @@ test('Next.js choice reaches public and author pages with the original shared se
     ['index', '/next/'], ['register', '/next/register'], ['login', '/next/login?return_to=%2Fnext%2Farticles%2F001'],
     ['login', '/next/login?return_to=%2Fnext%2Farticles%2Fnew', '/nuxt/articles/new'],
     ['articles/001', '/next/articles/001'], ['articles/new', '/next/articles/new'],
+    ['admin/settings/login-lockout', '/next/admin/settings/login-lockout'],
+    ['login', '/next/login?return_to=%2Fnext%2Fadmin%2Fmembers%2F001', '/nuxt/admin/members/001'],
   ]) {
     const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
     t.after(app.close)
@@ -273,9 +275,9 @@ test('Next.js choice reaches public and author pages with the original shared se
   }
 })
 
-// 管理頁與不安全登入目標仍停用 Next.js 選項，即使手動觸發事件也不得導覽。
-test('Next.js choice blocks admin pages and unsafe login returns', (t) => {
-  for (const [page, loginReturn] of [['admin/settings/login-lockout'], ['login', '/nuxt/admin/members'], ['login', '/nuxt/articles/0'], ['login', 'https://evil.test']]) {
+// 不安全登入目標仍停用 Next.js 選項，即使手動觸發事件也不得導覽。
+test('Next.js choice blocks unsafe login returns', (t) => {
+  for (const [page, loginReturn] of [['login', '/nuxt/admin/members/0'], ['login', '/nuxt/articles/0'], ['login', '/nuxt/register'], ['login', '/nuxt/login'], ['login', 'https://evil.test']]) {
     const app = switchingPage(page, false, BACKENDS.symfony, true, loginReturn)
     t.after(app.close)
     assert.equal(app.app.nextTarget.value, null)

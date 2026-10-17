@@ -65,20 +65,23 @@ test('return target and frontend mapping', () => {
   assert.equal(positiveId('07'), 7)
 })
 
-// Next 已完成作者頁；管理路由與無效 ID 仍不得成為切換或登入返回目標。
+// Next 已完成五種管理語意；合法路由可互切，無效 ID 仍不得成為返回目標。
 test('Next menu availability and safe frontend targets', () => {
-  for (const [path, target] of [['/react/', '/next/'], ['/react/register', '/next/register'], ['/react/login', '/next/login'], ['/react/articles/0007', '/next/articles/0007'], ['/react/articles/new', '/next/articles/new'], ['/react/articles/007/edit', '/next/articles/007/edit'], ['/react/me/articles', '/next/me/articles'], ['/react/me/comments', '/next/me/comments'], ['/react/comments/009', '/next/comments/009'], ['/react/comments/009/edit', '/next/comments/009/edit']]) {
+  for (const [path, target] of [['/react/', '/next/'], ['/react/register', '/next/register'], ['/react/login', '/next/login'], ['/react/articles/0007', '/next/articles/0007'], ['/react/articles/new', '/next/articles/new'], ['/react/articles/007/edit', '/next/articles/007/edit'], ['/react/me/articles', '/next/me/articles'], ['/react/me/comments', '/next/me/comments'], ['/react/comments/009', '/next/comments/009'], ['/react/comments/009/edit', '/next/comments/009/edit'], ['/react/admin/members', '/next/admin/members'], ['/react/admin/members/0007', '/next/admin/members/0007'], ['/react/admin/articles', '/next/admin/articles'], ['/react/admin/comments', '/next/admin/comments'], ['/react/admin/settings/login-lockout', '/next/admin/settings/login-lockout']]) {
     assert.equal(supportsNextRoute(path), true, path)
     assert.equal(frontendTarget(path, 'next'), target, path)
   }
-  for (const path of ['/react/admin/members', '/react/admin/members/7', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/comments/9007199254740992', '/react/articles/new/edit', '/react/unknown']) {
+  for (const path of ['/react/admin/members/0', '/react/admin/members/-1', '/react/admin/members/9007199254740992', '/react/admin/settings/nope', '/react/articles/0', '/react/articles/9007199254740992', '/react/comments/0/edit', '/react/comments/9007199254740992', '/react/articles/new/edit', '/react/unknown', '//evil.test']) {
     assert.equal(supportsNextRoute(path), false, path)
     assert.equal(frontendTarget(path, 'next'), null, path)
   }
   assert.equal(frontendTarget('/react/login', 'next', '/react/articles/0007'), '/next/login?return_to=%2Fnext%2Farticles%2F0007')
   assert.equal(frontendTarget('/react/login', 'next', '/react/articles/new'), '/next/login?return_to=%2Fnext%2Farticles%2Fnew')
   assert.equal(frontendTarget('/react/login', 'next', '/react/comments/009/edit'), '/next/login?return_to=%2Fnext%2Fcomments%2F009%2Fedit')
-  assert.equal(frontendTarget('/react/login', 'next', '/react/admin/members'), '/next/login')
+  for (const path of ['/react/admin/members', '/react/admin/members/0007', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout']) {
+    assert.equal(frontendTarget('/react/login', 'next', path), `/next/login?return_to=${encodeURIComponent(path.replace('/react/', '/next/'))}`)
+  }
+  assert.equal(frontendTarget('/react/login', 'next', '/react/admin/members/0'), '/next/login')
   assert.equal(frontendTarget('/react/login', 'next', '//evil.test'), '/next/login')
 })
 

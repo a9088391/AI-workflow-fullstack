@@ -91,9 +91,9 @@ export function validReturn(path) {
   return Boolean(match && positiveId(match[2]) !== null)
 }
 
-// Next 已完成公開與作者頁；沿用安全路由驗證但排除尚未完成的管理頁。
+// Next 已完成公開、作者及管理頁；沿用安全返回清單避免開放未知路徑。
 export function supportsNextRoute(path) {
-  return path === '/react/register' || path === '/react/login' || validReturn(path) && !path.startsWith('/react/admin/')
+  return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。

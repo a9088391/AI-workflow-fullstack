@@ -1,6 +1,55 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apiFailure, apiRequest, BACKEND_KEY, BACKENDS, canEditContent, canHideContent, canRestoreContent, canSwitchFrontend, clearSessionIfOwned, emptySuccess, formatCountdown, frontendTarget, loginData, pageNumber, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, SESSION_KEY, successData, validReturn, validateAccount, validateContent } from './contracts.js'
+import { apiFailure, apiRequest, BACKEND_KEY, BACKENDS, canEditContent, canHideContent, canRestoreContent, canSwitchFrontend, clearSessionIfOwned, emptySuccess, formatCountdown, frontendTarget, loginData, memberKeyword, pageNumber, parseLockoutDraft, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, SESSION_KEY, successData, validReturn, validateAccount, validateContent, validLockoutSettings, validMember } from './contracts.js'
+
+const member = { id: 2, email: 'member@example.test', nickname: '會員', role: 'member', status: 'disabled', created_at: '2026-10-17 09:00:00' }
+
+// 管理資料與登入本人不同，停用會員仍須可顯示，管理員目標不得洩漏。
+test('management responses validate disabled members, original pagination, and exact settings', () => {
+  assert.equal(validMember(member), true)
+  assert.equal(validMember({ ...member, role: 'admin' }), false)
+  assert.deepEqual(successData(200, { success: true, message: 'OK', data: member }, 'member', 2), member)
+  assert.equal(successData(200, { success: true, message: 'OK', data: { ...member, role: 'admin' } }, 'member', 2), null)
+  const page = { list: [], pagination: { page: 4, per_page: 20, total: 2, total_pages: 1 } }
+  assert.deepEqual(successData(200, { success: true, message: 'OK', data: page }, 'members', 4), page)
+  assert.equal(successData(200, { success: true, message: 'OK', data: page }, 'members', 1), null)
+  const settings = { enabled: false, window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 }
+  assert.equal(validLockoutSettings(settings), true)
+  assert.deepEqual(successData(200, { success: true, message: 'OK', data: settings }, 'lockout-settings'), settings)
+  assert.equal(validLockoutSettings({ ...settings, lock_seconds: 86401 }), false)
+  assert.equal(validLockoutSettings({ ...settings, version: 1 }), false)
+})
+
+// ASCII 空格以外的碼點不被前端改寫，過長搜尋留在表單供修正。
+test('member keyword keeps literal symbols and Unicode while bounding code points', () => {
+  assert.equal(memberKeyword('  A_%陳  '), 'A_%陳')
+  assert.equal(memberKeyword('   '), '')
+  assert.equal(memberKeyword('　'), '　')
+  assert.equal(memberKeyword('😀'.repeat(254)), '😀'.repeat(254))
+  assert.equal(memberKeyword('😀'.repeat(255)), null)
+})
+
+// 寫入只傳完整四欄；格式錯誤維持原草稿，改正後才可送出合法範圍。
+test('lockout draft rejects lexical and boundary errors before corrected full update', () => {
+  const draft = { enabled: false, window_minutes: '0', failure_threshold: '1e2', lock_seconds: '86401' }
+  const invalid = parseLockoutDraft(draft)
+  assert.equal(invalid.body, null)
+  assert.deepEqual(Object.keys(invalid.errors), ['window_minutes', 'failure_threshold', 'lock_seconds'])
+  assert.deepEqual(draft, { enabled: false, window_minutes: '0', failure_threshold: '1e2', lock_seconds: '86401' })
+  assert.deepEqual(parseLockoutDraft({ enabled: false, window_minutes: '1', failure_threshold: '100', lock_seconds: '86400' }), {
+    body: { enabled: false, window_minutes: 1, failure_threshold: 100, lock_seconds: 86400 }, errors: {},
+  })
+  assert.deepEqual(parseLockoutDraft({ enabled: 'false', window_minutes: '5', failure_threshold: '5', lock_seconds: '300' }).errors, { enabled: ['設定欄位不完整'] })
+})
+
+// 狀態寫入沒有新資源資料，需以完整 GET 讀回停用狀態才可更新畫面。
+test('member status empty write response is distinct from disabled member readback', () => {
+  const write = { success: true, message: 'OK', data: {} }
+  assert.equal(emptySuccess(200, write, 200), true)
+  assert.equal(successData(200, write, 'member', 2), null)
+  assert.deepEqual(successData(200, { success: true, message: 'OK', data: member }, 'member', 2), member)
+  assert.equal(successData(404, { success: false, error_code: 'E0004' }, 'member', 2), null)
+})
 
 // 模擬同分頁儲存，核對跨前端共用 schema 與後端切換順序。
 function storage() {
@@ -48,7 +97,12 @@ test('route and frontend targets preserve only approved completed pages', () => 
   assert.equal(validReturn('https://attacker.invalid'), false)
   assert.equal(validReturn('/next/articles/0'), false)
   for (const path of ['/next/articles/new', '/next/articles/007/edit', '/next/me/articles', '/next/me/comments', '/next/comments/009', '/next/comments/009/edit']) assert.equal(validReturn(path), true, path)
-  for (const path of ['/next/articles/0/edit', '/next/comments/9007199254740992', '/next/admin/members', '//evil.test']) assert.equal(validReturn(path), false, path)
+  for (const path of ['/next/articles/0/edit', '/next/comments/9007199254740992', '/next/admin/members/0', '/next/admin/members/9007199254740992', '//evil.test']) assert.equal(validReturn(path), false, path)
+  for (const path of ['/next/admin/members', '/next/admin/members/007', '/next/admin/articles', '/next/admin/comments', '/next/admin/settings/login-lockout']) {
+    assert.equal(validReturn(path), true, path)
+    assert.equal(frontendTarget(path, 'react'), path.replace('/next/', '/react/'))
+  }
+  assert.equal(frontendTarget('/next/login', 'vue', '/next/admin/members/007'), '/vue/login?return_to=%2Fvue%2Fadmin%2Fmembers%2F007')
   assert.equal(positiveId('9007199254740992'), null)
   assert.equal(frontendTarget('/next/articles/0009', 'vue'), '/vue/articles/0009')
   assert.equal(frontendTarget('/next/comments/009/edit', 'vue'), '/vue/comments/009/edit')
