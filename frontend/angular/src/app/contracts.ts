@@ -11,8 +11,8 @@ export const BACKENDS = {
 export const FRONTENDS = { vue: 'Vue 3＋Vite', nuxt: 'Nuxt', react: 'React＋Vite', next: 'Next.js', angular: 'Angular', sveltekit: 'SvelteKit' } as const;
 export type Session = { backend: string; accessToken: string; expiresAt: string };
 export type Account = { id: number; email: string; nickname: string; role: 'member' | 'admin'; status: 'active'; created_at: string };
-export type Article = { id: number; title: string; body: string; author: { id: number; nickname: string }; created_at: string; created_backend: keyof typeof BACKENDS; visibility: string };
-export type Comment = { id: number; body: string; author: { id: number; nickname: string }; article_id: number; created_at: string; created_backend: keyof typeof BACKENDS };
+export type Article = { id: number; title: string; body: string; author: { id: number; nickname: string }; created_at: string; created_backend: keyof typeof BACKENDS; visibility: 'visible' | 'hidden'; version: number; can_restore: boolean };
+export type Comment = { id: number; body: string; author: { id: number; nickname: string }; article_id: number; created_at: string; created_backend: keyof typeof BACKENDS; visibility: 'visible' | 'hidden'; version: number; can_restore: boolean };
 export type Page<T> = { list: T[]; pagination: { page: number; per_page: number; total: number; total_pages: number } };
 export type Problem = { message: string; code?: string; errors?: Record<string, string[]>; logId?: string };
 
@@ -27,6 +27,7 @@ const messages: Record<string, string> = {
   E0003: '沒有權限使用此功能', E0004: '找不到指定資料或 API',
   E0101: '帳號或密碼錯誤', E0102: '此帳號已停用，請聯絡系統管理員',
   E0105: '登入失敗次數過多，請稍後再試', E9999: '系統暫時無法處理，請稍後再試',
+  E0201: '內容已更新，請確認最新內容後再送出',
 };
 
 // 只信任專案固定的 API 入口，避免儲存值讓 JWT 傳到任意網址。
@@ -76,6 +77,16 @@ export function positiveNumber(value: string | null): number | null {
   if (!value || !/^[0-9]+$/.test(value)) return null;
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+// 編輯前先按 API 的碼點長度與純文字規則提示；伺服器仍負責最後授權與驗證。
+export function validateContent(body: string, title?: string): Record<string, string[]> {
+  const errors: Record<string, string[]> = {};
+  // 前端只提示 Unicode 長度與明顯無效文字，實際權限與驗證仍以後端為準。
+  const invalid = (value: string, max: number) => [...value].length < 1 || [...value].length > max || blank.test(value) || value.includes('\0');
+  if (title !== undefined && invalid(title, 200)) errors['title'] = ['標題須為 1–200 個字，且不可全為空白或含不支援字元'];
+  if (invalid(body, title === undefined ? 2000 : 20000)) errors['body'] = [`內文須為 1–${title === undefined ? '2,000' : '20,000'} 個字，且不可全為空白或含不支援字元`];
+  return errors;
 }
 
 // 返回目標限制在已知頁面及合法 ID，防止登入後跳到外站。

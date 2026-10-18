@@ -6,22 +6,28 @@ import * as vueAuth from '../../../vue/src/auth.js'
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 const article = { id: 101, title: '一篇文章', body: '第一行\n第二行', author: { id: 1, nickname: '林' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
 
-// Angular 只接收已完成的公開／帳號路徑，登入返回目標須保留合法文章 ID。
+// Angular 接收已完成的公開、帳號與作者頁，登入返回保留合法原始 ID。
 test('Angular frontend target maps supported routes and rejects future or unsafe targets', () => {
   for (const [source, target] of [
     ['/nuxt/', '/angular/'], ['/nuxt/register', '/angular/register'],
     ['/nuxt/login', '/angular/login'], ['/nuxt/articles/001', '/angular/articles/001'],
     ['/nuxt/articles/9007199254740991', '/angular/articles/9007199254740991'],
+    ['/nuxt/articles/new', '/angular/articles/new'], ['/nuxt/articles/001/edit', '/angular/articles/001/edit'],
+    ['/nuxt/me/articles', '/angular/me/articles'], ['/nuxt/me/comments', '/angular/me/comments'],
+    ['/nuxt/comments/009', '/angular/comments/009'], ['/nuxt/comments/9007199254740991/edit', '/angular/comments/9007199254740991/edit'],
   ]) assert.equal(angularFrontendTarget(source), target)
   assert.equal(angularFrontendTarget('/nuxt/login', '/nuxt/'), '/angular/login')
   assert.equal(angularFrontendTarget('/nuxt/login', '/nuxt/articles/001'), '/angular/login?return_to=%2Fangular%2Farticles%2F001')
+  for (const source of ['/nuxt/articles/new', '/nuxt/articles/001/edit', '/nuxt/me/articles', '/nuxt/me/comments', '/nuxt/comments/009', '/nuxt/comments/009/edit']) assert.equal(angularFrontendTarget('/nuxt/login', source), `/angular/login?return_to=${encodeURIComponent(source.replace('/nuxt/', '/angular/'))}`)
   for (const source of [
-    '/nuxt/articles/new', '/nuxt/articles/1/edit', '/nuxt/me/articles', '/nuxt/comments/1',
-    '/nuxt/admin/members', '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/unknown',
+    '/nuxt/admin/members', '/nuxt/admin/settings/login-lockout', '/nuxt/articles/0', '/nuxt/articles/9007199254740992',
+    '/nuxt/articles/0/edit', '/nuxt/comments/0', '/nuxt/comments/9007199254740992/edit',
+    '/nuxt/me/articles?page=3', '/nuxt/unknown',
   ]) assert.equal(angularFrontendTarget(source), null, source)
   for (const source of [
-    '/nuxt/articles/new', '/nuxt/articles/1/edit', '/nuxt/register', '/nuxt/login',
-    '/nuxt/articles/0', '/nuxt/articles/9007199254740992', 'https://evil.test',
+    '/nuxt/admin/members', '/nuxt/register', '/nuxt/login',
+    '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/comments/0/edit',
+    '/nuxt/articles/001?preview=1', 'https://evil.test',
   ]) assert.equal(angularFrontendTarget('/nuxt/login', source), null, source)
 })
 

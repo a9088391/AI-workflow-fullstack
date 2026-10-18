@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, validEmail, validReturn, validateAccount } from './contracts.ts';
+import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
 
 // 模擬同一分頁儲存，核對跨版登入不改寫原到期時間與舊回應隔離。
 function storage(): Storage {
@@ -51,4 +51,22 @@ test('Retry-After 倒數', function countdownContract() {
   assert.equal(countdown(300_000, 0), '05:00');
   assert.equal(countdown(300_000, 1_000), '04:59');
   assert.equal(countdown(300_000, 300_000), '');
+});
+
+// 作者路徑僅搬合法 ID；文字邊界先提示，但伺服器仍作最後驗證。
+test('作者頁切換與純文字輸入', function authorContract() {
+  assert.equal(validReturn('/angular/articles/new'), true);
+  assert.equal(validReturn('/angular/me/articles'), true);
+  assert.equal(validReturn('/angular/me/comments'), true);
+  assert.equal(validReturn('/angular/articles/15/edit'), true);
+  assert.equal(validReturn('/angular/comments/9/edit'), true);
+  assert.equal(validReturn('/angular/comments/0/edit'), false);
+  assert.equal(validReturn('/angular/articles/1/edit?version=2'), false);
+  assert.equal(frontendTarget('/angular/comments/9/edit', 'react'), '/react/comments/9/edit');
+  assert.equal(frontendTarget('/angular/login', 'nuxt', '/angular/articles/15/edit'), '/nuxt/login?return_to=%2Fnuxt%2Farticles%2F15%2Fedit');
+  assert.deepEqual(validateContent('留\n言'), {});
+  assert.deepEqual(Object.keys(validateContent('　\n')), ['body']);
+  assert.deepEqual(Object.keys(validateContent('a'.repeat(2001))), ['body']);
+  assert.deepEqual(validateContent('內文', '標題'), {});
+  assert.deepEqual(Object.keys(validateContent('內文', 'a'.repeat(201))), ['title']);
 });

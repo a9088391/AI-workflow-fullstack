@@ -367,13 +367,25 @@ test('Next.js frontend choice rejects unknown, invalid IDs, and unsafe login ret
   }
 })
 
-// Angular 目前只接收公開與帳號頁；切換保留文章 ID、登入返回及原後端憑證。
+// Angular 作者頁已可切換；保留合法原始 ID、登入返回及原後端憑證。
 test('Angular choice keeps supported routes and the original shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/angular/'], ['/vue/register', '', '/angular/register'],
     ['/vue/login', '', '/angular/login'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/angular/login?return_to=%2Fangular%2Farticles%2F001'],
     ['/vue/articles/001', '', '/angular/articles/001'],
+    ['/vue/articles/new', '?page=2', '/angular/articles/new'],
+    ['/vue/articles/001/edit', '', '/angular/articles/001/edit'],
+    ['/vue/me/articles', '?page=3', '/angular/me/articles'],
+    ['/vue/me/comments', '', '/angular/me/comments'],
+    ['/vue/comments/009', '', '/angular/comments/009'],
+    ['/vue/comments/9007199254740991/edit', '', '/angular/comments/9007199254740991/edit'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew', '/angular/login?return_to=%2Fangular%2Farticles%2Fnew'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001%2Fedit', '/angular/login?return_to=%2Fangular%2Farticles%2F001%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fme%2Farticles', '/angular/login?return_to=%2Fangular%2Fme%2Farticles'],
+    ['/vue/login', '?return_to=%2Fvue%2Fme%2Fcomments', '/angular/login?return_to=%2Fangular%2Fme%2Fcomments'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009', '/angular/login?return_to=%2Fangular%2Fcomments%2F009'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009%2Fedit', '/angular/login?return_to=%2Fangular%2Fcomments%2F009%2Fedit'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -390,14 +402,16 @@ test('Angular choice keeps supported routes and the original shared session', as
   }
 })
 
-// 未完成頁與不合法返回目標在選單和事件處理都不得導向 Angular。
+// 管理頁尚未提供；非法作者 ID 與不合法返回目標不能經選單導向 Angular。
 test('Angular choice blocks unsupported routes and unsafe login returns', async (t) => {
   for (const [source, search] of [
-    ['/vue/articles/new', ''], ['/vue/articles/1/edit', ''], ['/vue/me/articles', ''],
-    ['/vue/comments/1', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''],
+    ['/vue/admin/members', ''], ['/vue/admin/settings/login-lockout', ''], ['/vue/unknown', ''],
     ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
-    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew'],
+    ['/vue/articles/0/edit', ''], ['/vue/articles/9007199254740992/edit', ''],
+    ['/vue/comments/0', ''], ['/vue/comments/9007199254740992/edit', ''],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'],
     ['/vue/login', '?return_to=%2Fvue%2Fregister'],
     ['/vue/login', '?return_to=https%3A%2F%2Fevil.test'],
   ]) {

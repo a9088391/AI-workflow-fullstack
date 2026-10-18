@@ -95,11 +95,9 @@ export function validReturn(path) {
   return Boolean(match && positiveId(match[1] || match[2]) !== null)
 }
 
-// Angular 目前只提供公開文章與帳號頁，合法文章 ID 才能保留原閱讀位置。
+// Angular 已提供公開與作者頁；管理路由仍須等實作完成才可承接。
 function supportsAngularRoute(path) {
-  if (['/next', '/next/', '/next/login', '/next/register'].includes(path)) return true
-  const article = typeof path === 'string' && path.match(/^\/next\/articles\/([0-9]+)$/)
-  return Boolean(article && positiveId(article[1]) !== null)
+  return path === '/next/login' || path === '/next/register' || validReturn(path) && !path.startsWith('/next/admin/')
 }
 
 // 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。

@@ -38,8 +38,9 @@ const canSwitchReactPage = (page === 'register' || page === 'login' || reactRetu
 // Next.js 已提供同組 15 種語意頁；登入返回仍須符合同一已知頁面白名單。
 const nextReturnPages = ['articles', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
 const canSwitchNextPage = (page === 'register' || page === 'login' || nextReturnPages.includes(page)) && (page !== 'login' || target === null || nextReturnPages.includes(articlePage(target)))
-// Angular 目前只完成公開閱讀與帳號頁；登入返回不可指向尚未實作的作者或管理頁。
-const canSwitchAngularPage = ['articles', 'article', 'register', 'login'].includes(page) && (page !== 'login' || target === null || ['articles', 'article'].includes(articlePage(target)))
+// Angular 已完成公開、帳號與作者頁；管理頁尚未提供，登入返回也只接受已完成的頁面。
+const angularReturnPages = ['articles', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit']
+const canSwitchAngularPage = (page === 'register' || page === 'login' || angularReturnPages.includes(page)) && (page !== 'login' || target === null || angularReturnPages.includes(articlePage(target)))
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'
 const commentResource = page === 'comment' || page === 'comment-edit'

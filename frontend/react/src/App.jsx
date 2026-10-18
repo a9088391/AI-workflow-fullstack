@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { BACKENDS, FRONTENDS, canEditContent, canHideContent, canRestoreContent, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, request, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsNextRoute, validAccount, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
+import { BACKENDS, FRONTENDS, canEditContent, canHideContent, canRestoreContent, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, request, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsAngularRoute, supportsNextRoute, validAccount, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
 
 const pathname = window.location.pathname
 const params = new URLSearchParams(window.location.search)
@@ -711,10 +711,8 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   const navToggle = useRef(null)
   // 目前頁面若無 Next 對應路由，保留選項可見但不可切換。
   const nextReady = supportsNextRoute(pathname)
-  // Angular 此階段只提供公開文章與帳號頁；文章 ID 已由入口驗證。
-  const angularReady = ['articles', 'login', 'register', 'article'].includes(page)
-  // 已驗證的登入返回路徑若屬後續作者／管理功能，改以 Angular 文章列表接續。
-  const angularReturnTo = returnTo === '/react/' || /^\/react\/articles\/[0-9]+$/.test(returnTo) ? returnTo : '/react/'
+  // Angular 已提供作者頁；只啟用目標版確實可承接的合法路由。
+  const angularReady = supportsAngularRoute(pathname)
   // 工具列在後端變更時重建，舊登出請求不得撤銷新後端畫面狀態。
   useEffect(() => {
     // 離開舊後端或頁面時取消仍在途的登出請求。
@@ -736,7 +734,7 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
     if (next === 'react') return
     if (next === 'angular' && !angularReady) { event.target.value = 'react'; return }
     if (!mayLeave()) { event.target.value = 'react'; return }
-    const target = frontendTarget(pathname, next, next === 'angular' ? angularReturnTo : returnTo)
+    const target = frontendTarget(pathname, next, returnTo)
     if (target) {
       // 在導覽卸載前立即讓帳號及登出舊回應失去寫入資格。
       approvedNavigation.current = true

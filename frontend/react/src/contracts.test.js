@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsNextRoute, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
+import { BACKENDS, BACKEND_KEY, SESSION_KEY, canEditContent, canHideContent, canRestoreContent, clearSession, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsAngularRoute, supportsNextRoute, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
 
 // 模擬同一分頁的 sessionStorage，以確實檢查跨框架共享格式與清除順序。
 function storage() {
@@ -83,6 +83,20 @@ test('Next menu availability and safe frontend targets', () => {
   }
   assert.equal(frontendTarget('/react/login', 'next', '/react/admin/members/0'), '/next/login')
   assert.equal(frontendTarget('/react/login', 'next', '//evil.test'), '/next/login')
+})
+
+// Angular 已提供作者頁，切換及登入返回保留合法 ID；管理頁與無效 ID 仍不可進入。
+test('Angular targets preserve author routes and reject unavailable or invalid routes', () => {
+  for (const [path, target] of [['/react/', '/angular/'], ['/react/login', '/angular/login'], ['/react/register', '/angular/register'], ['/react/articles/0007', '/angular/articles/0007'], ['/react/articles/new', '/angular/articles/new'], ['/react/articles/007/edit', '/angular/articles/007/edit'], ['/react/me/articles', '/angular/me/articles'], ['/react/me/comments', '/angular/me/comments'], ['/react/comments/009', '/angular/comments/009'], ['/react/comments/009/edit', '/angular/comments/009/edit']]) {
+    assert.equal(supportsAngularRoute(path), true, path)
+    assert.equal(frontendTarget(path, 'angular'), target, path)
+    assert.equal(frontendTarget('/react/login', 'angular', path), ['/react/', '/react/login', '/react/register'].includes(path) ? '/angular/login' : `/angular/login?return_to=${encodeURIComponent(target)}`, path)
+  }
+  for (const path of ['/react/admin/members', '/react/admin/members/7', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/articles/0/edit', '/react/comments/0', '/react/comments/9007199254740992/edit', '/react/articles/new?draft=1', '//evil.test']) {
+    assert.equal(supportsAngularRoute(path), false, path)
+    assert.equal(frontendTarget(path, 'angular'), null, path)
+    assert.equal(frontendTarget('/react/login', 'angular', path), '/angular/login', path)
+  }
 })
 
 // 管理回應只有完整一般會員與四欄設定可呈現；錯誤型態不得視為空列表。

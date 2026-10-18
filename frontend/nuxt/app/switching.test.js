@@ -171,14 +171,16 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.deepEqual(app.redirects, ['/vue/'])
 })
 
-// Angular 選單只開放已完成頁；切換保留原 JWT／到期時間並作廢來源晚到回應。
+// Angular 選單開放已完成作者頁；切換保留原 JWT／到期時間並作廢來源晚到回應。
 test('Angular choice keeps supported route and session while invalidating delayed me', async (t) => {
   const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
   assert.match(template, /<option value="angular" :disabled="!angularTarget">Angular/)
   for (const [page, target, loginReturn] of [
     ['index', '/angular/'], ['register', '/angular/register'],
     ['login', '/angular/login?return_to=%2Fangular%2Farticles%2F001'],
+    ['login', '/angular/login?return_to=%2Fangular%2Fcomments%2F009%2Fedit', '/nuxt/comments/009/edit'],
     ['articles/001', '/angular/articles/001'],
+    ['articles/new', '/angular/articles/new'],
   ]) {
     const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
     t.after(app.close)
@@ -193,11 +195,12 @@ test('Angular choice keeps supported route and session while invalidating delaye
   }
 })
 
-// 未完成頁與非法登入返回目標不可切 Angular，手動觸發選單事件也不導覽。
+// 管理頁、非法作者 ID 與不安全登入返回不可切 Angular，手動觸發也不導覽。
 test('Angular choice blocks future routes and unsafe login returns', (t) => {
   for (const [page, loginReturn] of [
-    ['articles/new'], ['admin/settings/login-lockout'],
-    ['login', '/nuxt/articles/new'], ['login', '/nuxt/articles/0'],
+    ['admin/settings/login-lockout'],
+    ['login', '/nuxt/admin/members'], ['login', '/nuxt/articles/0'],
+    ['login', '/nuxt/comments/9007199254740992/edit'],
     ['login', '/nuxt/register'], ['login', 'https://evil.test'],
   ]) {
     const app = switchingPage(page, false, BACKENDS.symfony, true, loginReturn)
@@ -208,6 +211,28 @@ test('Angular choice blocks future routes and unsafe login returns', (t) => {
     assert.equal(choice.target.value, 'nuxt')
     assert.deepEqual(app.redirects, [])
   }
+})
+
+// 作者草稿取消切換後仍可編輯；確認捨棄時保留同分頁憑證但不把草稿帶到 Angular。
+test('Angular author switch respects draft cancellation and preserves the shared session', async (t) => {
+  const cancelled = switchingPage('articles/new', true, BACKENDS.symfony, false)
+  t.after(cancelled.close)
+  cancelled.form.title.value = '尚未送出的標題'
+  await vue.nextTick()
+  const choice = { target: { value: 'angular' } }
+  cancelled.app.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'nuxt')
+  assert.equal(cancelled.form.title.value, '尚未送出的標題')
+  assert.deepEqual(cancelled.redirects, [])
+
+  const switched = switchingPage('articles/new', true)
+  t.after(switched.close)
+  switched.form.title.value = '不應搬移的草稿'
+  await vue.nextTick()
+  switched.app.chooseFrontend({ target: { value: 'angular' } })
+  assert.deepEqual(switched.redirects, ['/angular/articles/new'])
+  assert.deepEqual(readSession(switched.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  assert.deepEqual([...switched.storedValues.keys()].sort(), [BACKEND_KEY, SESSION_KEY].sort())
 })
 
 // Angular 切換取消時保留登入文字；確認後舊登入成功不能寫回 Nuxt 的共用憑證。

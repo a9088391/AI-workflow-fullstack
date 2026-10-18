@@ -96,12 +96,18 @@ export function supportsNextRoute(path) {
   return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
+// Angular 已提供公開與作者頁；管理頁留待完成後才允許切換。
+export function supportsAngularRoute(path) {
+  return path === '/react/register' || path === '/react/login' || validReturn(path) && !path.startsWith('/react/admin/')
+}
+
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。
 export function frontendTarget(path, frontend, returnTo = '/react/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (frontend === 'next' && !supportsNextRoute(path)) return null
+  if (frontend === 'angular' && !supportsAngularRoute(path)) return null
   if (path === '/react/login' && returnTo === '/react/') return `/${frontend}/login`
-  const current = path === '/react/login' && validReturn(returnTo) && (frontend !== 'next' || supportsNextRoute(returnTo)) ? returnTo : path
+  const current = path === '/react/login' && validReturn(returnTo) && (frontend !== 'next' || supportsNextRoute(returnTo)) && (frontend !== 'angular' || supportsAngularRoute(returnTo)) ? returnTo : path
   if (current === '/react/' || current === '/react/register' || current === '/react/login' || validReturn(current)) {
     const target = current.replace(/^\/react/, `/${frontend}`)
     if (path === '/react/login' && current !== '/react/' && current !== path) return `/${frontend}/login?return_to=${encodeURIComponent(target)}`
