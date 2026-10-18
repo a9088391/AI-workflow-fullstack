@@ -129,6 +129,27 @@ test('Angular frontend targets preserve completed routes and reject invalid rout
   }
 })
 
+// SvelteKit 目前只完成公開閱讀與帳號頁；跨版切換保留既有 JWT 原期限。
+test('SvelteKit targets keep supported pages and original shared session', () => {
+  const tab = storage()
+  saveSession(tab, BACKENDS.nestjs[1], 'same-token', '2026-10-18 18:00:00')
+  for (const [path, target] of [['/next', '/sveltekit/'], ['/next/', '/sveltekit/'], ['/next/register', '/sveltekit/register'], ['/next/login', '/sveltekit/login'], ['/next/articles/001', '/sveltekit/articles/001'], ['/next/articles/9007199254740991', '/sveltekit/articles/9007199254740991']]) {
+    assert.equal(frontendTarget(path, 'sveltekit'), target, path)
+  }
+  assert.equal(frontendTarget('/next/login', 'sveltekit', '/next/articles/001'), '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001')
+  assert.deepEqual(readSession(tab), { backend: BACKENDS.nestjs[1], accessToken: 'same-token', expiresAt: '2026-10-18 18:00:00' })
+})
+
+// 作者／管理頁及不安全登入返回保持停用，不能偷偷改導到文章列表。
+test('SvelteKit targets reject unfinished routes and unsafe login returns', () => {
+  for (const path of ['/next/articles/new', '/next/articles/001/edit', '/next/me/articles', '/next/me/comments', '/next/comments/001', '/next/admin/members', '/next/admin/settings/login-lockout', '/next/articles/0', '/next/articles/9007199254740992', '/next/unknown', '//evil.test']) {
+    assert.equal(frontendTarget(path, 'sveltekit'), null, path)
+  }
+  for (const path of ['/next/articles/new', '/next/articles/0', '/next/articles/9007199254740992', '/next/admin/members', '/next/register', '//evil.test', 'https://evil.test']) {
+    assert.equal(frontendTarget('/next/login', 'sveltekit', path), null, path)
+  }
+})
+
 // 內容檢查、作者編修與恢復入口依核准欄位和權限處理。
 test('author content validation and controls use actual authorship and server restore flag', () => {
   assert.deepEqual(validateContent({ title: '😀', body: '第一行\r\n第二行' }), {})

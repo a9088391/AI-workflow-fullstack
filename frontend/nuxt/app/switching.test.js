@@ -85,7 +85,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   }
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
-  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, angularTarget, chooseFrontend, chooseBackend, submitLogout })'))
+  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, angularTarget, svelteTarget, chooseFrontend, chooseBackend, submitLogout })'))
   // 有表單的頁面執行正式 submit/save；唯讀文章詳情只需 app 切換狀態。
   const form = page === 'index' || /^articles\/[0-9]+$/.test(page) ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
@@ -169,6 +169,45 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.equal(app.app.site.account.value, null)
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.deepEqual(app.redirects, ['/vue/'])
+})
+
+// SvelteKit 已有的公開與帳號路由保留原憑證；來源晚到 /me 不能恢復已離開的畫面。
+test('SvelteKit choice reaches supported routes with original session', async (t) => {
+  const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
+  assert.match(template, /<option value="sveltekit" :disabled="!svelteTarget">SvelteKit/)
+  for (const [page, target, loginReturn] of [
+    ['index', '/sveltekit/'], ['register', '/sveltekit/register'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001'],
+    ['articles/001', '/sveltekit/articles/001'],
+  ]) {
+    const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
+    t.after(app.close)
+    assert.equal(app.app.svelteTarget.value, target)
+    app.app.chooseFrontend({ target: { value: 'sveltekit' } })
+    assert.deepEqual(app.redirects, [target])
+    assert.equal(app.requests[0].options.signal.aborted, true)
+    respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+    await setImmediate()
+    assert.equal(app.app.site.account.value, null)
+    assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  }
+})
+
+// 作者與管理頁仍未提供，登入返回也不得指向未實作或不安全的目的地。
+test('SvelteKit choice blocks unsupported pages and unsafe returns', (t) => {
+  for (const [page, loginReturn] of [
+    ['articles/new'], ['admin/settings/login-lockout'],
+    ['login', '/nuxt/articles/new'], ['login', '/nuxt/articles/0'],
+    ['login', '/nuxt/articles/9007199254740992'], ['login', 'https://evil.test'],
+  ]) {
+    const app = switchingPage(page, false, BACKENDS.symfony, true, loginReturn)
+    t.after(app.close)
+    assert.equal(app.app.svelteTarget.value, null)
+    const choice = { target: { value: 'sveltekit' } }
+    app.app.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'nuxt')
+    assert.deepEqual(app.redirects, [])
+  }
 })
 
 // Angular 選單開放全部語意頁；切換保留原 JWT／到期時間並作廢來源晚到回應。

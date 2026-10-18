@@ -1,0 +1,23 @@
+# Ticket 54 使用獨立資料卷、測試金鑰及 IPv6 loopback，避免碰觸既有 IPv4 展示。
+services:
+  db:
+    environment:
+      TICKET54_FIXTURE: isolated-ticket54
+  sql:
+    volumes:
+      - ./.local/ticket54-backend/backups:/backups
+  laravel:
+    ports: !override
+      - "[::1]:8081:8000"
+    volumes:
+      - ./.local/ticket54-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+      - ./.local/ticket54-backend/laravel-logs:/srv/laravel/storage/logs
+  nginx:
+    ports: !override
+      - "[::1]:8080:80"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.251.54.0/24

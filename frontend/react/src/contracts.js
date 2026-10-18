@@ -101,11 +101,20 @@ export function supportsAngularRoute(path) {
   return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
+// SvelteKit 目前只完成公開列表、帳號與文章詳情；其餘路由不可切換。
+export function supportsSvelteRoute(path) {
+  if (path === '/react/' || path === '/react/register' || path === '/react/login') return true
+  const match = typeof path === 'string' && path.match(/^\/react\/articles\/([0-9]+)$/)
+  return Boolean(match && positiveId(match[1]) !== null)
+}
+
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。
 export function frontendTarget(path, frontend, returnTo = '/react/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (frontend === 'next' && !supportsNextRoute(path)) return null
   if (frontend === 'angular' && !supportsAngularRoute(path)) return null
+  // 登入返回若指向未完成或不安全頁面，保持 SvelteKit 選項停用。
+  if (frontend === 'sveltekit' && (!supportsSvelteRoute(path) || path === '/react/login' && (!validReturn(returnTo) || !supportsSvelteRoute(returnTo)))) return null
   if (path === '/react/login' && returnTo === '/react/') return `/${frontend}/login`
   const current = path === '/react/login' && validReturn(returnTo) && (frontend !== 'next' || supportsNextRoute(returnTo)) && (frontend !== 'angular' || supportsAngularRoute(returnTo)) ? returnTo : path
   if (current === '/react/' || current === '/react/register' || current === '/react/login' || validReturn(current)) {

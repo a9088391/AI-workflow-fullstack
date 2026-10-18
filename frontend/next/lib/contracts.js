@@ -100,10 +100,27 @@ function supportsAngularRoute(path) {
   return path === '/next/login' || path === '/next/register' || validReturn(path)
 }
 
+// SvelteKit 目前只承接文章列表、註冊與合法 ID 的公開詳情。
+function svelteTarget(path) {
+  if (path === '/next/' || path === '/next') return '/sveltekit/'
+  if (path === '/next/register') return '/sveltekit/register'
+  const match = typeof path === 'string' && path.match(/^\/next\/articles\/([0-9]+)$/)
+  return match && positiveId(match[1]) !== null ? path.replace(/^\/next/, '/sveltekit') : null
+}
+
 // 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。
 export function frontendTarget(path, frontend, returnTo = '/next/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (frontend === 'angular' && !supportsAngularRoute(path)) return null
+  if (frontend === 'sveltekit') {
+    // 登入返回限列表或文章詳情；未實作及不安全目標不能回退成可切換狀態。
+    if (path === '/next/login') {
+      if (!validReturn(returnTo)) return null
+      const target = svelteTarget(returnTo)
+      return target ? `/sveltekit/login${target === '/sveltekit/' ? '' : `?return_to=${encodeURIComponent(target)}`}` : null
+    }
+    return svelteTarget(path)
+  }
   if (path === '/next/login') {
     // 返回頁若不是目標版本可用的合法路由，就以文章列表為預設目標。
     const target = (validReturn(returnTo) && frontendTarget(returnTo, frontend)) || `/${frontend}/`

@@ -241,6 +241,56 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
+// SvelteKit 只接收本票完成的公開與帳號頁；切換不改同分頁後端或登入期限。
+test('SvelteKit frontend choice keeps supported routes and shared session', async (t) => {
+  for (const [source, search, destination] of [
+    ['/vue/', '', '/sveltekit/'],
+    ['/vue/register', '', '/sveltekit/register'],
+    ['/vue/login', '', '/sveltekit/login'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001'],
+    ['/vue/articles/001', '?page=2', '/sveltekit/articles/001'],
+    ['/vue/articles/9007199254740991', '', '/sveltekit/articles/9007199254740991'],
+  ]) {
+    const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchSveltePage, true, source)
+    app.page.versionsOpen.value = true
+    assert.match(await renderArticleApp(app), /<option value="sveltekit">SvelteKit<\/option>/)
+    app.page.chooseFrontend({ target: { value: 'sveltekit' } })
+    assert.deepEqual(app.redirects, [destination])
+    assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.nestjs, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+    if (app.requests[0]) {
+      await respond(app.requests[0], 200, success(member))
+      assert.equal(app.page.account.value, null)
+    }
+  }
+})
+
+// 未實作頁與不安全返回目標即使手動觸發 select，也不得導向 SvelteKit。
+test('SvelteKit frontend choice blocks unsupported routes and unsafe login returns', async (t) => {
+  for (const [source, search] of [
+    ['/vue/articles/new', ''], ['/vue/articles/001/edit', ''], ['/vue/me/articles', ''],
+    ['/vue/comments/009', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''],
+    ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F9007199254740992'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=https%3A%2F%2Fevil.test'],
+  ]) {
+    const app = articleApp(source, null, search)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchSveltePage, false, source)
+    app.page.versionsOpen.value = true
+    assert.match(await renderArticleApp(app), /<option value="sveltekit" disabled>SvelteKit（此頁尚未提供）<\/option>/)
+    const previousRedirects = [...app.redirects]
+    const choice = { target: { value: 'sveltekit' } }
+    app.page.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'vue')
+    assert.deepEqual(app.redirects, previousRedirects)
+  }
+})
+
 // React 已完成作者與管理頁；切換只搬移語意路徑和原始 ID，不改後端憑證或到期時間。
 test('React frontend switch keeps supported routes and exact shared session', async (t) => {
   for (const [source, search, destination] of [

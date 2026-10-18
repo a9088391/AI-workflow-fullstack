@@ -77,6 +77,19 @@ export function angularFrontendTarget(path, returnTo = null) {
   return null
 }
 
+// SvelteKit 此票只接收列表、帳號及公開文章頁；登入返回不可落到未實作的作者或管理頁。
+export function svelteFrontendTarget(path, returnTo = null) {
+  if (path === '/nuxt/' || path === '/nuxt/register') return path.replace(/^\/nuxt/, '/sveltekit')
+  if (path === '/nuxt/login') {
+    if (returnTo === null || returnTo === undefined) return '/sveltekit/login'
+    const target = svelteFrontendTarget(returnTo)
+    return target && target !== '/sveltekit/register' && target !== '/sveltekit/login'
+      ? `/sveltekit/login${target === '/sveltekit/' ? '' : `?return_to=${encodeURIComponent(target)}`}` : null
+  }
+  const match = typeof path === 'string' && path.match(/^\/nuxt\/articles\/([0-9]+)$/)
+  return match && positiveUrlInteger(match[1]) !== null ? path.replace(/^\/nuxt/, '/sveltekit') : null
+}
+
 // 內容欄位依共同 Unicode 碼點與固定空白集合驗證，不改寫作者輸入。
 export function validateContent(input, kind = 'article') {
   const errors = {}

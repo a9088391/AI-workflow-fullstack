@@ -844,7 +844,7 @@ export default function Site({ path, query }) {
   }
   // 跨前端只導覽相同語意頁，不修改同分頁的後端或 JWT 原期限。
   function changeFrontend(event) {
-    const target = canSwitchFrontend(event.target.value, backend) && frontendTarget(path, event.target.value, returnTo)
+    const target = canSwitchFrontend(event.target.value, backend) && frontendTarget(path, event.target.value, event.target.value === 'sveltekit' ? query.return_to ?? '/next/' : returnTo)
     if (!target) { event.target.value = 'next'; return }
     if (logoutPending || logoutRef.current) { event.target.value = 'next'; setNotice({ message: '登出處理中，請等待結果後再切換。' }); return }
     if (!confirmFormSwitch('前端')) { event.target.value = 'next'; return }
@@ -901,10 +901,10 @@ export default function Site({ path, query }) {
       (entry) => entry[1] === backend,
     )?.[0] : '讀取中…'}</strong></span></div>
       <label className="select-wrap">切換版本<select value="next" onChange={changeFrontend} aria-label="切換前端版本">{Object.entries(FRONTENDS).map(
-        // Nuxt 需核對後端，Angular 需核對目前頁面；未提供的目標仍留在選單說明。
+        // Nuxt 需核對後端，SvelteKit 另檢查原始返回目標；未提供的路由保持停用。
         ([id, name]) => {
           const backendReady = canSwitchFrontend(id, backend)
-          const routeReady = frontendTarget(path, id, returnTo) !== null
+          const routeReady = frontendTarget(path, id, id === 'sveltekit' ? query.return_to ?? '/next/' : returnTo) !== null
           return <option key={id} value={id} disabled={!backendReady || !routeReady}>{name}{id === 'nuxt' && !backendReady ? '（此後端尚未提供）' : !routeReady ? '（此頁尚未提供）' : ''}</option>
         },
       )}</select></label>

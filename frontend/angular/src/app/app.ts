@@ -634,10 +634,12 @@ export class App implements OnInit, OnDestroy {
     ),
   ); }
 
-  // 尚未提供的目標頁不開放切換；Nuxt 仍只支援前四個後端。
+  // SvelteKit 目前只提供公開閱讀與帳號入口；Nuxt 仍只支援前四個後端。
   canSwitchFrontend(id: string): boolean {
-    return id !== 'sveltekit'
-      && (id !== 'nuxt' || ([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]] as string[]).includes(this.backend()));
+    if (id === 'sveltekit') return ['list', 'article', 'login', 'register'].includes(this.route)
+      && (this.route !== 'login' || this.returnTo === '/angular/'
+        || positiveNumber(this.returnTo.match(/^\/angular\/articles\/([0-9]+)$/)?.[1] ?? null) !== null);
+    return id !== 'nuxt' || ([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]] as string[]).includes(this.backend());
   }
 
   // 切換前端只改 URL，不複製 JWT、後端、列表頁碼或表單文字。
