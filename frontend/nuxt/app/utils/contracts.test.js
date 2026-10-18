@@ -1,10 +1,29 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, apiFailure, apiRequest, backendName, emptySuccess, formatCountdown, isAccount, loginData, loginHref, nextFrontendTarget, normalizeEmail, positiveUrlInteger, reactFrontendTarget, readArticle, readBackend, readComment, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateContent, validateCredentials, vueFrontendTarget } from './contracts.js'
+import { API_BASE, BACKEND_KEY, BACKENDS, SESSION_KEY, angularFrontendTarget, apiFailure, apiRequest, backendName, emptySuccess, formatCountdown, isAccount, loginData, loginHref, nextFrontendTarget, normalizeEmail, positiveUrlInteger, reactFrontendTarget, readArticle, readBackend, readComment, readList, readSession, remainingSeconds, retryAfterSeconds, saveSession, selectBackend, validReturn, validateContent, validateCredentials, vueFrontendTarget } from './contracts.js'
 import * as vueAuth from '../../../vue/src/auth.js'
 
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 const article = { id: 101, title: '一篇文章', body: '第一行\n第二行', author: { id: 1, nickname: '林' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
+
+// Angular 只接收已完成的公開／帳號路徑，登入返回目標須保留合法文章 ID。
+test('Angular frontend target maps supported routes and rejects future or unsafe targets', () => {
+  for (const [source, target] of [
+    ['/nuxt/', '/angular/'], ['/nuxt/register', '/angular/register'],
+    ['/nuxt/login', '/angular/login'], ['/nuxt/articles/001', '/angular/articles/001'],
+    ['/nuxt/articles/9007199254740991', '/angular/articles/9007199254740991'],
+  ]) assert.equal(angularFrontendTarget(source), target)
+  assert.equal(angularFrontendTarget('/nuxt/login', '/nuxt/'), '/angular/login')
+  assert.equal(angularFrontendTarget('/nuxt/login', '/nuxt/articles/001'), '/angular/login?return_to=%2Fangular%2Farticles%2F001')
+  for (const source of [
+    '/nuxt/articles/new', '/nuxt/articles/1/edit', '/nuxt/me/articles', '/nuxt/comments/1',
+    '/nuxt/admin/members', '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/unknown',
+  ]) assert.equal(angularFrontendTarget(source), null, source)
+  for (const source of [
+    '/nuxt/articles/new', '/nuxt/articles/1/edit', '/nuxt/register', '/nuxt/login',
+    '/nuxt/articles/0', '/nuxt/articles/9007199254740992', 'https://evil.test',
+  ]) assert.equal(angularFrontendTarget('/nuxt/login', source), null, source)
+})
 
 // React 作者與管理頁保留原始合法 ID；登入返回目標只轉到已完成頁。
 test('React frontend targets preserve author and admin routes and reject invalid targets', () => {

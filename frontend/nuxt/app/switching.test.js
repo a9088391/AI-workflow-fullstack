@@ -85,7 +85,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   }
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
-  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, chooseFrontend, chooseBackend, submitLogout })'))
+  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, angularTarget, chooseFrontend, chooseBackend, submitLogout })'))
   // 有表單的頁面執行正式 submit/save；唯讀文章詳情只需 app 切換狀態。
   const form = page === 'index' || /^articles\/[0-9]+$/.test(page) ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
@@ -169,6 +169,71 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.equal(app.app.site.account.value, null)
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.deepEqual(app.redirects, ['/vue/'])
+})
+
+// Angular 選單只開放已完成頁；切換保留原 JWT／到期時間並作廢來源晚到回應。
+test('Angular choice keeps supported route and session while invalidating delayed me', async (t) => {
+  const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
+  assert.match(template, /<option value="angular" :disabled="!angularTarget">Angular/)
+  for (const [page, target, loginReturn] of [
+    ['index', '/angular/'], ['register', '/angular/register'],
+    ['login', '/angular/login?return_to=%2Fangular%2Farticles%2F001'],
+    ['articles/001', '/angular/articles/001'],
+  ]) {
+    const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
+    t.after(app.close)
+    assert.equal(app.app.angularTarget.value, target)
+    app.app.chooseFrontend({ target: { value: 'angular' } })
+    assert.deepEqual(app.redirects, [target])
+    assert.equal(app.requests[0].options.signal.aborted, true)
+    respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+    await setImmediate()
+    assert.equal(app.app.site.account.value, null)
+    assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+  }
+})
+
+// 未完成頁與非法登入返回目標不可切 Angular，手動觸發選單事件也不導覽。
+test('Angular choice blocks future routes and unsafe login returns', (t) => {
+  for (const [page, loginReturn] of [
+    ['articles/new'], ['admin/settings/login-lockout'],
+    ['login', '/nuxt/articles/new'], ['login', '/nuxt/articles/0'],
+    ['login', '/nuxt/register'], ['login', 'https://evil.test'],
+  ]) {
+    const app = switchingPage(page, false, BACKENDS.symfony, true, loginReturn)
+    t.after(app.close)
+    assert.equal(app.app.angularTarget.value, null)
+    const choice = { target: { value: 'angular' } }
+    app.app.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'nuxt')
+    assert.deepEqual(app.redirects, [])
+  }
+})
+
+// Angular 切換取消時保留登入文字；確認後舊登入成功不能寫回 Nuxt 的共用憑證。
+test('Angular choice preserves cancelled draft and ignores a late login', async (t) => {
+  const cancelled = switchingPage('login', false, BACKENDS.symfony, false)
+  t.after(cancelled.close)
+  cancelled.form.email.value = 'reader@example.test'
+  await vue.nextTick()
+  const choice = { target: { value: 'angular' } }
+  cancelled.app.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'nuxt')
+  assert.equal(cancelled.form.email.value, 'reader@example.test')
+  assert.deepEqual(cancelled.redirects, [])
+
+  const switched = switchingPage('login')
+  t.after(switched.close)
+  switched.form.email.value = 'reader@example.test'
+  switched.form.password.value = 'abcd'
+  await vue.nextTick()
+  const pending = switched.form.submit()
+  switched.app.chooseFrontend({ target: { value: 'angular' } })
+  assert.deepEqual(switched.redirects, ['/angular/login?return_to=%2Fangular%2Farticles%2F001'])
+  assert.equal(switched.requests[0].options.signal.aborted, true)
+  respond(switched.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'late-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: account } })
+  await pending
+  assert.equal(switched.storage.getItem(SESSION_KEY), null)
 })
 
 // React 切換只在已完成頁啟用，沿用原 Symfony JWT 與到期時間並作廢晚到 /me。

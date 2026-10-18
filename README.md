@@ -1,6 +1,6 @@
-# 會員文章展示：Vue／Nuxt／React／Next.js 與十二個共用後端
+# 會員文章展示：Vue／Nuxt／React／Next.js／Angular 與十二個共用後端
 
-目前 Vue、Nuxt 與 React 均提供註冊、登入、公開文章、作者文章／留言，以及會員、文章、留言與登入鎖定設定管理頁。Next.js 目前提供註冊、登入、公開文章與留言閱讀、發文、留言寫入及作者文章／留言頁；管理頁尚未提供。已完成的共同頁面可在同一分頁切換前端；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue、Nuxt 與 Next.js 的作者操作在送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
+目前 Vue、Nuxt 與 React 均提供註冊、登入、公開文章、作者文章／留言，以及會員、文章、留言與登入鎖定設定管理頁。Next.js 目前提供註冊、登入、公開文章與留言閱讀、發文、留言寫入及作者文章／留言頁；管理頁尚未提供。Angular 目前提供註冊、登入、公開文章與留言唯讀閱讀；發表留言、作者及管理頁留待後續票據。已完成的共同頁面可在同一分頁切換前端；各後端使用同一 PostgreSQL 資料庫，也可由頁面切換 API 來源。文章發表即公開，只接受純文字；發文成功返回我的文章第一頁，公開作者只顯示暱稱。登入使用固定八小時、可撤銷的 JWT；會員預設五分鐘內五次錯密碼，鎖定三百秒。Vue、Nuxt 與 Next.js 的作者操作在送出結果不明時保留同帳號的頁面記憶體草稿，須先查證再手動重試。留言保留原文及換行；含 U+0000 回 `422/E0001`，不移除、替換或寫入。
 
 ## 本機操作
 
@@ -10,7 +10,7 @@
 
 日常使用 `ops/start.sh` 與 `ops/stop.sh`。啟動會先停止本專案寫入，再查 SQL 版本；既有資料若有待套用版本，必須先成功產生 `.local/backups/` 的 `pg_dump` 備份。備份保留既有角色權限；還原須由人員在具備原有角色的目標環境操作。checksum 不同、未知資料庫版本、備份或 SQL 失敗都會阻止後端就緒，不會自動還原或清除資料。停止命令保留 volume、金鑰及備份。新增 SQL 檔放在 `database/sql/`，已成功套用的檔案不可修改。
 
-Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`；React 位於 `frontend/react/`，容器監聽 `0.0.0.0:4173` 並提供 `/react/`；Next.js 位於 `frontend/next/`，容器監聽 `0.0.0.0:3000` 並提供 `/next/`。日常 `ops/start.sh` 啟動四個已完成的前端，入口分別為 `http://localhost:8080/vue/`、`http://localhost:8080/nuxt/`、`http://localhost:8080/react/` 與 `http://localhost:8080/next/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫各後端固定入口的 `/api/...`，包含 Fiber 的 `http://localhost:8089/api/...`、Express 的 `http://localhost:8090/api/...` 與 NestJS 的 `http://localhost:8092/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
+Vue 位於 `frontend/vue/`，容器監聽 `0.0.0.0:4173` 並提供 `/vue/`；Nuxt 位於 `frontend/nuxt/` 並提供 `/nuxt/`；React 位於 `frontend/react/`，容器監聽 `0.0.0.0:4173` 並提供 `/react/`；Next.js 位於 `frontend/next/`，容器監聽 `0.0.0.0:3000` 並提供 `/next/`；Angular 位於 `frontend/angular/`，容器監聽 `0.0.0.0:4173` 並提供 `/angular/`。日常 `ops/start.sh` 啟動五個已提供的前端，入口分別為 `http://localhost:8080/vue/`、`http://localhost:8080/nuxt/`、`http://localhost:8080/react/`、`http://localhost:8080/next/` 與 `http://localhost:8080/angular/`。NGINX 只轉送前端，瀏覽器依頁面選擇直接呼叫各後端固定入口的 `/api/...`，包含 Fiber 的 `http://localhost:8089/api/...`、Express 的 `http://localhost:8090/api/...` 與 NestJS 的 `http://localhost:8092/api/...`。只啟動後端時可用 `ops/start.sh --backend-only`。`GET http://localhost:8081/up` 只有在應用帳號能查詢 `accounts`、三張認證表、`articles` 與 `comments` 時回 200。
 
 Symfony 使用獨立 JWT 金鑰，直連同一資料庫；`GET http://localhost:8082/up` 確認應用帳號可讀共用表。切換後端會清除原登入並轉到登入頁，重新登入後返回合法的本機頁面；不會把舊 JWT 送給新後端。Ticket 08 隔離驗證可用 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml SETUP_IN_PROGRESS=1 ops/start.sh --backend-only` 啟動，再執行 `COMPOSE_PROJECT_NAME=ticket08_test COMPOSE_FILE=compose.yaml:ops/tests/symfony_compose.yaml php -d zend.assertions=1 -d assert.exception=1 ops/tests/symfony_http.php`；測試會建立帳號與內容，僅在隔離資料庫執行，測試專用金鑰需先放入 `.local/ticket08-backend/laravel.key` 與 `symfony.key`。
 
@@ -130,7 +130,7 @@ Ticket 30 的管理驗證使用獨立 `ticket30_test` 資料卷、`ops/tests/tic
 
 Ticket 18 的完整 Django／Laravel 管理與鎖定設定比對使用 `ops/tests/ticket18_compose.yaml`、`ops/tests/ticket18_http.php` 與 `ticket18_test` 專用資料卷；測試會建立帳號及內容、改動設定，並在寫入前核對實際容器、埠位、金鑰掛載與資料卷。測試專用金鑰置於 `.local/ticket18-backend/`，不得對展示資料執行。
 
-登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Vue、Nuxt 與 React 的管理頁可在同一分頁對應切換；Next.js 僅開放已完成的公開與帳號共同頁面，Angular 與 SvelteKit 尚未提供。
+登入後將 `{backend,accessToken,expiresAt}` 存於同一分頁的 `sessionStorage` key `article-collection.auth.v1`；`backend` 為所選 API 基底位址，`expiresAt` 是原登入到期時間。前端切換沿用這份資料與原到期時間，重新整理會先用 JWT 呼叫 `GET /api/me` 確認身分；另以 `article-collection.backend.v1` 保存未登入時的後端選擇。未保存密碼或帳號資料；登入鎖定倒數只留在頁面記憶體，歸零後由使用者重新送出。Vue、Nuxt 與 React 的管理頁可在同一分頁對應切換；Next.js 與 Angular 目前僅開放各自已完成的共同頁面，SvelteKit 尚未提供。
 
 管理員可在 `/vue/admin/settings/login-lockout` 或 `/nuxt/admin/settings/login-lockout` 讀取與儲存會員登入錯誤鎖定設定；對應端點為 `GET/PUT /api/settings/login-lockout`。設定包含啟用狀態、錯誤次數上限（1–100）、計算視窗（1–60 分鐘）及鎖定時間（1–86400 秒）；儲存時四欄須一起送出。停用鎖定會立即解除既有會員鎖定，但不影響停用帳號的狀態。集中 SQL `0008_login_lockout_settings.sql` 提供設定更新權限，既有資料庫會在下次 `ops/start.sh` 時依前述備份與版本流程套用。寫入結果不明時，頁面保留輸入並提示管理員手動重讀確認，不會自動重送。
 

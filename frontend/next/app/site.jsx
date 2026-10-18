@@ -901,8 +901,12 @@ export default function Site({ path, query }) {
       (entry) => entry[1] === backend,
     )?.[0] : '讀取中…'}</strong></span></div>
       <label className="select-wrap">切換版本<select value="next" onChange={changeFrontend} aria-label="切換前端版本">{Object.entries(FRONTENDS).map(
-        // Nuxt 不接受其餘八個後端；入口是否啟動仍由 NGINX 呈現。
-        ([id, name]) => <option key={id} value={id} disabled={!canSwitchFrontend(id, backend)}>{name}{id === 'nuxt' && !canSwitchFrontend(id, backend) ? '（此後端尚未提供）' : ''}</option>,
+        // Nuxt 需核對後端，Angular 需核對目前頁面；未提供的目標仍留在選單說明。
+        ([id, name]) => {
+          const backendReady = canSwitchFrontend(id, backend)
+          const routeReady = frontendTarget(path, id, returnTo) !== null
+          return <option key={id} value={id} disabled={!backendReady || !routeReady}>{name}{id === 'nuxt' && !backendReady ? '（此後端尚未提供）' : !routeReady ? '（此頁尚未提供）' : ''}</option>
+        },
       )}</select></label>
       <label className="select-wrap">切換後端<select value={backend || ''} onChange={changeBackend} disabled={!backend} aria-label="切換目前後端">{!backend && <option value="">讀取中…</option>}{Object.entries(BACKENDS).map(
         // API 來源只取固定清單，顯示文字不影響實際位址。

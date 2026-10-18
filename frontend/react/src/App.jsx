@@ -711,6 +711,10 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   const navToggle = useRef(null)
   // 目前頁面若無 Next 對應路由，保留選項可見但不可切換。
   const nextReady = supportsNextRoute(pathname)
+  // Angular 此階段只提供公開文章與帳號頁；文章 ID 已由入口驗證。
+  const angularReady = ['articles', 'login', 'register', 'article'].includes(page)
+  // 已驗證的登入返回路徑若屬後續作者／管理功能，改以 Angular 文章列表接續。
+  const angularReturnTo = returnTo === '/react/' || /^\/react\/articles\/[0-9]+$/.test(returnTo) ? returnTo : '/react/'
   // 工具列在後端變更時重建，舊登出請求不得撤銷新後端畫面狀態。
   useEffect(() => {
     // 離開舊後端或頁面時取消仍在途的登出請求。
@@ -730,8 +734,9 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   function switchFrontend(event) {
     const next = event.target.value
     if (next === 'react') return
+    if (next === 'angular' && !angularReady) { event.target.value = 'react'; return }
     if (!mayLeave()) { event.target.value = 'react'; return }
-    const target = frontendTarget(pathname, next, returnTo)
+    const target = frontendTarget(pathname, next, next === 'angular' ? angularReturnTo : returnTo)
     if (target) {
       // 在導覽卸載前立即讓帳號及登出舊回應失去寫入資格。
       approvedNavigation.current = true
@@ -780,12 +785,12 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   return <><header className="site-header"><a className="brand" href="/react/">文章集<span> / REACT</span></a><div className="current">目前前端　<strong>React＋Vite</strong><br />目前後端　<strong>{name}</strong></div><details className="switches"><summary>切換版本</summary><div className="switch-panel"><label htmlFor="frontend">目前前端</label><select id="frontend" value={front} onChange={switchFrontend}>{Object.entries(FRONTENDS).map(
     // 六版入口保持可見；只啟用目前頁面在目標版已完成且可用的選項。
     ([id, label]) => {
-      const unavailable = ['angular', 'sveltekit'].includes(id) || id === 'next' && !nextReady
+      const unavailable = id === 'sveltekit' || id === 'angular' && !angularReady || id === 'next' && !nextReady
       const nuxtDisabled = id === 'nuxt' && !Object.values(BACKENDS).slice(0, 4).some(
         // Nuxt 現階段只支援四個已驗證後端，其他來源不強制改選。
         (entry) => entry[1] === backend,
       )
-      return <option key={id} value={id} disabled={unavailable || nuxtDisabled}>{label}{id === 'next' && !nextReady ? '（此頁尚未提供）' : unavailable ? '（尚未提供）' : ''}</option>
+      return <option key={id} value={id} disabled={unavailable || nuxtDisabled}>{label}{(id === 'next' && !nextReady || id === 'angular' && !angularReady) ? '（此頁尚未提供）' : unavailable ? '（尚未提供）' : ''}</option>
     },
   )}</select><label htmlFor="backend">目前後端</label><select id="backend" value={backend} onChange={switchBackend}>{Object.entries(BACKENDS).map(
     // 十二個後端共享 API 路徑，只需更換固定基底。

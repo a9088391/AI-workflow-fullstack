@@ -117,6 +117,18 @@ test('route and frontend targets preserve only approved completed pages', () => 
   assert.equal(pageNumber('5'), 5)
 })
 
+// Angular 目前只承接公開與帳號頁；登入返回目標不得指向尚未提供的作者或管理頁。
+test('Angular frontend targets keep supported article IDs and discard unavailable routes', () => {
+  for (const [path, target] of [['/next', '/angular/'], ['/next/', '/angular/'], ['/next/login', '/angular/login'], ['/next/register', '/angular/register'], ['/next/articles/0009', '/angular/articles/0009']]) {
+    assert.equal(frontendTarget(path, 'angular'), target, path)
+  }
+  assert.equal(frontendTarget('/next/login', 'angular', '/next/articles/0009'), '/angular/login?return_to=%2Fangular%2Farticles%2F0009')
+  for (const path of ['/next/articles/new', '/next/articles/9/edit', '/next/me/articles', '/next/me/comments', '/next/comments/9', '/next/admin/articles', '/next/articles/0', '/next/articles/9007199254740992']) {
+    assert.equal(frontendTarget(path, 'angular'), null, path)
+    assert.equal(frontendTarget('/next/login', 'angular', path), '/angular/login', path)
+  }
+})
+
 // 內容檢查、作者編修與恢復入口依核准欄位和權限處理。
 test('author content validation and controls use actual authorship and server restore flag', () => {
   assert.deepEqual(validateContent({ title: '😀', body: '第一行\r\n第二行' }), {})

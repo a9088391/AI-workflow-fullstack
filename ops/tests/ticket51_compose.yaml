@@ -1,0 +1,15 @@
+services:
+  sql:
+    volumes:
+      - ./.local/ticket51-backend/backups:/backups
+
+  laravel:
+    volumes:
+      - ./.local/ticket51-backend/laravel-logs:/srv/laravel/storage/logs
+      - ./.local/ticket51-backend/laravel.key:/run/secrets/laravel-jwt.key:ro
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.251.51.0/24

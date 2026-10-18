@@ -367,6 +367,75 @@ test('Next.js frontend choice rejects unknown, invalid IDs, and unsafe login ret
   }
 })
 
+// Angular 目前只接收公開與帳號頁；切換保留文章 ID、登入返回及原後端憑證。
+test('Angular choice keeps supported routes and the original shared session', async (t) => {
+  for (const [source, search, destination] of [
+    ['/vue/', '', '/angular/'], ['/vue/register', '', '/angular/register'],
+    ['/vue/login', '', '/angular/login'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/angular/login?return_to=%2Fangular%2Farticles%2F001'],
+    ['/vue/articles/001', '', '/angular/articles/001'],
+  ]) {
+    const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchAngularPage, true, source)
+    app.page.versionsOpen.value = true
+    assert.match(await renderArticleApp(app), /<option value="angular">Angular<\/option>/)
+    app.page.chooseFrontend({ target: { value: 'angular' } })
+    assert.deepEqual(app.redirects, [destination])
+    assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.nestjs, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+    if (app.requests[0]) {
+      await respond(app.requests[0], 200, success(member))
+      assert.equal(app.page.account.value, null)
+    }
+  }
+})
+
+// 未完成頁與不合法返回目標在選單和事件處理都不得導向 Angular。
+test('Angular choice blocks unsupported routes and unsafe login returns', async (t) => {
+  for (const [source, search] of [
+    ['/vue/articles/new', ''], ['/vue/articles/1/edit', ''], ['/vue/me/articles', ''],
+    ['/vue/comments/1', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''],
+    ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
+    ['/vue/login', '?return_to=%2Fvue%2Fregister'],
+    ['/vue/login', '?return_to=https%3A%2F%2Fevil.test'],
+  ]) {
+    const app = articleApp(source, null, search)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchAngularPage, false, source)
+    app.page.versionsOpen.value = true
+    assert.match(await renderArticleApp(app), /<option value="angular" disabled>Angular（此頁尚未提供）<\/option>/)
+    const previousRedirects = [...app.redirects]
+    const choice = { target: { value: 'angular' } }
+    app.page.chooseFrontend(choice)
+    assert.equal(choice.target.value, 'vue')
+    assert.deepEqual(app.redirects, previousRedirects)
+  }
+})
+
+// 切換前取消保留草稿；已送出的登入回應晚到也不得覆寫 Angular 共用憑證。
+test('Angular choice respects draft cancellation and ignores late login', async (t) => {
+  const cancelled = articleApp('/vue/login', null, '', false)
+  t.after(cancelled.close)
+  cancelled.page.email.value = 'reader@example.test'
+  const choice = { target: { value: 'angular' } }
+  cancelled.page.chooseFrontend(choice)
+  assert.equal(choice.target.value, 'vue')
+  assert.deepEqual(cancelled.redirects, [])
+
+  const switched = articleApp('/vue/login', null, '', true)
+  t.after(switched.close)
+  switched.page.email.value = 'reader@example.test'
+  switched.page.password.value = 'abcd'
+  const login = switched.page.submitLogin()
+  switched.page.chooseFrontend({ target: { value: 'angular' } })
+  assert.deepEqual(switched.redirects, ['/angular/login'])
+  await respond(switched.requests[0], 200, success({ access_token: 'late-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+  await login
+  assert.equal(auth.readSession(switched.sessionStorage), null)
+})
+
 // 取消捨棄時保留登入草稿；確認切換後舊登入回應不能補寫憑證。
 test('React choice respects draft cancellation and invalidates late login', async (t) => {
   const cancelled = articleApp('/vue/login', null, '', false)

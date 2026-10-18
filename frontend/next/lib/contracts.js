@@ -95,11 +95,20 @@ export function validReturn(path) {
   return Boolean(match && positiveId(match[1] || match[2]) !== null)
 }
 
+// Angular 目前只提供公開文章與帳號頁，合法文章 ID 才能保留原閱讀位置。
+function supportsAngularRoute(path) {
+  if (['/next', '/next/', '/next/login', '/next/register'].includes(path)) return true
+  const article = typeof path === 'string' && path.match(/^\/next\/articles\/([0-9]+)$/)
+  return Boolean(article && positiveId(article[1]) !== null)
+}
+
 // 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。
 export function frontendTarget(path, frontend, returnTo = '/next/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
+  if (frontend === 'angular' && !supportsAngularRoute(path)) return null
   if (path === '/next/login') {
-    const target = validReturn(returnTo) ? frontendTarget(returnTo, frontend) : `/${frontend}/`
+    // 返回頁若在目標版本尚未提供，就留在登入頁並以文章列表為預設目標。
+    const target = (validReturn(returnTo) && frontendTarget(returnTo, frontend)) || `/${frontend}/`
     return `/${frontend}/login${target !== `/${frontend}/` ? `?return_to=${encodeURIComponent(target)}` : ''}`
   }
   if (path === '/next/' || path === '/next') return `/${frontend}/`

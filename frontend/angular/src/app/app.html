@@ -1,0 +1,82 @@
+<a class="skip-link" [href]="path + search + '#main'">跳至主要內容</a>
+<div class="landscape" aria-hidden="true"></div>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/angular/"><span class="brand-mark" aria-hidden="true">✦</span>文章集<span class="brand-leaf" aria-hidden="true">❧</span></a>
+    <p class="sidebar-caption">在文字裡慢慢走一段路</p>
+    <nav class="side-nav" aria-label="主要導覽">
+      <a href="/angular/" [attr.aria-current]="route === 'list' ? 'page' : null"><span aria-hidden="true">▤</span> 所有文章</a>
+      @if (!account()) {
+        <a href="/angular/login" [attr.aria-current]="route === 'login' ? 'page' : null"><span aria-hidden="true">⌂</span> 登入</a>
+        <a href="/angular/register" [attr.aria-current]="route === 'register' ? 'page' : null"><span aria-hidden="true">✎</span> 註冊</a>
+      }
+    </nav>
+    <details class="mobile-nav"><summary>選單</summary><nav aria-label="行動導覽"><a href="/angular/">所有文章</a>@if (!account()) { <a href="/angular/login">登入</a><a href="/angular/register">註冊</a> }</nav></details>
+    <div class="sidebar-foot" aria-hidden="true"><span>✿</span><span>❀</span><span>✿</span></div>
+  </aside>
+
+  <div class="workspace">
+    <header class="toolbar">
+      <div class="current-labels"><span>目前前端 <strong>Angular</strong></span><span>目前後端 <strong>{{ backendName() }}</strong></span></div>
+      <details class="switch-panel"><summary>切換版本</summary><div class="switch-fields">
+        <label>切換前端<select aria-label="切換前端版本" value="angular" (change)="switchFrontend($event)">
+          @for (frontend of frontends; track frontend.id) { <option [value]="frontend.id" [selected]="frontend.id === 'angular'" [disabled]="!canSwitchFrontend(frontend.id)">{{ frontend.name }}{{ !canSwitchFrontend(frontend.id) ? '（此後端尚未提供）' : '' }}</option> }
+        </select></label>
+        <label>切換後端<select aria-label="切換目前後端" [value]="backend()" (change)="switchBackend($event)">
+          @for (entry of backends; track entry.id) { <option [value]="entry.base">{{ entry.name }}</option> }
+        </select></label>
+      </div></details>
+      @if (account(); as user) { <div class="account-actions"><span class="account-name">{{ user.nickname }}</span><button type="button" class="text-button" [disabled]="pending()" (click)="logout()">{{ pending() ? '登出中…' : '登出' }}</button></div> }
+    </header>
+
+    <main id="main" class="paper">
+      @if (storageProblem()) { <p class="notice" role="alert">瀏覽器未開放此分頁儲存；可公開閱讀，但無法保留登入或後端選擇。</p> }
+      @if (authState() === 'checking') { <p class="notice" role="status">正在驗證登入…</p> }
+      @if (authError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (authState() === 'error') { <button type="button" (click)="initialize()">重新驗證</button> }@else if (authState() === 'expired') { <a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">重新登入</a> }</div> }
+      @if (notice(); as message) { <div class="notice" [class.error]="message.code || message.logId" role="alert"><p>{{ message.message }}</p>@if (message.logId) { <small>log_id：{{ message.logId }}</small> }</div> }
+
+      @if (route === 'list') {
+        <div class="page-heading"><div><p class="eyebrow">STORIES / 文章</p><h1>所有文章</h1><p class="heading-subtitle">沿著文字的路，遇見每個人留下的風景。</p></div><span class="heading-flower" aria-hidden="true">❧</span></div>
+        @if (loading()) { <p class="notice" role="status">正在載入文章…</p> }
+        @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small> }<button type="button" (click)="readContent()">重新讀取</button></div> }
+        @if (articles(); as data) {
+          @if (data.list.length === 0) { <div class="empty-state"><span aria-hidden="true">✿</span><p>{{ data.pagination.total === 0 ? '目前尚無文章。' : '此頁沒有資料。' }}</p>@if (data.pagination.total > 0) { <a href="/angular/">回第一頁</a> }</div> }
+          @else { <div class="article-list"><div class="list-head"><span>文章</span><span>發佈日期</span><span>建立來源</span></div>
+            @for (item of data.list; track item.id) { <article class="article-row"><div><h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2><p class="excerpt">{{ item.body }}</p><p class="byline">作者　{{ item.author.nickname }}</p></div><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span></article> }
+          </div> }
+          <nav class="pagination" aria-label="文章分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 篇</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
+        }
+      } @else if (route === 'article') {
+        <a class="back-link" href="/angular/">← 回所有文章</a>
+        @if (loading()) { <p class="notice" role="status">正在載入文章…</p> }
+        @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small> }<button type="button" (click)="readContent()">重新讀取</button></div> }
+        @if (article(); as story) { <article class="reading"><p class="eyebrow">ARTICLE / 閱讀</p><h1>{{ story.title }}</h1><div class="story-meta"><span>作者　<strong>{{ story.author.nickname }}</strong></span><time>{{ story.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(story.created_backend) }}</span></div><div class="story-body">{{ story.body }}</div></article>
+          <section class="comments" aria-labelledby="comments-title"><div class="section-heading"><h2 id="comments-title">讀者留言</h2><span aria-hidden="true">✿</span></div>
+            @if (commentsLoading()) { <p class="notice" role="status">正在載入留言…</p> }
+            @if (commentsError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small> }<button type="button" (click)="readComments()">重新讀取留言</button></div> }
+            @if (comments(); as data) { @if (data.list.length === 0) { <p class="empty-state">{{ data.pagination.total === 0 ? '目前尚無留言。' : '此頁沒有留言。' }} @if (data.pagination.total > 0) { <a [href]="pageHref(1)">回第一頁</a> }</p> }
+              @for (comment of data.list; track comment.id) { <article class="comment"><div class="comment-meta"><strong>{{ comment.author.nickname }}</strong><time>{{ comment.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(comment.created_backend) }}</span></div><p>{{ comment.body }}</p></article> }
+              <nav class="pagination" aria-label="留言分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 則</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
+            }
+            <p class="read-only-note">此頁目前提供留言閱讀；發表留言會在後續版本加入。</p>
+          </section>
+        }
+      } @else if (route === 'login' || route === 'register') {
+        <div class="form-layout"><div class="form-decoration" aria-hidden="true"><span>✿</span><p>在這裡，<br>開始下一段故事。</p></div><section class="account-card" aria-labelledby="account-title"><p class="eyebrow">{{ route === 'register' ? 'JOIN / 註冊' : 'WELCOME BACK / 登入' }}</p><h1 id="account-title">{{ route === 'register' ? '加入文章集' : '歡迎回來' }}</h1><p class="form-intro">{{ route === 'register' ? '留下你的名字，開始閱讀與分享。' : '登入後，繼續你的閱讀旅程。' }}</p>
+          <form (submit)="submitAccount($event)" novalidate>
+            @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of errorEntries(); track entry[0]) { <a [href]="path + search + '#' + entry[0]">{{ entry[0] === 'email' ? 'Email' : entry[0] === 'password' ? '密碼' : '暱稱' }}：{{ entry[1].join('；') }}</a> }@for (message of otherErrors(); track message) { <span>{{ message }}</span> }</div> }
+            <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" [(ngModel)]="email" (ngModelChange)="fieldChanged()" [disabled]="pending() || !!lockedTime()" [attr.aria-invalid]="fieldErrors()['email'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['email'] ? 'email-error' : null"><small id="email-error" class="field-error">{{ fieldErrors()['email']?.join('；') }}</small>
+            <label for="password">密碼</label><input id="password" name="password" type="password" [attr.autocomplete]="route === 'register' ? 'new-password' : 'current-password'" [(ngModel)]="password" (ngModelChange)="fieldChanged()" [disabled]="pending() || !!lockedTime()" [attr.aria-invalid]="fieldErrors()['password'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['password'] ? 'password-error' : null"><small id="password-error" class="field-error">{{ fieldErrors()['password']?.join('；') || '4–16 碼英文字母或數字' }}</small>
+            @if (route === 'register') { <label for="nickname">暱稱</label><input id="nickname" name="nickname" autocomplete="nickname" [(ngModel)]="nickname" (ngModelChange)="fieldChanged()" [disabled]="pending()" [attr.aria-invalid]="fieldErrors()['nickname'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['nickname'] ? 'nickname-error' : null"><small id="nickname-error" class="field-error">{{ fieldErrors()['nickname']?.join('；') }}</small> }
+            @if (lockedTime()) { <p class="lock-note">登入暫時鎖定，約剩 <strong>{{ lockedTime() }}</strong></p> }
+            @if (lockEnded()) { <p class="notice">可再次嘗試登入</p> }
+            <button class="primary-button" type="submit" [disabled]="pending() || !!lockedTime()">{{ pending() ? '處理中…' : route === 'register' ? '建立帳號' : '登入' }} <span aria-hidden="true">→</span></button>
+            <p class="form-foot">@if (route === 'register') { 已有帳號？ <a href="/angular/login">前往登入</a> } @else { 還沒有帳號？ <a href="/angular/register">註冊會員</a> }</p>
+          </form>
+        </section></div>
+      } @else {
+        <div class="empty-state"><span aria-hidden="true">✿</span>@if (isFutureRoute()) { <h1>此頁尚未提供</h1><p>Angular 的作者與管理功能會在後續版本加入。</p>@if (authState() === 'guest' || authState() === 'expired') { <a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">先登入</a> } } @else { <h1>找不到頁面</h1> }<a href="/angular/">返回文章列表</a></div>
+      }
+    </main>
+  </div>
+</div>

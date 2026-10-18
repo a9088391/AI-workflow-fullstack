@@ -1,0 +1,29 @@
+{
+  "name": "article-collection-angular",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "ng build",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test": "node --experimental-strip-types --test src/app/contracts.test.ts"
+  },
+  "private": true,
+  "packageManager": "npm@11.6.2",
+  "dependencies": {
+    "@angular/common": "21.2.25",
+    "@angular/compiler": "21.2.25",
+    "@angular/core": "21.2.25",
+    "@angular/forms": "21.2.25",
+    "@angular/platform-browser": "21.2.25",
+    "rxjs": "7.8.2",
+    "tslib": "2.8.1"
+  },
+  "devDependencies": {
+    "@angular/build": "21.2.27",
+    "@angular/cli": "21.2.27",
+    "@angular/compiler-cli": "21.2.25",
+    "typescript": "5.9.3"
+  }
+}
