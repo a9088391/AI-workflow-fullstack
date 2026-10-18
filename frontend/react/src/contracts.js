@@ -96,9 +96,9 @@ export function supportsNextRoute(path) {
   return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
-// Angular 已提供公開與作者頁；管理頁留待完成後才允許切換。
+// Angular 已提供十五種語意頁；沿用安全返回清單檢查路由與 ID。
 export function supportsAngularRoute(path) {
-  return path === '/react/register' || path === '/react/login' || validReturn(path) && !path.startsWith('/react/admin/')
+  return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。

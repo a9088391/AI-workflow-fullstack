@@ -65,11 +65,11 @@ export function nextFrontendTarget(path, returnTo = null) {
   return null
 }
 
-// Angular 接收公開、帳號與作者頁；管理頁未提供，登入返回也只映射已完成頁。
+// Angular 接收全部語意頁；登入返回只映射已知且 ID 合法的頁面。
 export function angularFrontendTarget(path, returnTo = null) {
-  if (path === '/nuxt/register' || (validReturn(path) && !path.startsWith('/nuxt/admin/'))) return path.replace(/^\/nuxt/, '/angular')
+  if (path === '/nuxt/register' || validReturn(path)) return path.replace(/^\/nuxt/, '/angular')
   if (path === '/nuxt/login') {
-    // 明確提供的返回目標須是 Angular 已完成頁面，避免導向管理頁或非法 ID。
+    // 明確提供的返回目標須是已知頁面，避免導向外站或非法 ID。
     if (returnTo === null || returnTo === undefined) return '/angular/login'
     const target = angularFrontendTarget(returnTo)
     return target && target !== '/angular/login' && target !== '/angular/register' ? `/angular/login${target === '/angular/' ? '' : `?return_to=${encodeURIComponent(target)}`}` : null

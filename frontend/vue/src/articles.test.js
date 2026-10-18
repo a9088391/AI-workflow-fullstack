@@ -367,7 +367,7 @@ test('Next.js frontend choice rejects unknown, invalid IDs, and unsafe login ret
   }
 })
 
-// Angular 作者頁已可切換；保留合法原始 ID、登入返回及原後端憑證。
+// Angular 全部語意頁已可切換；保留合法原始 ID、登入返回及原後端憑證。
 test('Angular choice keeps supported routes and the original shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/angular/'], ['/vue/register', '', '/angular/register'],
@@ -380,12 +380,18 @@ test('Angular choice keeps supported routes and the original shared session', as
     ['/vue/me/comments', '', '/angular/me/comments'],
     ['/vue/comments/009', '', '/angular/comments/009'],
     ['/vue/comments/9007199254740991/edit', '', '/angular/comments/9007199254740991/edit'],
+    ['/vue/admin/members', '', '/angular/admin/members'],
+    ['/vue/admin/members/001', '', '/angular/admin/members/001'],
+    ['/vue/admin/articles', '', '/angular/admin/articles'],
+    ['/vue/admin/comments', '', '/angular/admin/comments'],
+    ['/vue/admin/settings/login-lockout', '', '/angular/admin/settings/login-lockout'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew', '/angular/login?return_to=%2Fangular%2Farticles%2Fnew'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001%2Fedit', '/angular/login?return_to=%2Fangular%2Farticles%2F001%2Fedit'],
     ['/vue/login', '?return_to=%2Fvue%2Fme%2Farticles', '/angular/login?return_to=%2Fangular%2Fme%2Farticles'],
     ['/vue/login', '?return_to=%2Fvue%2Fme%2Fcomments', '/angular/login?return_to=%2Fangular%2Fme%2Fcomments'],
     ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009', '/angular/login?return_to=%2Fangular%2Fcomments%2F009'],
     ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009%2Fedit', '/angular/login?return_to=%2Fangular%2Fcomments%2F009%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F001', '/angular/login?return_to=%2Fangular%2Fadmin%2Fmembers%2F001'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -402,14 +408,16 @@ test('Angular choice keeps supported routes and the original shared session', as
   }
 })
 
-// 管理頁尚未提供；非法作者 ID 與不合法返回目標不能經選單導向 Angular。
+// 未知頁、非法 ID 與不安全返回目標不能經選單導向 Angular。
 test('Angular choice blocks unsupported routes and unsafe login returns', async (t) => {
   for (const [source, search] of [
-    ['/vue/admin/members', ''], ['/vue/admin/settings/login-lockout', ''], ['/vue/unknown', ''],
+    ['/vue/admin/unknown', ''], ['/vue/admin/members/0', ''], ['/vue/admin/members/9007199254740992', ''],
+    ['/vue/unknown', ''],
     ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
     ['/vue/articles/0/edit', ''], ['/vue/articles/9007199254740992/edit', ''],
     ['/vue/comments/0', ''], ['/vue/comments/9007199254740992/edit', ''],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F0'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F9007199254740992'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
     ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'],
     ['/vue/login', '?return_to=%2Fvue%2Fregister'],

@@ -95,9 +95,9 @@ export function validReturn(path) {
   return Boolean(match && positiveId(match[1] || match[2]) !== null)
 }
 
-// Angular 已提供公開與作者頁；管理路由仍須等實作完成才可承接。
+// Angular 已提供全部語意頁；仍只允許合法路由，避免切換到未知目標。
 function supportsAngularRoute(path) {
-  return path === '/next/login' || path === '/next/register' || validReturn(path) && !path.startsWith('/next/admin/')
+  return path === '/next/login' || path === '/next/register' || validReturn(path)
 }
 
 // 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。
@@ -105,7 +105,7 @@ export function frontendTarget(path, frontend, returnTo = '/next/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (frontend === 'angular' && !supportsAngularRoute(path)) return null
   if (path === '/next/login') {
-    // 返回頁若在目標版本尚未提供，就留在登入頁並以文章列表為預設目標。
+    // 返回頁若不是目標版本可用的合法路由，就以文章列表為預設目標。
     const target = (validReturn(returnTo) && frontendTarget(returnTo, frontend)) || `/${frontend}/`
     return `/${frontend}/login${target !== `/${frontend}/` ? `?return_to=${encodeURIComponent(target)}` : ''}`
   }

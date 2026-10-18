@@ -7,7 +7,7 @@
     "start": "ng serve",
     "build": "ng build",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "test": "node --experimental-strip-types --test src/app/contracts.test.ts"
+    "test": "node --experimental-strip-types --test src/app/*.test.ts"
   },
   "private": true,
   "packageManager": "npm@11.6.2",

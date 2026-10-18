@@ -7,6 +7,7 @@ import {
   readBackend, readSession, retryAfterSeconds, saveSession, Session, SESSION_KEY,
   validReturn, validateAccount, validateContent,
 } from './contracts';
+import { isLockoutSettings, isMember, LockoutSettings, Member, memberKeyword, settingErrors } from './admin';
 
 @Component({
   selector: 'app-root',
@@ -36,9 +37,14 @@ export class App implements OnInit, OnDestroy {
   readonly commentId = this.path.match(/^\/angular\/comments\/([0-9]+)(?:\/edit)?$/)?.[1] || null;
   readonly validEditArticleId = this.editArticleId && positiveNumber(this.editArticleId) !== null ? this.editArticleId : null;
   readonly validCommentId = this.commentId && positiveNumber(this.commentId) !== null ? this.commentId : null;
+  readonly memberId = this.path.match(/^\/angular\/admin\/members\/([0-9]+)$/)?.[1] || null;
+  readonly validMemberId = this.memberId && positiveNumber(this.memberId) !== null ? this.memberId : null;
   readonly route = this.path === '/angular/' ? 'list' : this.path === '/angular/login' ? 'login' : this.path === '/angular/register' ? 'register'
     : this.path === '/angular/articles/new' ? 'article-new' : this.path === '/angular/me/articles' ? 'my-articles'
-    : this.path === '/angular/me/comments' ? 'my-comments' : this.validEditArticleId ? 'article-edit'
+    : this.path === '/angular/me/comments' ? 'my-comments' : this.path === '/angular/admin/members' ? 'members'
+    : this.path === '/angular/admin/articles' ? 'managed-articles' : this.path === '/angular/admin/comments' ? 'managed-comments'
+    : this.path === '/angular/admin/settings/login-lockout' ? 'lockout-settings' : this.validMemberId ? 'member'
+    : this.validEditArticleId ? 'article-edit'
     : this.validArticleId ? 'article' : this.validCommentId ? this.path.endsWith('/edit') ? 'comment-edit' : 'comment' : 'unknown';
   readonly page = positiveNumber(this.query.get('page')) || 1;
   readonly returnTo = validReturn(this.query.get('return_to') || '') ? this.query.get('return_to')! : '/angular/';
@@ -61,6 +67,10 @@ export class App implements OnInit, OnDestroy {
   readonly parentArticle = signal<Article | null>(null);
   readonly parentError = signal<Problem | null>(null);
   readonly parentLoading = signal(false);
+  readonly members = signal<Page<Member> | null>(null);
+  readonly member = signal<Member | null>(null);
+  readonly managedComments = signal<Page<Comment> | null>(null);
+  readonly settings = signal<LockoutSettings | null>(null);
   readonly writePending = signal(false);
   readonly writeProblem = signal<Problem | null>(null);
   readonly writeUnknown = signal(false);
@@ -76,6 +86,8 @@ export class App implements OnInit, OnDestroy {
   email = '';
   password = '';
   nickname = '';
+  keywordDraft = this.query.get('keyword') || '';
+  settingDraft: LockoutSettings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
   titleDraft = '';
   bodyDraft = '';
   versionDraft = 0;
@@ -180,6 +192,7 @@ export class App implements OnInit, OnDestroy {
     this.authError.set(cleared ? failure : { ...failure, message: `${failure.message}；無法確認本機舊登入資料已清除，請關閉此分頁。` });
     // 憑證失效時清掉可能僅作者可讀的內容，包含原請求已清空畫面的情況，再以訪客身分重讀。
     this.article.set(null); this.comments.set(null); this.comment.set(null); this.myComments.set(null); this.parentArticle.set(null); this.unknownList.set(null);
+    this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
     this.writeAttempt++;
     this.writePending.set(false);
     void this.readContent();
@@ -187,7 +200,8 @@ export class App implements OnInit, OnDestroy {
 
   // 用新 AbortController 讀列表或單篇；公開資料在登入驗證後才決定是否附 JWT。
   async readContent(): Promise<void> {
-    if (!['list', 'article', 'my-articles', 'my-comments', 'article-edit', 'comment', 'comment-edit'].includes(this.route)) return;
+    if (!['list', 'article', 'my-articles', 'my-comments', 'article-edit', 'comment', 'comment-edit',
+      'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(this.route)) return;
     this.readAbort?.abort();
     const controller = new AbortController();
     this.readAbort = controller;
@@ -199,24 +213,53 @@ export class App implements OnInit, OnDestroy {
     this.myComments.set(null);
     this.comment.set(null);
     this.parentArticle.set(null);
+    this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
     // 只有結果不明之後啟動的讀取可作為查證，舊請求晚回來不能解除警告。
     const verifyUnknown = this.writeUnknown();
     const verifyAttempt = this.writeAttempt;
     let verified = false;
     const credential = this.authState() === 'active' ? this.credential() : null;
     if (this.route !== 'list' && this.route !== 'article' && !credential) { this.loading.set(false); return; }
+    // 管理頁先依目前 /api/me 角色阻擋顯示；後端仍逐次驗證真正權限。
+    if (this.isAdminRoute() && this.account()?.role !== 'admin') {
+      this.contentError.set({ message: '沒有權限使用此功能', code: 'E0003' });
+      this.loading.set(false); return;
+    }
+    const keyword = memberKeyword(this.query.get('keyword') || '');
+    if (this.route === 'members' && [...keyword].length > 254) {
+      this.contentError.set({ message: '搜尋文字最多 254 個字。' }); this.loading.set(false); return;
+    }
     const path = this.route === 'list' ? `/api/articles?page=${this.page}&per_page=20`
       : this.route === 'my-articles' ? `/api/me/articles?page=${this.page}&per_page=20`
       : this.route === 'my-comments' ? `/api/me/comments?page=${this.page}&per_page=20`
+      : this.route === 'members' ? `/api/members?page=${this.page}&per_page=20${keyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(keyword)}` : ''}`
+      : this.route === 'member' ? `/api/members/${this.validMemberId}`
+      : this.route === 'managed-articles' ? `/api/articles?page=${this.page}&per_page=20&filters%5Bscope%5D=management`
+      : this.route === 'managed-comments' ? `/api/comments?page=${this.page}&per_page=20`
+      : this.route === 'lockout-settings' ? '/api/settings/login-lockout'
       : this.route === 'comment' || this.route === 'comment-edit' ? `/api/comments/${this.validCommentId}`
       : `/api/articles/${this.validArticleId || this.validEditArticleId}`;
     try {
       const { response, body } = await apiRequest(this.backend(), path, { token: credential?.accessToken, signal: controller.signal });
       if (controller.signal.aborted) return;
-      if (response.ok && body.success === true && ['list', 'my-articles'].includes(this.route) && this.isPage<Article>(body.data) && body.data.list.every(
+      if (response.ok && body.success === true && ['list', 'my-articles', 'managed-articles'].includes(this.route) && this.isPage<Article>(body.data) && body.data.list.every(
         // 列表只在每篇文章都具備閱讀欄位時顯示。
         (item: unknown) => this.isArticle(item),
       )) { this.articles.set(body.data); verified = true; }
+      else if (response.ok && body.success === true && this.route === 'members' && this.isPage<Member>(body.data) && body.data.list.every(
+        // 會員清單只顯示一般會員完整資料，不能把管理員或破損資料當可操作目標。
+        (item: unknown) => isMember(item),
+      )) { this.members.set(body.data); verified = true; }
+      else if (response.ok && body.success === true && this.route === 'member' && isMember(body.data) && body.data.id === Number(this.validMemberId)) {
+        this.member.set(body.data); verified = true;
+      } else if (response.ok && body.success === true && this.route === 'managed-comments' && this.isPage<Comment>(body.data) && body.data.list.every(
+        // 管理清單包含下架與父文章下架留言，需逐筆驗證基本欄位。
+        (item: unknown) => this.isComment(item),
+      )) { this.managedComments.set(body.data); verified = true; }
+      else if (response.ok && body.success === true && this.route === 'lockout-settings' && isLockoutSettings(body.data)) {
+        this.settings.set(body.data); verified = true;
+        if (!this.dirty) this.settingDraft = { ...body.data };
+      }
       else if (response.ok && body.success === true && this.route === 'my-comments' && this.isPage<Comment>(body.data) && body.data.list.every(
         // 我的留言包含個別下架資料，逐筆確認形狀後才顯示。
         (item: unknown) => this.isComment(item),
@@ -243,17 +286,20 @@ export class App implements OnInit, OnDestroy {
     } finally {
       if (!controller.signal.aborted) {
         if (verified && verifyUnknown && verifyAttempt === this.writeAttempt && this.writeUnknown() && !this.unknownNeedsComments) this.unknownVerified.set(true);
+        // 可見性衝突或管理寫入失敗須讀回目前資料，才能清除舊警告並讓使用者重新判斷。
+        if (verified && verifyAttempt === this.writeAttempt && !['article-edit', 'comment-edit'].includes(this.route)
+          && (this.writeProblem()?.code === 'E0201' || this.isAdminRoute() && this.writeProblem()?.code === 'E9999')) this.writeProblem.set(null);
         this.loading.set(false);
       }
     }
   }
 
-  // 只接受可顯示的分頁形狀；錯誤回應不能冒充空資料。
-  private isPage<T>(value: any): value is Page<T> {
+  // 只接受該次請求的頁碼與精確總頁數；結果不明查證固定讀第一頁，不能沿用畫面頁碼。
+  private isPage<T>(value: any, expectedPage = this.page): value is Page<T> {
     return value && Array.isArray(value.list) && value.pagination && Number.isSafeInteger(value.pagination.page)
-      && value.pagination.page >= 1 && Number.isSafeInteger(value.pagination.per_page) && value.pagination.per_page >= 1
+      && value.pagination.page === expectedPage && value.pagination.per_page === 20
       && Number.isSafeInteger(value.pagination.total) && value.pagination.total >= 0
-      && Number.isSafeInteger(value.pagination.total_pages) && value.pagination.total_pages >= 0;
+      && value.pagination.total_pages === Math.ceil(value.pagination.total / 20);
   }
 
   // 單篇需有公開作者與純文字內文，避免不完整回應顯示錯誤資料。
@@ -445,7 +491,7 @@ export class App implements OnInit, OnDestroy {
     try {
       const { response, body } = await apiRequest(this.backend(), path, { token: credential.accessToken });
       if (!this.owns(credential) || verifyAttempt !== this.writeAttempt || !this.writeUnknown()) return;
-      if (response.ok && body.success === true && this.isPage<Article | Comment>(body.data) && body.data.list.every(
+      if (response.ok && body.success === true && this.isPage<Article | Comment>(body.data, 1) && body.data.list.every(
         // 逐筆確認可比較的內容，避免格式錯誤被誤認為查無資料。
         (item: unknown) => isArticle ? this.isArticle(item) : this.isComment(item),
       )) this.unknownList.set(body.data);
@@ -483,7 +529,8 @@ export class App implements OnInit, OnDestroy {
 
   // 可見性操作與內文編修分開，確認後交由後端再驗權限與版本。
   changeVisibility(kind: 'article' | 'comment', resource: Article | Comment): void {
-    if (this.writePending() || this.writeUnknown() || resource.visibility === 'hidden' && !resource.can_restore) return;
+    if (this.writePending() || this.writeUnknown() || this.writeProblem()?.code === 'E0201'
+      || resource.visibility === 'hidden' && !resource.can_restore) return;
     const next = resource.visibility === 'visible' ? 'hidden' : 'visible';
     if (!window.confirm(`確定要${next === 'hidden' ? '下架' : '恢復'}這${kind === 'article' ? '篇文章' : '則留言'}嗎？`)) return;
     void this.write(`/api/${kind === 'article' ? 'articles' : 'comments'}/${resource.id}/visibility`, 'PUT', { visibility: next, version: resource.version },
@@ -512,6 +559,7 @@ export class App implements OnInit, OnDestroy {
         if (!storage || !saveSession(storage, { backend, accessToken: body.data.access_token, expiresAt: body.data.expires_at })) throw new Error('storage');
         if (body.data.user.id !== this.resumeAccountId) {
           this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false;
+          this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
           this.conflictLatest.set(null); this.writeUnknown.set(false);
           this.notice.set({ message: '已登入其他帳號，原帳號的未儲存文字已清除。' });
         } else this.notice.set({ message: '已重新登入原帳號；請確認內容後手動送出。' });
@@ -586,9 +634,10 @@ export class App implements OnInit, OnDestroy {
     ),
   ); }
 
-  // SvelteKit 尚未開放；Nuxt 目前只支援前四個後端，避免切到不可用入口。
+  // 尚未提供的目標頁不開放切換；Nuxt 仍只支援前四個後端。
   canSwitchFrontend(id: string): boolean {
-    return id !== 'sveltekit' && (id !== 'nuxt' || ([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]] as string[]).includes(this.backend()));
+    return id !== 'sveltekit'
+      && (id !== 'nuxt' || ([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]] as string[]).includes(this.backend()));
   }
 
   // 切換前端只改 URL，不複製 JWT、後端、列表頁碼或表單文字。
@@ -749,6 +798,7 @@ export class App implements OnInit, OnDestroy {
         const cleared = Boolean(storage && clearSessionIfOwned(storage, credential));
         this.credential.set(null); this.account.set(null); this.authState.set('guest');
         this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false;
+        this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
         this.writeAttempt++; this.writePending.set(false); this.conflictLatest.set(null);
         this.notice.set({ message: cleared ? '已登出。' : '已登出，但無法確認本機舊登入資料已清除；請關閉此分頁。' });
         // 登出後立刻抹去可能只有原帳號可讀的文章，再讀公開資料。
@@ -762,13 +812,78 @@ export class App implements OnInit, OnDestroy {
     finally { this.pending.set(false); }
   }
 
-  // 管理頁仍由下一票實作，未知作者網址則按找不到頁面處理。
-  isFutureRoute(): boolean { return this.path.startsWith('/angular/admin/') && validReturn(this.path) && this.route === 'unknown'; }
+  // 五個管理語意路由共用角色防護；真正授權仍由每個 API 判定。
+  isAdminRoute(): boolean { return ['members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(this.route); }
+
+  // 搜尋只把已核准的 keyword 放在會員列表網址，搜尋時回第一頁。
+  searchMembers(event: Event): void {
+    event.preventDefault();
+    const keyword = memberKeyword(this.keywordDraft);
+    if ([...keyword].length > 254) { this.fieldErrors.set({ keyword: ['搜尋文字最多 254 個字。'] }); return; }
+    this.ignoreUnload = true;
+    window.location.assign(`/angular/admin/members${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ''}`);
+  }
+
+  // 空 keyword 等同未篩選，空列表文案不能誤稱搜尋無結果。
+  hasMemberKeyword(): boolean { return Boolean(memberKeyword(this.query.get('keyword') || '')); }
+
+  // 會員狀態由管理員確認後送出；成功仍重讀伺服器，不推測寫入後狀態。
+  changeMemberStatus(value: Member): void {
+    if (this.writePending() || this.writeUnknown() || this.account()?.role !== 'admin') return;
+    const next = value.status === 'active' ? 'disabled' : 'active';
+    if (!window.confirm(`確定要${next === 'disabled' ? '停用' : '恢復'}會員 ${value.nickname} 嗎？`)) return;
+    void this.write(`/api/members/${value.id}/status`, 'PUT', { status: next },
+      // 寫入回應不帶會員資料，重讀才呈現實際狀態。
+      () => { this.notice.set({ message: '會員狀態已更新，正在重新讀取。' }); void this.readContent(); });
+  }
+
+  // 使用者改設定時保留草稿；已知欄位錯誤可在摘要跳往對應輸入。
+  settingChanged(): void { this.dirty = true; this.fieldErrors.set({}); this.notice.set(null); }
+
+  // 四欄一次送出，只有有效伺服器回應後才重讀；未知結果不自動重送。
+  submitSettings(event: Event): void {
+    event.preventDefault();
+    if (!this.settings() || this.writePending() || this.writeUnknown()) return;
+    const errors = settingErrors(this.settingDraft);
+    this.fieldErrors.set(errors);
+    if (Object.keys(errors).length) return;
+    const sent = { ...this.settingDraft };
+    void this.write('/api/settings/login-lockout', 'PUT', sent,
+      // 完整 PUT 成功後取消離開提醒，再以 GET 確認目前最後提交值。
+      () => { this.dirty = false; this.notice.set({ message: '設定已提交，正在重新讀取伺服器目前值。' }); void this.readContent(); });
+  }
+
+  // 只有有欄位控制的錯誤能連到錨點；其他錯誤仍須在摘要可讀。
+  settingErrorEntries(): [string, string[]][] { return Object.entries(this.fieldErrors()).filter(
+    // 設定表單四個欄位都具有對應的輸入位置。
+    ([key]) => ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(key),
+  ); }
+
+  // API 可能回非表單欄位的錯誤；摘要仍呈現完整訊息但不建立無效錨點。
+  settingOtherErrors(): string[] { return Object.entries(this.fieldErrors()).filter(
+    // 只排除已有輸入控制的四個欄位。
+    ([key]) => !['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(key),
+  ).flatMap(
+    // 保留後端欄位名稱及每則訊息供排查。
+    ([key, errors]) => errors.map(
+      // 每則錯誤獨立顯示，不吞掉同欄的後續訊息。
+      (message) => `${key}：${message}`,
+    ),
+  ); }
+
+  // log_id 是後端追查依據；複製失敗要明示，畫面仍保留可手選文字。
+  async copyLogId(value: string): Promise<void> {
+    try { await navigator.clipboard.writeText(value); this.notice.set({ message: '已複製 log_id。' }); }
+    catch { this.notice.set({ message: '無法自動複製；請選取畫面上的 log_id。' }); }
+  }
 
   // 分頁只依 API 提供的總頁數導覽；超頁保持原頁碼並提供回首頁。
   pageHref(page: number): string {
     const base = this.route === 'article' ? `/angular/articles/${this.validArticleId}`
-      : this.route === 'my-articles' ? '/angular/me/articles' : this.route === 'my-comments' ? '/angular/me/comments' : '/angular/';
-    return `${base}?page=${page}`;
+      : this.route === 'my-articles' ? '/angular/me/articles' : this.route === 'my-comments' ? '/angular/me/comments'
+      : this.route === 'members' ? '/angular/admin/members' : this.route === 'managed-articles' ? '/angular/admin/articles'
+      : this.route === 'managed-comments' ? '/angular/admin/comments' : '/angular/';
+    const keyword = this.route === 'members' ? memberKeyword(this.query.get('keyword') || '') : '';
+    return `${base}?page=${page}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ''}`;
   }
 }

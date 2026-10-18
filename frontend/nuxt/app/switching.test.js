@@ -171,7 +171,7 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.deepEqual(app.redirects, ['/vue/'])
 })
 
-// Angular 選單開放已完成作者頁；切換保留原 JWT／到期時間並作廢來源晚到回應。
+// Angular 選單開放全部語意頁；切換保留原 JWT／到期時間並作廢來源晚到回應。
 test('Angular choice keeps supported route and session while invalidating delayed me', async (t) => {
   const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
   assert.match(template, /<option value="angular" :disabled="!angularTarget">Angular/)
@@ -181,6 +181,8 @@ test('Angular choice keeps supported route and session while invalidating delaye
     ['login', '/angular/login?return_to=%2Fangular%2Fcomments%2F009%2Fedit', '/nuxt/comments/009/edit'],
     ['articles/001', '/angular/articles/001'],
     ['articles/new', '/angular/articles/new'],
+    ['admin/settings/login-lockout', '/angular/admin/settings/login-lockout'],
+    ['login', '/angular/login?return_to=%2Fangular%2Fadmin%2Fmembers%2F001', '/nuxt/admin/members/001'],
   ]) {
     const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
     t.after(app.close)
@@ -195,11 +197,12 @@ test('Angular choice keeps supported route and session while invalidating delaye
   }
 })
 
-// 管理頁、非法作者 ID 與不安全登入返回不可切 Angular，手動觸發也不導覽。
-test('Angular choice blocks future routes and unsafe login returns', (t) => {
+// 未知管理頁、非法 ID 與不安全登入返回不可切 Angular，手動觸發也不導覽。
+test('Angular choice blocks unknown routes and unsafe login returns', (t) => {
   for (const [page, loginReturn] of [
-    ['admin/settings/login-lockout'],
-    ['login', '/nuxt/admin/members'], ['login', '/nuxt/articles/0'],
+    ['login', '/nuxt/admin/unknown'],
+    ['login', '/nuxt/admin/members/0'], ['login', '/nuxt/admin/members/9007199254740992'],
+    ['login', '/nuxt/articles/0'],
     ['login', '/nuxt/comments/9007199254740992/edit'],
     ['login', '/nuxt/register'], ['login', 'https://evil.test'],
   ]) {

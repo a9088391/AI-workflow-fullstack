@@ -711,7 +711,7 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
   const navToggle = useRef(null)
   // 目前頁面若無 Next 對應路由，保留選項可見但不可切換。
   const nextReady = supportsNextRoute(pathname)
-  // Angular 已提供作者頁；只啟用目標版確實可承接的合法路由。
+  // Angular 已提供全部語意頁；只啟用目標版確實可承接的合法路由。
   const angularReady = supportsAngularRoute(pathname)
   // 工具列在後端變更時重建，舊登出請求不得撤銷新後端畫面狀態。
   useEffect(() => {

@@ -85,14 +85,14 @@ test('Next menu availability and safe frontend targets', () => {
   assert.equal(frontendTarget('/react/login', 'next', '//evil.test'), '/next/login')
 })
 
-// Angular 已提供作者頁，切換及登入返回保留合法 ID；管理頁與無效 ID 仍不可進入。
-test('Angular targets preserve author routes and reject unavailable or invalid routes', () => {
-  for (const [path, target] of [['/react/', '/angular/'], ['/react/login', '/angular/login'], ['/react/register', '/angular/register'], ['/react/articles/0007', '/angular/articles/0007'], ['/react/articles/new', '/angular/articles/new'], ['/react/articles/007/edit', '/angular/articles/007/edit'], ['/react/me/articles', '/angular/me/articles'], ['/react/me/comments', '/angular/me/comments'], ['/react/comments/009', '/angular/comments/009'], ['/react/comments/009/edit', '/angular/comments/009/edit']]) {
+// Angular 十五種語意頁可切換並保留合法 ID；無效 ID、未知路由與外站不得成為目標。
+test('Angular targets preserve all semantic routes and reject invalid routes', () => {
+  for (const [path, target] of [['/react/', '/angular/'], ['/react/login', '/angular/login'], ['/react/register', '/angular/register'], ['/react/articles/0007', '/angular/articles/0007'], ['/react/articles/new', '/angular/articles/new'], ['/react/articles/007/edit', '/angular/articles/007/edit'], ['/react/me/articles', '/angular/me/articles'], ['/react/me/comments', '/angular/me/comments'], ['/react/comments/009', '/angular/comments/009'], ['/react/comments/009/edit', '/angular/comments/009/edit'], ['/react/admin/members', '/angular/admin/members'], ['/react/admin/members/0007', '/angular/admin/members/0007'], ['/react/admin/articles', '/angular/admin/articles'], ['/react/admin/comments', '/angular/admin/comments'], ['/react/admin/settings/login-lockout', '/angular/admin/settings/login-lockout']]) {
     assert.equal(supportsAngularRoute(path), true, path)
     assert.equal(frontendTarget(path, 'angular'), target, path)
     assert.equal(frontendTarget('/react/login', 'angular', path), ['/react/', '/react/login', '/react/register'].includes(path) ? '/angular/login' : `/angular/login?return_to=${encodeURIComponent(target)}`, path)
   }
-  for (const path of ['/react/admin/members', '/react/admin/members/7', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/articles/0/edit', '/react/comments/0', '/react/comments/9007199254740992/edit', '/react/articles/new?draft=1', '//evil.test']) {
+  for (const path of ['/react/admin/members/0', '/react/admin/members/-1', '/react/admin/members/9007199254740992', '/react/admin/settings/nope', '/react/articles/0', '/react/articles/9007199254740992', '/react/articles/0/edit', '/react/comments/0', '/react/comments/9007199254740992/edit', '/react/articles/new?draft=1', '/react/unknown', '//evil.test']) {
     assert.equal(supportsAngularRoute(path), false, path)
     assert.equal(frontendTarget(path, 'angular'), null, path)
     assert.equal(frontendTarget('/react/login', 'angular', path), '/angular/login', path)

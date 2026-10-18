@@ -9,3 +9,30 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: .55; }
 a { color: inherit; }
 :focus-visible { outline: 3px solid #bc7b35; outline-offset: 3px; }
 ::selection { background: #d5deaf; color: #16392f; }
+
+.admin-nav { margin-top: 9px; border-top: 1px solid #aebf9e; padding-top: 10px; }
+.admin-nav summary { min-height: 44px; padding: 11px 15px; font-weight: 800; cursor: pointer; }
+.admin-nav a { margin-left: 13px; font-size: 14px; }
+.admin-search { display: grid; gap: 8px; max-width: 650px; margin-bottom: 25px; }
+.admin-search label { font-weight: 700; }
+.admin-search input { flex: 1 1 210px; min-width: 0; min-height: 44px; padding: 8px 12px; border: 1px solid #91a98c; border-radius: 7px; background: #fffefa; }
+.admin-list { display: grid; gap: 12px; }
+.admin-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(100px, .6fr) minmax(110px, .7fr) auto; align-items: center; gap: 16px; padding: 20px; border: 1px solid #cad4bb; border-radius: 10px; background: #fffdf5; }
+.admin-row h2 { margin: 0 0 5px; font-size: 21px; }
+.admin-row p { margin: 0; overflow-wrap: anywhere; }
+.admin-row .inline-actions { margin: 0; }
+.admin-label { display: block; margin-bottom: 3px; color: #647469; font-size: 12px; }
+.member-card { max-width: 800px; padding: clamp(20px, 3vw, 35px); border: 1px solid #cad4bb; border-radius: 12px; background: #fafbf1; }
+.member-card h2 { margin-top: 0; }
+.member-card dl { display: grid; gap: 10px; }
+.member-card dl div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; padding: 12px 0; border-bottom: 1px solid #d5dfc8; }
+.member-card dt { color: #647469; }
+.member-card dd { margin: 0; overflow-wrap: anywhere; font-weight: 700; }
+.admin-comment { padding: 21px; border: 1px solid #d5dfc8; border-radius: 10px; background: #fffdf5; }
+.settings-form { margin-left: 0; }
+.settings-form p { margin: 0; line-height: 1.7; }
+.settings-form .check-label { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+.settings-form .check-label input { flex: 0 0 22px; width: 22px; min-height: 22px; height: 22px; }
+@media (max-width: 1100px) { .admin-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 767px) { .admin-row { grid-template-columns: 1fr; gap: 9px; } .member-card dl div { grid-template-columns: 1fr; gap: 3px; } .admin-search .inline-actions { gap: 8px; } .admin-search input { flex-basis: 100%; } }
+@media (max-width: 767px) { .mobile-nav nav { max-height: min(70vh, 530px); overflow-y: auto; } }

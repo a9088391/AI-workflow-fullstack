@@ -117,13 +117,13 @@ test('route and frontend targets preserve only approved completed pages', () => 
   assert.equal(pageNumber('5'), 5)
 })
 
-// Angular 已提供作者頁，合法 ID 與登入返回目標要保留；管理頁仍不可進入。
-test('Angular frontend targets preserve author routes and reject unavailable routes', () => {
-  for (const [path, target] of [['/next', '/angular/'], ['/next/', '/angular/'], ['/next/login', '/angular/login'], ['/next/register', '/angular/register'], ['/next/articles/0009', '/angular/articles/0009'], ['/next/articles/new', '/angular/articles/new'], ['/next/articles/009/edit', '/angular/articles/009/edit'], ['/next/me/articles', '/angular/me/articles'], ['/next/me/comments', '/angular/me/comments'], ['/next/comments/009', '/angular/comments/009'], ['/next/comments/009/edit', '/angular/comments/009/edit']]) {
+// Angular 的作者與管理頁都須保留語意及合法 ID，登入後也要回到相同目標。
+test('Angular frontend targets preserve completed routes and reject invalid routes', () => {
+  for (const [path, target] of [['/next', '/angular/'], ['/next/', '/angular/'], ['/next/login', '/angular/login'], ['/next/register', '/angular/register'], ['/next/articles/0009', '/angular/articles/0009'], ['/next/articles/new', '/angular/articles/new'], ['/next/articles/009/edit', '/angular/articles/009/edit'], ['/next/me/articles', '/angular/me/articles'], ['/next/me/comments', '/angular/me/comments'], ['/next/comments/009', '/angular/comments/009'], ['/next/comments/009/edit', '/angular/comments/009/edit'], ['/next/admin/members', '/angular/admin/members'], ['/next/admin/members/007', '/angular/admin/members/007'], ['/next/admin/articles', '/angular/admin/articles'], ['/next/admin/comments', '/angular/admin/comments'], ['/next/admin/settings/login-lockout', '/angular/admin/settings/login-lockout']]) {
     assert.equal(frontendTarget(path, 'angular'), target, path)
     assert.equal(frontendTarget('/next/login', 'angular', path), ['/next', '/next/', '/next/login', '/next/register'].includes(path) ? '/angular/login' : `/angular/login?return_to=${encodeURIComponent(target)}`, path)
   }
-  for (const path of ['/next/admin/members', '/next/admin/members/7', '/next/admin/articles', '/next/admin/comments', '/next/admin/settings/login-lockout', '/next/articles/0', '/next/articles/9007199254740992', '/next/articles/0/edit', '/next/comments/0', '/next/comments/9007199254740992/edit', '/next/articles/new?draft=1', '//evil.test']) {
+  for (const path of ['/next/admin/members/0', '/next/admin/members/9007199254740992', '/next/admin/unknown', '/next/admin/settings/other', '/next/articles/0', '/next/articles/9007199254740992', '/next/articles/0/edit', '/next/comments/0', '/next/comments/9007199254740992/edit', '/next/articles/new?draft=1', '//evil.test']) {
     assert.equal(frontendTarget(path, 'angular'), null, path)
     assert.equal(frontendTarget('/next/login', 'angular', path), '/angular/login', path)
   }
