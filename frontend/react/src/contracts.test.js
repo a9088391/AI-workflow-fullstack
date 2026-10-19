@@ -99,40 +99,44 @@ test('Angular targets preserve all semantic routes and reject invalid routes', (
   }
 })
 
-// SvelteKit 承接已完成的公開與作者頁；切換保留共用登入與原期限。
-test('SvelteKit targets preserve completed public and author routes with the shared session', () => {
+// SvelteKit 承接已完成的公開、作者與管理頁；切換保留共用登入與原期限。
+test('SvelteKit targets preserve completed public, author, and admin routes with the shared session', () => {
   const tab = storage()
   saveSession(tab, BACKENDS.nestjs[1], 'same-token', '2026-10-18 18:00:00')
-  // 切換保留已完成頁面的語意與既有資源 ID。
+  // 切換保留已完成頁面的語意與既有資源 ID，包括五種管理路徑。
   const routes = [
     ['/react/', '/sveltekit/'], ['/react/register', '/sveltekit/register'], ['/react/login', '/sveltekit/login'],
     ['/react/articles/001', '/sveltekit/articles/001'], ['/react/articles/9007199254740991', '/sveltekit/articles/9007199254740991'],
     ['/react/articles/new', '/sveltekit/articles/new'], ['/react/me/articles', '/sveltekit/me/articles'], ['/react/me/comments', '/sveltekit/me/comments'],
     ['/react/articles/007/edit', '/sveltekit/articles/007/edit'], ['/react/comments/009', '/sveltekit/comments/009'], ['/react/comments/009/edit', '/sveltekit/comments/009/edit'],
+    ['/react/admin/members', '/sveltekit/admin/members'], ['/react/admin/members/007', '/sveltekit/admin/members/007'],
+    ['/react/admin/members/9007199254740991', '/sveltekit/admin/members/9007199254740991'],
+    ['/react/admin/articles', '/sveltekit/admin/articles'], ['/react/admin/comments', '/sveltekit/admin/comments'],
+    ['/react/admin/settings/login-lockout', '/sveltekit/admin/settings/login-lockout'],
   ]
   for (const [path, target] of routes) {
     assert.equal(supportsSvelteRoute(path), true, path)
     assert.equal(frontendTarget(path, 'sveltekit'), target, path)
   }
-  // 需要登入的作者頁也須映射為合法返回目標。
+  // 需要登入的作者與管理頁也須映射為合法返回目標。
   assert.equal(frontendTarget('/react/login', 'sveltekit', '/react/articles/001'), '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001')
-  for (const path of ['/react/articles/new', '/react/me/articles', '/react/me/comments', '/react/articles/007/edit', '/react/comments/009', '/react/comments/009/edit']) {
-    const target = path.replace('/react/', '/sveltekit/')
+  for (const [path, target] of routes) {
+    if (['/react/', '/react/register', '/react/login'].includes(path)) continue
     assert.equal(frontendTarget('/react/login', 'sveltekit', path), `/sveltekit/login?return_to=${encodeURIComponent(target)}`, path)
   }
   // 跨版只延續同一份登入資料，不延長原期限。
   assert.deepEqual(readSession(tab), { backend: BACKENDS.nestjs[1], accessToken: 'same-token', expiresAt: '2026-10-18 18:00:00' })
 })
 
-// 管理頁、非法 ID 與不安全登入返回均停用，不能退回列表後誤導覽。
+// 非法 ID、未知管理路徑與不安全登入返回均拒絕，避免錯導或外站跳轉。
 test('SvelteKit targets reject unfinished routes and unsafe login returns', () => {
-  // 管理頁與格式正確但不合法的 ID 都不應啟用切換。
-  for (const path of ['/react/admin/members', '/react/admin/members/001', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/0/edit', '/react/articles/9007199254740992', '/react/comments/9007199254740992/edit', '/react/unknown', '//evil.test']) {
+  // 不安全 ID、未知管理頁及含 query 的路徑不應啟用切換。
+  for (const path of ['/react/admin/members/0', '/react/admin/members/-1', '/react/admin/members/9007199254740992', '/react/admin/unknown', '/react/admin/settings/other', '/react/admin/lockout-settings', '/react/admin/members?draft=1', '/react/articles/0', '/react/articles/0/edit', '/react/articles/9007199254740992', '/react/comments/9007199254740992/edit', '/react/unknown', '//evil.test', 'https://attacker.invalid']) {
     assert.equal(supportsSvelteRoute(path), false, path)
     assert.equal(frontendTarget(path, 'sveltekit'), null, path)
   }
-  // 不安全或 SvelteKit 未支援的返回值不能進入登入 URL。
-  for (const path of ['/react/articles/0', '/react/articles/9007199254740992', '/react/admin/members', '/react/admin/comments', '/react/register', '//evil.test', 'https://evil.test']) {
+  // 不安全 ID、未知管理頁或外站不能成為登入返回目標。
+  for (const path of ['/react/articles/0', '/react/articles/9007199254740992', '/react/admin/members/0', '/react/admin/members/9007199254740992', '/react/admin/unknown', '/react/admin/comments?draft=1', '/react/register', '//evil.test', 'https://evil.test']) {
     assert.equal(frontendTarget('/react/login', 'sveltekit', path), null, path)
   }
 })

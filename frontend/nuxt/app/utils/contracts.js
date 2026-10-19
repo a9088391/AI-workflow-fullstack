@@ -77,17 +77,16 @@ export function angularFrontendTarget(path, returnTo = null) {
   return null
 }
 
-// 只映射 SvelteKit 已完成的公開、帳號及作者頁；合法 ID 必須安全且管理頁不開放。
+// SvelteKit 已完成全部語意頁；共用白名單限制登入返回，並驗證會員與內容 ID。
 export function svelteFrontendTarget(path, returnTo = null) {
-  if (['/nuxt/', '/nuxt/register', '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments'].includes(path)) return path.replace(/^\/nuxt/, '/sveltekit')
+  if (path === '/nuxt/register' || validReturn(path)) return path.replace(/^\/nuxt/, '/sveltekit')
   if (path === '/nuxt/login') {
     if (returnTo === null || returnTo === undefined) return '/sveltekit/login'
     const target = svelteFrontendTarget(returnTo)
     return target && target !== '/sveltekit/register' && target !== '/sveltekit/login'
       ? `/sveltekit/login${target === '/sveltekit/' ? '' : `?return_to=${encodeURIComponent(target)}`}` : null
   }
-  const match = typeof path === 'string' && path.match(/^\/nuxt\/(?:articles\/([0-9]+)(?:\/edit)?|comments\/([0-9]+)(?:\/edit)?)$/)
-  return match && positiveUrlInteger(match[1] || match[2]) !== null ? path.replace(/^\/nuxt/, '/sveltekit') : null
+  return null
 }
 
 // 內容欄位依共同 Unicode 碼點與固定空白集合驗證，不改寫作者輸入。

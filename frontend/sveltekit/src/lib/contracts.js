@@ -87,9 +87,11 @@ export function positiveNumber(value) {
 // 返回目標限制為核准的語意頁面與合法 ID，不接受外站或任意路徑。
 export function validReturn(path) {
   if (path === `${BASE}/`) return true;
-  if ([`${BASE}/articles/new`, `${BASE}/me/articles`, `${BASE}/me/comments`].includes(path)) return true;
-  const match = path.match(/^\/sveltekit\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/);
-  return Boolean(match && positiveNumber(match[1]) !== null);
+  if ([`${BASE}/articles/new`, `${BASE}/me/articles`, `${BASE}/me/comments`,
+    `${BASE}/admin/members`, `${BASE}/admin/articles`, `${BASE}/admin/comments`,
+    `${BASE}/admin/settings/login-lockout`].includes(path)) return true;
+  const match = path.match(/^\/sveltekit\/(?:(?:articles|comments)\/([0-9]+)(?:\/edit)?|admin\/members\/([0-9]+))$/);
+  return Boolean(match && positiveNumber(match[1] || match[2]) !== null);
 }
 
 // 切換版本只搬移同類已知頁面與 ID，登入返回目標亦映射到目標基底。
@@ -179,6 +181,33 @@ export function isComment(value, articleId) {
     && typeof value.author.nickname === 'string' && typeof value.created_at === 'string'
     && typeof value.created_backend === 'string' && positiveNumber(String(value.version)) !== null
     && ['visible', 'hidden'].includes(value.visibility) && typeof value.can_restore === 'boolean';
+}
+
+// 管理頁只顯示一般會員的已核准欄位，避免把管理員或破損資料當成可停用目標。
+export function isMember(value) {
+  return value && positiveNumber(String(value.id)) !== null && typeof value.email === 'string'
+    && typeof value.nickname === 'string' && value.role === 'member'
+    && ['active', 'disabled'].includes(value.status) && typeof value.created_at === 'string';
+}
+
+// 四個設定值須完整且在後端契約範圍內，才能成為畫面基準或 PUT 草稿。
+export function isLockoutSettings(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 4 && typeof value.enabled === 'boolean'
+    && Number.isInteger(value.window_minutes) && value.window_minutes >= 1 && value.window_minutes <= 60
+    && Number.isInteger(value.failure_threshold) && value.failure_threshold >= 1 && value.failure_threshold <= 100
+    && Number.isInteger(value.lock_seconds) && value.lock_seconds >= 1 && value.lock_seconds <= 86400;
+}
+
+// number input 的空值或小數不可直接送出；欄位錯誤留在欄旁與摘要供修正。
+export function validateLockoutSettings(value) {
+  const errors = {};
+  if (typeof value.enabled !== 'boolean') errors.enabled = ['請選擇是否啟用。'];
+  for (const [field, maximum] of Object.entries({ window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 })) {
+    if (!Number.isInteger(value[field]) || value[field] < 1 || value[field] > maximum)
+      errors[field] = [`請輸入 1 到 ${maximum} 的整數。`];
+  }
+  return errors;
 }
 
 const blankContent = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;

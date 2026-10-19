@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BACKEND_KEY, BACKENDS, SESSION_KEY, clearSessionIfOwned, countdown, describeFailure, expired,
-  frontendTarget, isArticle, isComment, isPage, readBackend, readSession,
-  retryAfterSeconds, saveSession, uncertainWrite, validReturn, validateAccount, validateContent
+  frontendTarget, isArticle, isComment, isLockoutSettings, isMember, isPage, readBackend, readSession,
+  retryAfterSeconds, saveSession, uncertainWrite, validReturn, validateAccount, validateContent, validateLockoutSettings
 } from '../src/lib/contracts.js';
 
 // 模擬同源分頁儲存，確定六版共用欄位時不依賴框架私有狀態。
@@ -49,7 +49,9 @@ test('untrusted backend and malformed session are rejected', () => {
 // 返回路徑只接受共同語意頁與安全 ID，不允許網域、編碼繞過或超範圍 ID。
 test('frontend and login targets stay on approved paths', () => {
   assert.equal(validReturn('/sveltekit/articles/101'), true);
-  assert.equal(validReturn('/sveltekit/admin/settings/login-lockout'), false);
+  assert.equal(validReturn('/sveltekit/admin/settings/login-lockout'), true);
+  assert.equal(validReturn('/sveltekit/admin/members/8'), true);
+  assert.equal(validReturn('/sveltekit/admin/members/0'), false);
   assert.equal(validReturn('/sveltekit/articles/9007199254740992'), false);
   assert.equal(validReturn('//evil.example/'), false);
   assert.equal(validReturn('/sveltekit/%2F%2Fevil.example'), false);
@@ -57,11 +59,26 @@ test('frontend and login targets stay on approved paths', () => {
   assert.equal(frontendTarget('/sveltekit/login', 'next', '/sveltekit/articles/101'), '/next/login?return_to=%2Fnext%2Farticles%2F101');
   assert.equal(frontendTarget('/sveltekit/', 'constructor'), '/sveltekit/');
   for (const path of ['/sveltekit/articles/new', '/sveltekit/me/articles', '/sveltekit/me/comments',
-    '/sveltekit/articles/101/edit', '/sveltekit/comments/201', '/sveltekit/comments/201/edit']) {
+    '/sveltekit/articles/101/edit', '/sveltekit/comments/201', '/sveltekit/comments/201/edit',
+    '/sveltekit/admin/members', '/sveltekit/admin/members/8', '/sveltekit/admin/articles',
+    '/sveltekit/admin/comments', '/sveltekit/admin/settings/login-lockout']) {
     assert.equal(validReturn(path), true);
     assert.equal(frontendTarget(path, 'vue'), path.replace('/sveltekit/', '/vue/'));
   }
   assert.equal(validReturn('/sveltekit/comments/9007199254740992/edit'), false);
+});
+
+// 管理資料先核對角色、形狀與四欄設定範圍，避免錯誤回應成為可操作狀態。
+test('admin read models and settings validation reject malformed values', () => {
+  const member = { id: 8, email: 'reader@example.test', nickname: '讀者', role: 'member', status: 'active', created_at: '2026-10-19 09:00:00' };
+  const settings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
+  assert.equal(isMember(member), true);
+  assert.equal(isMember({ ...member, role: 'admin' }), false);
+  assert.equal(isLockoutSettings(settings), true);
+  assert.equal(isLockoutSettings({ ...settings, lock_seconds: 86401 }), false);
+  assert.equal(isLockoutSettings({ ...settings, version: 1 }), false);
+  assert.deepEqual(validateLockoutSettings(settings), {});
+  assert.deepEqual(validateLockoutSettings({ ...settings, failure_threshold: 0 }).failure_threshold, ['請輸入 1 到 100 的整數。']);
 });
 
 // 本地文字與結果不明判斷須保留原文，且不把已知拒絕誤當可能寫入。

@@ -241,7 +241,7 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
-// SvelteKit 接收已完成的公開、帳號與作者頁；登入返回只接受合法目標。
+// SvelteKit 接收已完成的公開、帳號、作者與管理頁；登入返回只接受合法目標。
 test('SvelteKit frontend choice keeps supported routes and shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/sveltekit/'],
@@ -254,6 +254,12 @@ test('SvelteKit frontend choice keeps supported routes and shared session', asyn
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001%2Fedit', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001%2Fedit'],
     ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009'],
     ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740991%2Fedit', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F9007199254740991%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F001', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers%2F001'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F9007199254740991', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers%2F9007199254740991'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Farticles', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Farticles'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fcomments', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fcomments'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fsettings%2Flogin-lockout', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fsettings%2Flogin-lockout'],
     ['/vue/articles/001', '?page=2', '/sveltekit/articles/001'],
     ['/vue/articles/9007199254740991', '', '/sveltekit/articles/9007199254740991'],
     ['/vue/articles/new', '', '/sveltekit/articles/new'],
@@ -265,6 +271,12 @@ test('SvelteKit frontend choice keeps supported routes and shared session', asyn
     ['/vue/comments/9007199254740991', '', '/sveltekit/comments/9007199254740991'],
     ['/vue/comments/009/edit', '', '/sveltekit/comments/009/edit'],
     ['/vue/comments/9007199254740991/edit', '', '/sveltekit/comments/9007199254740991/edit'],
+    ['/vue/admin/members', '?page=4&keyword=alice', '/sveltekit/admin/members'],
+    ['/vue/admin/members/001', '', '/sveltekit/admin/members/001'],
+    ['/vue/admin/members/9007199254740991', '', '/sveltekit/admin/members/9007199254740991'],
+    ['/vue/admin/articles', '', '/sveltekit/admin/articles'],
+    ['/vue/admin/comments', '', '/sveltekit/admin/comments'],
+    ['/vue/admin/settings/login-lockout', '', '/sveltekit/admin/settings/login-lockout'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -281,20 +293,17 @@ test('SvelteKit frontend choice keeps supported routes and shared session', asyn
   }
 })
 
-// 非作者頁、管理頁、非法 ID 與不安全返回目標不得導向 SvelteKit。
+// 未實作頁、非法會員 ID 與不安全返回目標不得導向 SvelteKit。
 test('SvelteKit frontend choice blocks unsupported routes and unsafe login returns', async (t) => {
   for (const [source, search] of [
-    ['/vue/admin/members', ''], ['/vue/admin/members/001', ''], ['/vue/admin/articles', ''],
-    ['/vue/admin/comments', ''], ['/vue/admin/settings/login-lockout', ''], ['/vue/unknown', ''],
+    ['/vue/admin/members/0', ''], ['/vue/admin/members/-1', ''], ['/vue/admin/members/9007199254740992', ''], ['/vue/unknown', ''],
+    ['/vue/admin/members/001?preview=1', ''],
     ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
     ['/vue/articles/0/edit', ''], ['/vue/articles/9007199254740992/edit', ''],
     ['/vue/comments/0', ''], ['/vue/comments/9007199254740992', ''],
     ['/vue/comments/0/edit', ''], ['/vue/comments/9007199254740992/edit', ''],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F001'],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Farticles'],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fcomments'],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fsettings%2Flogin-lockout'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F0'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F9007199254740992'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F9007199254740992'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F9007199254740992%2Fedit'],

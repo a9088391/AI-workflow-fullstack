@@ -14,7 +14,7 @@ const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'm
 const administrator = { ...account, role: 'admin' }
 const settings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 }
 
-// 執行真實 Nuxt app 與表單 script；只替換瀏覽器、Nuxt 注入及延遲 HTTP 邊界。
+// 執行真實 Nuxt app 與必要表單 script；只替換瀏覽器、Nuxt 注入及延遲 HTTP 邊界。
 function switchingPage(page, withSession = false, selectedBackend = BACKENDS.symfony, confirmResult = true, loginReturn = '/nuxt/articles/001') {
   const original = { useState: globalThis.useState, computed: globalThis.computed, fetch: globalThis.fetch, storage: Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage') }
   const states = new Map()
@@ -86,8 +86,11 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
   const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, angularTarget, svelteTarget, chooseFrontend, chooseBackend, submitLogout })'))
-  // 有表單的頁面執行正式 submit/save；唯讀文章詳情只需 app 切換狀態。
-  const form = page === 'index' || /^articles\/[0-9]+$/.test(page) ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
+  // 列表與詳情只需 app 的切換狀態；其餘表單頁仍執行正式 submit/save。
+  const switchOnlyPage = page === 'index' || /^articles\/[0-9]+$/.test(page)
+    || ['admin/members', 'admin/articles', 'admin/comments'].includes(page)
+    || /^admin\/members\/[0-9]+$/.test(page)
+  const form = switchOnlyPage ? null : scope.run(() => run(`./pages/${page}.vue`, page === 'login' ? '({ email, password, pending, submit })' : page === 'register' ? '({ email, password, nickname, created, pending, submit })' : page === 'admin/settings/login-lockout' ? '({ current, draft, pending, save, load, notice, unknown })' : '({ title, body, pending, submit })'))
   for (const callback of callbacks.mounted) callback()
   return { app, form, storage, storedValues: values, requests, redirects, reloads, confirmations,
     // 分別觸發一般顯示及 BFCache 恢復，檢查只對後者重新載入。
@@ -171,7 +174,7 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.deepEqual(app.redirects, ['/vue/'])
 })
 
-// SvelteKit 已完成的公開、帳號與作者路由保留原憑證；來源晚到 /me 不能恢復已離開的畫面。
+// SvelteKit 已完成的公開、帳號、作者與管理路由保留原憑證；來源晚到 /me 不可恢復舊畫面。
 test('SvelteKit choice reaches supported routes with original session', async (t) => {
   const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
   assert.match(template, /<option value="sveltekit" :disabled="!svelteTarget">SvelteKit/)
@@ -184,7 +187,19 @@ test('SvelteKit choice reaches supported routes with original session', async (t
     ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001%2Fedit', '/nuxt/articles/001/edit'],
     ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009', '/nuxt/comments/009'],
     ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009%2Fedit', '/nuxt/comments/009/edit'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers', '/nuxt/admin/members'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers%2F001', '/nuxt/admin/members/001'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers%2F9007199254740991', '/nuxt/admin/members/9007199254740991'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Farticles', '/nuxt/admin/articles'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fcomments', '/nuxt/admin/comments'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fsettings%2Flogin-lockout', '/nuxt/admin/settings/login-lockout'],
     ['articles/001', '/sveltekit/articles/001'],
+    ['admin/members', '/sveltekit/admin/members'],
+    ['admin/members/001', '/sveltekit/admin/members/001'],
+    ['admin/members/9007199254740991', '/sveltekit/admin/members/9007199254740991'],
+    ['admin/articles', '/sveltekit/admin/articles'],
+    ['admin/comments', '/sveltekit/admin/comments'],
+    ['admin/settings/login-lockout', '/sveltekit/admin/settings/login-lockout'],
   ]) {
     const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
     t.after(app.close)
@@ -199,11 +214,11 @@ test('SvelteKit choice reaches supported routes with original session', async (t
   }
 })
 
-// 管理頁、非法 ID 與外站仍不可切換；登入返回只接受完成且合法的頁面。
+// 未實作頁、非法 ID 與外站仍不可切換；登入返回只接受完成且合法的頁面。
 test('SvelteKit choice blocks unsupported pages and unsafe returns', (t) => {
   for (const [page, loginReturn] of [
-    ['admin/settings/login-lockout'],
-    ['login', '/nuxt/admin/members'], ['login', '/nuxt/admin/settings/login-lockout'],
+    ['admin/members/0'], ['admin/members/9007199254740992'],
+    ['login', '/nuxt/admin/members/0'], ['login', '/nuxt/admin/members/9007199254740992'],
     ['login', '/nuxt/articles/0'], ['login', '/nuxt/comments/9007199254740992/edit'],
     ['login', '/nuxt/articles/9007199254740992'], ['login', 'https://evil.test'],
   ]) {
@@ -464,24 +479,26 @@ test('cancelled frontend switch keeps new article draft on Nuxt', async (t) => {
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
 })
 
-// 明確捨棄後僅導向同類 Vue 頁，草稿不進 URL 或共用登入儲存。
+// 明確捨棄後只導向同類頁，草稿不進 URL 或共用登入儲存。
 test('confirmed frontend switch leaves new article without copying its draft', async (t) => {
-  const app = switchingPage('articles/new', true)
-  t.after(app.close)
-  respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
-  await setImmediate()
-  app.form.title.value = '私有標題'
-  app.form.body.value = '私有內文'
-  await vue.nextTick()
-  assert.equal(app.app.site.dirty.value, true)
-  app.app.chooseFrontend({ target: { value: 'vue' } })
-  assert.equal(app.confirmations.length, 1)
-  assert.equal(app.app.site.leaving.value, true)
-  assert.equal(app.app.site.dirty.value, false)
-  assert.deepEqual(app.redirects, ['/vue/articles/new'])
-  assert.deepEqual([...app.storedValues.keys()].sort(), [BACKEND_KEY, SESSION_KEY].sort())
-  assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
-  assert.equal(app.requests.length, 1)
+  for (const [target, destination] of [['vue', '/vue/articles/new'], ['sveltekit', '/sveltekit/articles/new']]) {
+    const app = switchingPage('articles/new', true)
+    t.after(app.close)
+    respond(app.requests[0], 200, { success: true, message: 'OK', data: account })
+    await setImmediate()
+    app.form.title.value = '私有標題'
+    app.form.body.value = '私有內文'
+    await vue.nextTick()
+    assert.equal(app.app.site.dirty.value, true)
+    app.app.chooseFrontend({ target: { value: target } })
+    assert.equal(app.confirmations.length, 1)
+    assert.equal(app.app.site.leaving.value, true)
+    assert.equal(app.app.site.dirty.value, false)
+    assert.deepEqual(app.redirects, [destination])
+    assert.deepEqual([...app.storedValues.keys()].sort(), [BACKEND_KEY, SESSION_KEY].sort())
+    assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
+    assert.equal(app.requests.length, 1)
+  }
 })
 
 // 管理 PUT 尚在途也能確認捨棄切換；舊成功回應不可觸發讀回或回寫新頁。

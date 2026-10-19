@@ -71,17 +71,21 @@ test('作者頁切換與純文字輸入', function authorContract() {
   assert.deepEqual(Object.keys(validateContent('內文', 'a'.repeat(201))), ['title']);
 });
 
-// SvelteKit 已完成作者路由，但管理頁、非法 ID 與外站不可作登入返回目標。
-test('SvelteKit 作者路由白名單', function svelteAuthorRoutes() {
+// SvelteKit 只接收已知公開、作者與管理路由，避免不安全目標進入切換或登入返回。
+test('SvelteKit 頁面白名單', function svelteRoutes() {
   for (const path of ['/angular/', '/angular/login', '/angular/register', '/angular/articles/new',
     '/angular/me/articles', '/angular/me/comments', '/angular/articles/001', '/angular/articles/001/edit',
-    '/angular/comments/009', '/angular/comments/009/edit']) {
+    '/angular/comments/009', '/angular/comments/009/edit', '/angular/admin/members',
+    '/angular/admin/members/007', '/angular/admin/articles', '/angular/admin/comments',
+    '/angular/admin/settings/login-lockout']) {
     assert.equal(supportsSvelteRoute(path), true, path);
     if (path !== '/angular/login') assert.equal(frontendTarget(path, 'sveltekit'), path.replace('/angular/', '/sveltekit/'));
   }
-  for (const path of ['/angular/admin/members', '/angular/admin/articles', '/angular/articles/0/edit',
+  for (const path of ['/angular/admin/members/0', '/angular/admin/members/9007199254740992',
+    '/angular/admin/unknown', '/angular/admin/comments?draft=1', '/angular/articles/0/edit',
     '/angular/comments/9007199254740992', '/angular/comments/009?preview=1', 'https://evil.test']) {
     assert.equal(supportsSvelteRoute(path), false, path);
   }
   assert.equal(frontendTarget('/angular/login', 'sveltekit', '/angular/comments/009/edit'), '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009%2Fedit');
+  assert.equal(frontendTarget('/angular/login', 'sveltekit', '/angular/admin/members/007'), '/sveltekit/login?return_to=%2Fsveltekit%2Fadmin%2Fmembers%2F007');
 });

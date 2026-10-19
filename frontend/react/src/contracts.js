@@ -101,11 +101,9 @@ export function supportsAngularRoute(path) {
   return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
-// SvelteKit 已完成公開與作者頁；管理頁及不合法 ID 不可切換。
+// SvelteKit 只承接核准白名單中的頁面，確保管理路徑與安全 ID 一致。
 export function supportsSvelteRoute(path) {
-  if (['/react/', '/react/register', '/react/login', '/react/articles/new', '/react/me/articles', '/react/me/comments'].includes(path)) return true
-  const match = typeof path === 'string' && path.match(/^\/react\/(articles|comments)\/([0-9]+)(\/edit)?$/)
-  return Boolean(match && positiveId(match[2]) !== null)
+  return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。

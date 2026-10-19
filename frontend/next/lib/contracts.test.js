@@ -129,38 +129,42 @@ test('Angular frontend targets preserve completed routes and reject invalid rout
   }
 })
 
-// SvelteKit 承接已完成的公開與作者頁；跨版切換保留既有 JWT 原期限。
-test('SvelteKit targets preserve completed public and author routes with the shared session', () => {
+// SvelteKit 承接已完成的公開、作者與管理頁；跨版保留既有 JWT 原期限。
+test('SvelteKit targets preserve completed public, author, and admin routes with the shared session', () => {
   const tab = storage()
   saveSession(tab, BACKENDS.nestjs[1], 'same-token', '2026-10-18 18:00:00')
-  // 切換保留已完成頁面的語意與既有資源 ID。
+  // 切換保留已完成頁面的語意與既有資源 ID，包括五種管理路徑。
   const routes = [
     ['/next', '/sveltekit/'], ['/next/', '/sveltekit/'], ['/next/register', '/sveltekit/register'], ['/next/login', '/sveltekit/login'],
     ['/next/articles/001', '/sveltekit/articles/001'], ['/next/articles/9007199254740991', '/sveltekit/articles/9007199254740991'],
     ['/next/articles/new', '/sveltekit/articles/new'], ['/next/me/articles', '/sveltekit/me/articles'], ['/next/me/comments', '/sveltekit/me/comments'],
     ['/next/articles/007/edit', '/sveltekit/articles/007/edit'], ['/next/comments/009', '/sveltekit/comments/009'], ['/next/comments/009/edit', '/sveltekit/comments/009/edit'],
+    ['/next/admin/members', '/sveltekit/admin/members'], ['/next/admin/members/007', '/sveltekit/admin/members/007'],
+    ['/next/admin/members/9007199254740991', '/sveltekit/admin/members/9007199254740991'],
+    ['/next/admin/articles', '/sveltekit/admin/articles'], ['/next/admin/comments', '/sveltekit/admin/comments'],
+    ['/next/admin/settings/login-lockout', '/sveltekit/admin/settings/login-lockout'],
   ]
   for (const [path, target] of routes) {
     assert.equal(frontendTarget(path, 'sveltekit'), target, path)
   }
-  // 登入返回只映射到目標端確實支援的本機頁面。
+  // 登入返回映射到目標端支援的本機頁面，包含會員詳情與管理設定。
   assert.equal(frontendTarget('/next/login', 'sveltekit', '/next/articles/001'), '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001')
-  for (const path of ['/next/articles/new', '/next/me/articles', '/next/me/comments', '/next/articles/007/edit', '/next/comments/009', '/next/comments/009/edit']) {
-    const target = path.replace('/next/', '/sveltekit/')
+  for (const [path, target] of routes) {
+    if (['/next', '/next/', '/next/register', '/next/login'].includes(path)) continue
     assert.equal(frontendTarget('/next/login', 'sveltekit', path), `/sveltekit/login?return_to=${encodeURIComponent(target)}`, path)
   }
   // 跨版只延續同一份登入資料，不延長原期限。
   assert.deepEqual(readSession(tab), { backend: BACKENDS.nestjs[1], accessToken: 'same-token', expiresAt: '2026-10-18 18:00:00' })
 })
 
-// 管理頁、非法 ID 與不安全登入返回保持停用，不能偷偷改導到文章列表。
+// 非法 ID、未知管理路徑與不安全登入返回均拒絕，避免錯導或外站跳轉。
 test('SvelteKit targets reject unfinished routes and unsafe login returns', () => {
-  // 管理頁與格式正確但不合法的 ID 都不得切換。
-  for (const path of ['/next/admin/members', '/next/admin/members/001', '/next/admin/articles', '/next/admin/comments', '/next/admin/settings/login-lockout', '/next/articles/0', '/next/articles/0/edit', '/next/articles/9007199254740992', '/next/comments/9007199254740992/edit', '/next/unknown', '//evil.test']) {
+  // 不安全 ID、未知管理頁及含 query 的路徑不應啟用切換。
+  for (const path of ['/next/admin/members/0', '/next/admin/members/-1', '/next/admin/members/9007199254740992', '/next/admin/unknown', '/next/admin/settings/other', '/next/admin/lockout-settings', '/next/admin/members?draft=1', '/next/articles/0', '/next/articles/0/edit', '/next/articles/9007199254740992', '/next/comments/9007199254740992/edit', '/next/unknown', '//evil.test', 'https://attacker.invalid']) {
     assert.equal(frontendTarget(path, 'sveltekit'), null, path)
   }
-  // 外站、非法 ID 與未支援頁面不能成為登入返回目標。
-  for (const path of ['/next/articles/0', '/next/articles/9007199254740992', '/next/admin/members', '/next/admin/comments', '/next/register', '//evil.test', 'https://evil.test']) {
+  // 外站、非法 ID 或未知管理頁不能成為登入返回目標。
+  for (const path of ['/next/articles/0', '/next/articles/9007199254740992', '/next/admin/members/0', '/next/admin/members/9007199254740992', '/next/admin/unknown', '/next/admin/comments?draft=1', '/next/register', '//evil.test', 'https://evil.test']) {
     assert.equal(frontendTarget('/next/login', 'sveltekit', path), null, path)
   }
 })

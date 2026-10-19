@@ -186,11 +186,13 @@
     unknown = false; checkedUnknown = false; message = '已解除鎖定；如需重試，請手動送出。';
   }
 
-  // 可見性操作只用目前版本；過期或結果不明須重新讀取並再確認。
-  async function changeVisibility() {
+  // 可見性操作只用目前版本；管理員接管他人已下架留言時維持 hidden。
+  async function changeVisibility(requested = false) {
+    const takeOver = requested === true;
     if (!resource || processing || get(authState) !== 'active') return;
-    const next = resource.visibility === 'visible' ? 'hidden' : 'visible';
-    if (!window.confirm(`確定${next === 'hidden' ? '下架' : '恢復'}這則留言？`)) return;
+    if (takeOver && (get(account)?.role !== 'admin' || resource.author.id === get(account)?.id || resource.visibility !== 'hidden')) return;
+    const next = takeOver || resource.visibility === 'visible' ? 'hidden' : 'visible';
+    if (!window.confirm(takeOver ? '確定接管這則留言的恢復權？留言保持下架，原作者將不能恢復。' : `確定${next === 'hidden' ? '下架' : '恢復'}這則留言？`)) return;
     processing = true; site.pending.set(true); message = '';
     const generation = site.version();
     try {
@@ -202,6 +204,9 @@
       message = `${unknown ? '更新結果尚未確認；請先重讀同一則留言查證。' : ''}${describeFailure(failure, '更新結果尚未確認，請查證。')}`;
     } finally { processing = false; if (alive && generation === site.version()) site.pending.set(false); }
   }
+
+  // 管理員再次下架他人留言，沿用同一版本衝突與不明結果處理。
+  function takeOverVisibility() { void changeVisibility(true); }
 
   // 只有同一留言重新讀取成功後才解除過期狀態，避免沿用舊 version。
   async function reloadVisibility() {
@@ -308,7 +313,7 @@
       {:else if mode === 'comment' && resource}
         <article class="reading-card"><p class="section-mark">{resource.visibility === 'hidden' ? '已下架留言' : '留言'}</p><h2>留言 #{resource.id}</h2><dl class="meta-row"><div><dt>作者</dt><dd>{resource.author.nickname}</dd></div><div><dt>發布日期</dt><dd>{resource.created_at.slice(0, 10)}</dd></div><div><dt>建立於</dt><dd>{BACKENDS[resource.created_backend]?.[0] || resource.created_backend}</dd></div></dl><div class="reading-body">{resource.body}</div></article>
         <div class="author-parent">{#if parentState === 'loading'}<p role="status">確認所屬文章中…</p>{:else if parentState === 'visible' || parentState === 'hidden'}<p>所屬文章：<a href={`${BASE}/articles/${resource.article_id}`}>{parent.title}</a></p>{:else}<p>所屬文章目前無法讀取。</p><button class="button button-outline" type="button" onclick={retryParent}>單獨重試文章讀取</button>{/if}</div>
-        <div class="author-actions">{#if resource.author.id === ownerId && parentState === 'visible'}<a class="button" href={`${BASE}/comments/${id}/edit`}>編輯留言</a>{/if}{#if resource.visibility === 'visible' || resource.can_restore}<button class="button button-outline" type="button" disabled={processing || conflict || unknown} onclick={changeVisibility}>{resource.visibility === 'visible' ? '下架留言' : '恢復留言'}</button>{/if}<a class="button button-outline" href={`${BASE}/me/comments`}>我的留言</a></div>
+        <div class="author-actions">{#if resource.author.id === ownerId && parentState === 'visible'}<a class="button" href={`${BASE}/comments/${id}/edit`}>編輯留言</a>{/if}{#if resource.visibility === 'visible' || resource.can_restore}<button class="button button-outline" type="button" disabled={processing || conflict || unknown} onclick={changeVisibility}>{resource.visibility === 'visible' ? '下架留言' : '恢復留言'}</button>{/if}{#if resource.visibility === 'hidden' && $account?.role === 'admin' && resource.author.id !== $account?.id}<button class="button button-outline" type="button" disabled={processing || conflict || unknown} onclick={takeOverVisibility}>接管下架權</button>{/if}{#if $account?.role === 'admin'}<a class="button button-outline" href={`${BASE}/admin/comments`}>返回留言管理</a>{/if}<a class="button button-outline" href={`${BASE}/me/comments`}>我的留言</a></div>
         {#if conflict || unknown}<div class="state-panel state-error"><p>{unknown ? '更新結果尚未確認；請重讀同一則留言查證。' : '內容版本已改變；請重讀後重新確認操作。'}</p><button class="button" type="button" onclick={reloadVisibility}>重新讀取</button></div>{/if}
       {/if}
     {/if}

@@ -87,6 +87,34 @@ h1{font-size:clamp(2.4rem,6vw,5rem);letter-spacing:-.035em;line-height:1.12;marg
 .author-actions{display:flex;flex-wrap:wrap;gap:12px;margin:22px 0}
 .author-parent{background:#fffefa;border:2px solid #111820;padding:18px;margin:24px 0;overflow-wrap:anywhere}
 .author-parent p{margin:0 0 12px}.author-parent p:last-child{margin:0}
+.admin-nav{position:relative;min-width:115px}
+.admin-nav summary{min-height:44px;display:flex;align-items:center;cursor:pointer}
+.admin-nav[open]{z-index:2}
+.admin-nav a{display:block;background:#fffefa;border:2px solid #111820;border-bottom:0;padding:9px 12px;min-height:44px}
+.admin-nav a:last-child{border-bottom:2px solid #111820}
+.admin-wrap{max-width:1120px;margin:30px auto 70px;min-width:0}
+.admin-heading{display:flex;justify-content:space-between;align-items:end;border-bottom:4px solid #111820;gap:16px;margin-bottom:16px}
+.admin-heading h1{font-size:clamp(2.2rem,5vw,4.5rem);margin:0 0 14px;line-height:1.13}
+.admin-number{font-size:clamp(2.6rem,7vw,6rem);font-weight:900;color:#df502a;line-height:1}
+.admin-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 28px}
+.admin-tabs a{min-height:44px;display:inline-flex;align-items:center;border:2px solid #111820;background:#fffefa;padding:8px 15px;text-decoration:none;font-weight:900}
+.admin-tabs a[aria-current="page"]{background:#111820;color:#fffefa}
+.admin-search{background:#fffefa;border:3px solid #111820;padding:18px;margin-bottom:25px;display:grid;gap:8px}
+.admin-search label{font-weight:900}.admin-search>div{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.admin-search input{min-height:48px;min-width:0;flex:1 1 250px;border:2px solid #111820;padding:9px 12px}
+.admin-list{display:grid;gap:15px}
+.admin-row{background:#fffefa;border:3px solid #111820;box-shadow:5px 5px 0 #111820;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.75fr) auto;align-items:center;gap:16px;min-width:0}
+.admin-row h2{font-size:1.45rem;margin:3px 0}.admin-row p{margin:0;overflow-wrap:anywhere}
+.admin-row-label{font-size:.75rem;letter-spacing:.1em;font-weight:900;color:#9c371e;margin:0}
+.admin-row dl,.admin-detail dl{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 15px}
+.admin-row dt,.admin-detail dt{font-size:.75rem;font-weight:900;color:#525b62}.admin-row dd,.admin-detail dd{margin:0;font-weight:800;overflow-wrap:anywhere}
+.admin-detail{max-width:760px}.admin-detail h2{font-size:2rem;margin:5px 0 23px}.admin-detail dl{border-top:2px solid #111820;padding-top:20px}
+.admin-settings{max-width:780px}.admin-server{border:3px solid #111820;background:#ffe6d8;padding:17px 22px;margin-bottom:22px}
+.admin-server h2{font-size:1rem;margin:0 0 5px}.admin-server p{margin:0;overflow-wrap:anywhere}
+.admin-settings .author-form select{min-height:48px;border:2px solid #111820;background:#fff;padding:8px 12px}
+.admin-settings .author-form h2{margin:0}.admin-settings .author-form p{margin:0 0 12px}
+.admin-log{overflow-wrap:anywhere}.admin-log code{font-size:.9rem}.admin-log .button{margin-left:8px}
+.admin-search .field-error,.admin-settings .field-error{color:#9a2d14;font-weight:800;margin:0}
 .comments-section .author-card{box-shadow:none;margin-top:24px}
 .auth-wrap{max-width:680px;margin:50px auto 70px}
 .auth-intro{text-align:center;margin-bottom:27px}
@@ -128,6 +156,10 @@ h1{font-size:clamp(2.4rem,6vw,5rem);letter-spacing:-.035em;line-height:1.12;marg
   .intro-note{margin-top:10px}
   .article-grid{grid-template-columns:1fr;gap:22px}
   .author-list{grid-template-columns:1fr;gap:22px}
+  .admin-nav{display:none}
+  .admin-row{grid-template-columns:1fr;align-items:start}
+  .admin-row dl{border-top:1px solid #a5a7a7;padding-top:10px}
+  .admin-number{font-size:2.5rem}
   .author-heading{align-items:start;flex-direction:column}
   .author-card{box-shadow:5px 6px 0 #111820}
   .article-card{box-shadow:5px 6px 0 #111820}

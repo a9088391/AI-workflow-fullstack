@@ -71,6 +71,12 @@
         <a aria-current={$page.url.pathname === `${BASE}/articles/new` ? 'page' : undefined} href={`${BASE}/articles/new`}>發文</a>
         <a aria-current={$page.url.pathname === `${BASE}/me/articles` ? 'page' : undefined} href={`${BASE}/me/articles`}>我的文章</a>
         <a aria-current={$page.url.pathname === `${BASE}/me/comments` ? 'page' : undefined} href={`${BASE}/me/comments`}>我的留言</a>
+        {#if $account?.role === 'admin'}
+          <details class="admin-nav" open={$page.url.pathname.startsWith(`${BASE}/admin/`)}><summary>管理介面</summary>
+            <a href={`${BASE}/admin/members`}>會員管理</a><a href={`${BASE}/admin/articles`}>文章管理</a>
+            <a href={`${BASE}/admin/comments`}>留言管理</a><a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
+          </details>
+        {/if}
       {:else}
         <a aria-current={$page.url.pathname === `${BASE}/login` ? 'page' : undefined} href={`${BASE}/login`}>登入</a>
         <a aria-current={$page.url.pathname === `${BASE}/register` ? 'page' : undefined} href={`${BASE}/register`}>註冊</a>
@@ -87,6 +93,10 @@
           <a href={`${BASE}/articles/new`}>發文</a>
           <a href={`${BASE}/me/articles`}>我的文章</a>
           <a href={`${BASE}/me/comments`}>我的留言</a>
+          {#if $account?.role === 'admin'}
+            <a href={`${BASE}/admin/members`}>會員管理</a><a href={`${BASE}/admin/articles`}>文章管理</a>
+            <a href={`${BASE}/admin/comments`}>留言管理</a><a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
+          {/if}
         {/if}
       </nav>
     </details>

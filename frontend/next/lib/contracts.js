@@ -100,12 +100,11 @@ function supportsAngularRoute(path) {
   return path === '/next/login' || path === '/next/register' || validReturn(path)
 }
 
-// SvelteKit 承接已完成的公開與作者頁；管理頁仍不可切換。
+// SvelteKit 承接白名單中的公開、作者與管理頁，拒絕未知或不安全 ID。
 function svelteTarget(path) {
   if (path === '/next/' || path === '/next') return '/sveltekit/'
-  if (['/next/register', '/next/articles/new', '/next/me/articles', '/next/me/comments'].includes(path)) return path.replace(/^\/next/, '/sveltekit')
-  const match = typeof path === 'string' && path.match(/^\/next\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
-  return match && positiveId(match[1]) !== null ? path.replace(/^\/next/, '/sveltekit') : null
+  if (path === '/next/register') return '/sveltekit/register'
+  return validReturn(path) ? path.replace(/^\/next/, '/sveltekit') : null
 }
 
 // 切換版本只搬移已完成的頁面語意與既有 ID，登入目標另安全映射。

@@ -77,11 +77,13 @@
     }
   }
 
-  // 下架／恢復以目前版本送出，衝突或結果不明時必須手動重讀確認。
-  async function changeVisibility() {
+  // 下架／恢復以目前版本送出；管理員接管他人已下架內容時維持 hidden。
+  async function changeVisibility(requested = false) {
+    const takeOver = requested === true;
     if (!article || processing || visibilityConflict || visibilityUnknown || get(authState) !== 'active') return;
-    const next = article.visibility === 'visible' ? 'hidden' : 'visible';
-    if (!window.confirm(`確定${next === 'hidden' ? '下架' : '恢復'}這篇文章？`)) return;
+    if (takeOver && (get(account)?.role !== 'admin' || article.author.id === get(account)?.id || article.visibility !== 'hidden')) return;
+    const next = takeOver || article.visibility === 'visible' ? 'hidden' : 'visible';
+    if (!window.confirm(takeOver ? '確定接管這篇文章的恢復權？文章保持下架，原作者將不能恢復。' : `確定${next === 'hidden' ? '下架' : '恢復'}這篇文章？`)) return;
     processing = true; site.pending.set(true);
     const generation = site.version();
     try {
@@ -93,6 +95,9 @@
       writeMessage = `${visibilityUnknown ? '更新結果尚未確認；請先重讀同一篇文章查證。' : ''}${describeFailure(failure, '更新失敗，請查證。')}`;
     } finally { processing = false; if (alive && generation === site.version()) site.pending.set(false); }
   }
+
+  // 管理員再次下架他人內容，沿用同一版本衝突與不明結果處理。
+  function takeOverVisibility() { void changeVisibility(true); }
 
   // 重讀成功才解除版本衝突，避免用舊文章版本再次操作。
   async function reloadVisibility() {
@@ -183,6 +188,7 @@
         <div class="author-actions">
           {#if article.author.id === $account?.id}<a class="button button-outline" href={`${BASE}/articles/${articleId}/edit`}>編輯文章</a>{/if}
           {#if article.visibility === 'visible' || article.can_restore}<button class="button" type="button" disabled={processing || visibilityConflict || visibilityUnknown} onclick={changeVisibility}>{article.visibility === 'visible' ? '下架文章' : '恢復文章'}</button>{/if}
+          {#if article.visibility === 'hidden' && $account?.role === 'admin' && article.author.id !== $account?.id}<button class="button button-outline" type="button" disabled={processing || visibilityConflict || visibilityUnknown} onclick={takeOverVisibility}>接管下架權</button>{/if}
         </div>
       {/if}
       {#if visibilityConflict || visibilityUnknown}<div class="state-panel state-error"><p>{visibilityUnknown ? '更新結果尚未確認；請重讀同一篇文章查證。' : '版本已改變；請重讀後重新確認操作。'}</p><button class="button" type="button" onclick={reloadVisibility}>重新讀取</button></div>{/if}

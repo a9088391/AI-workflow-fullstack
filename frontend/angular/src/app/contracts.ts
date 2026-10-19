@@ -96,11 +96,9 @@ export function validReturn(path: string): boolean {
   return Boolean(match && positiveNumber(match[1] || match[2]) !== null);
 }
 
-// SvelteKit 作者頁已可接收相同語意；管理頁仍待下一票才開放切換。
+// SvelteKit 已可接收相同語意的公開、作者及管理頁；沿用返回白名單驗證 ID。
 export function supportsSvelteRoute(path: string): boolean {
-  if (['/angular/', '/angular/login', '/angular/register', '/angular/articles/new', '/angular/me/articles', '/angular/me/comments'].includes(path)) return true;
-  const match = path.match(/^\/angular\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/);
-  return Boolean(match && positiveNumber(match[1]) !== null);
+  return path === '/angular/login' || path === '/angular/register' || validReturn(path);
 }
 
 // 切換版本只搬已知語意路徑；登入頁的返回目標也映射到目標基底路徑。
