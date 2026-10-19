@@ -101,11 +101,11 @@ export function supportsAngularRoute(path) {
   return path === '/react/register' || path === '/react/login' || validReturn(path)
 }
 
-// SvelteKit 目前只完成公開列表、帳號與文章詳情；其餘路由不可切換。
+// SvelteKit 已完成公開與作者頁；管理頁及不合法 ID 不可切換。
 export function supportsSvelteRoute(path) {
-  if (path === '/react/' || path === '/react/register' || path === '/react/login') return true
-  const match = typeof path === 'string' && path.match(/^\/react\/articles\/([0-9]+)$/)
-  return Boolean(match && positiveId(match[1]) !== null)
+  if (['/react/', '/react/register', '/react/login', '/react/articles/new', '/react/me/articles', '/react/me/comments'].includes(path)) return true
+  const match = typeof path === 'string' && path.match(/^\/react\/(articles|comments)\/([0-9]+)(\/edit)?$/)
+  return Boolean(match && positiveId(match[2]) !== null)
 }
 
 // 前端切換只搬移目標版已完成的合法頁面語意與既有 ID；頁碼與表單內容留在原版。

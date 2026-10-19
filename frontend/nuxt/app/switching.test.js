@@ -171,13 +171,19 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.deepEqual(app.redirects, ['/vue/'])
 })
 
-// SvelteKit 已有的公開與帳號路由保留原憑證；來源晚到 /me 不能恢復已離開的畫面。
+// SvelteKit 已完成的公開、帳號與作者路由保留原憑證；來源晚到 /me 不能恢復已離開的畫面。
 test('SvelteKit choice reaches supported routes with original session', async (t) => {
   const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
   assert.match(template, /<option value="sveltekit" :disabled="!svelteTarget">SvelteKit/)
   for (const [page, target, loginReturn] of [
     ['index', '/sveltekit/'], ['register', '/sveltekit/register'],
     ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2Fnew', '/nuxt/articles/new'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fme%2Farticles', '/nuxt/me/articles'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fme%2Fcomments', '/nuxt/me/comments'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001%2Fedit', '/nuxt/articles/001/edit'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009', '/nuxt/comments/009'],
+    ['login', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009%2Fedit', '/nuxt/comments/009/edit'],
     ['articles/001', '/sveltekit/articles/001'],
   ]) {
     const app = switchingPage(page, true, BACKENDS.symfony, true, loginReturn)
@@ -193,11 +199,12 @@ test('SvelteKit choice reaches supported routes with original session', async (t
   }
 })
 
-// 作者與管理頁仍未提供，登入返回也不得指向未實作或不安全的目的地。
+// 管理頁、非法 ID 與外站仍不可切換；登入返回只接受完成且合法的頁面。
 test('SvelteKit choice blocks unsupported pages and unsafe returns', (t) => {
   for (const [page, loginReturn] of [
-    ['articles/new'], ['admin/settings/login-lockout'],
-    ['login', '/nuxt/articles/new'], ['login', '/nuxt/articles/0'],
+    ['admin/settings/login-lockout'],
+    ['login', '/nuxt/admin/members'], ['login', '/nuxt/admin/settings/login-lockout'],
+    ['login', '/nuxt/articles/0'], ['login', '/nuxt/comments/9007199254740992/edit'],
     ['login', '/nuxt/articles/9007199254740992'], ['login', 'https://evil.test'],
   ]) {
     const app = switchingPage(page, false, BACKENDS.symfony, true, loginReturn)

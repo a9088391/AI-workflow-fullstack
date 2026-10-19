@@ -100,11 +100,11 @@ function supportsAngularRoute(path) {
   return path === '/next/login' || path === '/next/register' || validReturn(path)
 }
 
-// SvelteKit 目前只承接文章列表、註冊與合法 ID 的公開詳情。
+// SvelteKit 承接已完成的公開與作者頁；管理頁仍不可切換。
 function svelteTarget(path) {
   if (path === '/next/' || path === '/next') return '/sveltekit/'
-  if (path === '/next/register') return '/sveltekit/register'
-  const match = typeof path === 'string' && path.match(/^\/next\/articles\/([0-9]+)$/)
+  if (['/next/register', '/next/articles/new', '/next/me/articles', '/next/me/comments'].includes(path)) return path.replace(/^\/next/, '/sveltekit')
+  const match = typeof path === 'string' && path.match(/^\/next\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/)
   return match && positiveId(match[1]) !== null ? path.replace(/^\/next/, '/sveltekit') : null
 }
 

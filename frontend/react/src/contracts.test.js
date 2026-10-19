@@ -99,25 +99,40 @@ test('Angular targets preserve all semantic routes and reject invalid routes', (
   }
 })
 
-// SvelteKit 只承接公開閱讀及帳號頁；合法文章 ID 與原期限跨版保留。
-test('SvelteKit targets keep supported pages and original shared session', () => {
+// SvelteKit 承接已完成的公開與作者頁；切換保留共用登入與原期限。
+test('SvelteKit targets preserve completed public and author routes with the shared session', () => {
   const tab = storage()
   saveSession(tab, BACKENDS.nestjs[1], 'same-token', '2026-10-18 18:00:00')
-  for (const [path, target] of [['/react/', '/sveltekit/'], ['/react/register', '/sveltekit/register'], ['/react/login', '/sveltekit/login'], ['/react/articles/001', '/sveltekit/articles/001'], ['/react/articles/9007199254740991', '/sveltekit/articles/9007199254740991']]) {
+  // 切換保留已完成頁面的語意與既有資源 ID。
+  const routes = [
+    ['/react/', '/sveltekit/'], ['/react/register', '/sveltekit/register'], ['/react/login', '/sveltekit/login'],
+    ['/react/articles/001', '/sveltekit/articles/001'], ['/react/articles/9007199254740991', '/sveltekit/articles/9007199254740991'],
+    ['/react/articles/new', '/sveltekit/articles/new'], ['/react/me/articles', '/sveltekit/me/articles'], ['/react/me/comments', '/sveltekit/me/comments'],
+    ['/react/articles/007/edit', '/sveltekit/articles/007/edit'], ['/react/comments/009', '/sveltekit/comments/009'], ['/react/comments/009/edit', '/sveltekit/comments/009/edit'],
+  ]
+  for (const [path, target] of routes) {
     assert.equal(supportsSvelteRoute(path), true, path)
     assert.equal(frontendTarget(path, 'sveltekit'), target, path)
   }
+  // 需要登入的作者頁也須映射為合法返回目標。
   assert.equal(frontendTarget('/react/login', 'sveltekit', '/react/articles/001'), '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001')
+  for (const path of ['/react/articles/new', '/react/me/articles', '/react/me/comments', '/react/articles/007/edit', '/react/comments/009', '/react/comments/009/edit']) {
+    const target = path.replace('/react/', '/sveltekit/')
+    assert.equal(frontendTarget('/react/login', 'sveltekit', path), `/sveltekit/login?return_to=${encodeURIComponent(target)}`, path)
+  }
+  // 跨版只延續同一份登入資料，不延長原期限。
   assert.deepEqual(readSession(tab), { backend: BACKENDS.nestjs[1], accessToken: 'same-token', expiresAt: '2026-10-18 18:00:00' })
 })
 
-// 未實作頁與不安全登入返回均停用，不能退回列表後誤導覽。
+// 管理頁、非法 ID 與不安全登入返回均停用，不能退回列表後誤導覽。
 test('SvelteKit targets reject unfinished routes and unsafe login returns', () => {
-  for (const path of ['/react/articles/new', '/react/articles/001/edit', '/react/me/articles', '/react/me/comments', '/react/comments/001', '/react/admin/members', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/9007199254740992', '/react/unknown', '//evil.test']) {
+  // 管理頁與格式正確但不合法的 ID 都不應啟用切換。
+  for (const path of ['/react/admin/members', '/react/admin/members/001', '/react/admin/articles', '/react/admin/comments', '/react/admin/settings/login-lockout', '/react/articles/0', '/react/articles/0/edit', '/react/articles/9007199254740992', '/react/comments/9007199254740992/edit', '/react/unknown', '//evil.test']) {
     assert.equal(supportsSvelteRoute(path), false, path)
     assert.equal(frontendTarget(path, 'sveltekit'), null, path)
   }
-  for (const path of ['/react/articles/new', '/react/articles/0', '/react/articles/9007199254740992', '/react/admin/members', '/react/register', '//evil.test', 'https://evil.test']) {
+  // 不安全或 SvelteKit 未支援的返回值不能進入登入 URL。
+  for (const path of ['/react/articles/0', '/react/articles/9007199254740992', '/react/admin/members', '/react/admin/comments', '/react/register', '//evil.test', 'https://evil.test']) {
     assert.equal(frontendTarget('/react/login', 'sveltekit', path), null, path)
   }
 })

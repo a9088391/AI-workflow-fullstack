@@ -241,15 +241,30 @@ test('frontend switch keeps article ID and exact shared session', async (t) => {
   assert.equal(app.page.account.value, null)
 })
 
-// SvelteKit 只接收本票完成的公開與帳號頁；切換不改同分頁後端或登入期限。
+// SvelteKit 接收已完成的公開、帳號與作者頁；登入返回只接受合法目標。
 test('SvelteKit frontend choice keeps supported routes and shared session', async (t) => {
   for (const [source, search, destination] of [
     ['/vue/', '', '/sveltekit/'],
     ['/vue/register', '', '/sveltekit/register'],
     ['/vue/login', '', '/sveltekit/login'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2Fnew'],
+    ['/vue/login', '?return_to=%2Fvue%2Fme%2Farticles', '/sveltekit/login?return_to=%2Fsveltekit%2Fme%2Farticles'],
+    ['/vue/login', '?return_to=%2Fvue%2Fme%2Fcomments', '/sveltekit/login?return_to=%2Fsveltekit%2Fme%2Fcomments'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F001%2Fedit', '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F009', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740991%2Fedit', '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F9007199254740991%2Fedit'],
     ['/vue/articles/001', '?page=2', '/sveltekit/articles/001'],
     ['/vue/articles/9007199254740991', '', '/sveltekit/articles/9007199254740991'],
+    ['/vue/articles/new', '', '/sveltekit/articles/new'],
+    ['/vue/me/articles', '?page=2', '/sveltekit/me/articles'],
+    ['/vue/me/comments', '', '/sveltekit/me/comments'],
+    ['/vue/articles/001/edit', '', '/sveltekit/articles/001/edit'],
+    ['/vue/articles/9007199254740991/edit', '', '/sveltekit/articles/9007199254740991/edit'],
+    ['/vue/comments/009', '', '/sveltekit/comments/009'],
+    ['/vue/comments/9007199254740991', '', '/sveltekit/comments/9007199254740991'],
+    ['/vue/comments/009/edit', '', '/sveltekit/comments/009/edit'],
+    ['/vue/comments/9007199254740991/edit', '', '/sveltekit/comments/9007199254740991/edit'],
   ]) {
     const app = articleApp(source, 'same-token', search, true, auth.BACKENDS.nestjs)
     t.after(app.close)
@@ -266,16 +281,24 @@ test('SvelteKit frontend choice keeps supported routes and shared session', asyn
   }
 })
 
-// 未實作頁與不安全返回目標即使手動觸發 select，也不得導向 SvelteKit。
+// 非作者頁、管理頁、非法 ID 與不安全返回目標不得導向 SvelteKit。
 test('SvelteKit frontend choice blocks unsupported routes and unsafe login returns', async (t) => {
   for (const [source, search] of [
-    ['/vue/articles/new', ''], ['/vue/articles/001/edit', ''], ['/vue/me/articles', ''],
-    ['/vue/comments/009', ''], ['/vue/admin/members', ''], ['/vue/unknown', ''],
+    ['/vue/admin/members', ''], ['/vue/admin/members/001', ''], ['/vue/admin/articles', ''],
+    ['/vue/admin/comments', ''], ['/vue/admin/settings/login-lockout', ''], ['/vue/unknown', ''],
     ['/vue/articles/0', ''], ['/vue/articles/9007199254740992', ''],
-    ['/vue/login', '?return_to=%2Fvue%2Farticles%2Fnew'],
+    ['/vue/articles/0/edit', ''], ['/vue/articles/9007199254740992/edit', ''],
+    ['/vue/comments/0', ''], ['/vue/comments/9007199254740992', ''],
+    ['/vue/comments/0/edit', ''], ['/vue/comments/9007199254740992/edit', ''],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers%2F001'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Farticles'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fcomments'],
+    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fsettings%2Flogin-lockout'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F0'],
     ['/vue/login', '?return_to=%2Fvue%2Farticles%2F9007199254740992'],
-    ['/vue/login', '?return_to=%2Fvue%2Fadmin%2Fmembers'],
+    ['/vue/login', '?return_to=%2Fvue%2Farticles%2F9007199254740992%2Fedit'],
+    ['/vue/login', '?return_to=%2Fvue%2Fcomments%2F9007199254740992%2Fedit'],
     ['/vue/login', '?return_to=https%3A%2F%2Fevil.test'],
   ]) {
     const app = articleApp(source, null, search)
@@ -289,6 +312,28 @@ test('SvelteKit frontend choice blocks unsupported routes and unsafe login retur
     assert.equal(choice.target.value, 'vue')
     assert.deepEqual(app.redirects, previousRedirects)
   }
+})
+
+// 發文切換先確認未送出的文字；取消保留，確認後網址不攜帶草稿。
+test('SvelteKit article creation switch keeps or discards draft only after confirmation', (t) => {
+  const cancelled = articleApp('/vue/articles/new', 'same-token', '', false)
+  t.after(cancelled.close)
+  cancelled.page.articleTitle.value = '未送出標題'
+  cancelled.page.articleBody.value = '未送出內文'
+  const cancelledChoice = { target: { value: 'sveltekit' } }
+  cancelled.page.chooseFrontend(cancelledChoice)
+  assert.equal(cancelledChoice.target.value, 'vue')
+  assert.deepEqual(cancelled.redirects, [])
+  assert.equal(cancelled.page.articleTitle.value, '未送出標題')
+  assert.equal(cancelled.page.articleBody.value, '未送出內文')
+
+  const discarded = articleApp('/vue/articles/new', 'same-token', '', true)
+  t.after(discarded.close)
+  discarded.page.articleTitle.value = '未送出標題'
+  discarded.page.articleBody.value = '未送出內文'
+  discarded.page.chooseFrontend({ target: { value: 'sveltekit' } })
+  assert.deepEqual(discarded.redirects, ['/sveltekit/articles/new'])
+  assert.doesNotMatch(discarded.redirects[0], /未送出標題|未送出內文/)
 })
 
 // React 已完成作者與管理頁；切換只搬移語意路徑和原始 ID，不改後端憑證或到期時間。

@@ -1,5 +1,7 @@
 <script>
   import { onMount, setContext } from 'svelte';
+  import { get } from 'svelte/store';
+  import { beforeNavigate } from '$app/navigation';
   import { page } from '$app/stores';
   import { BASE, BACKENDS, FRONTENDS, backendName, validReturn } from '$lib/contracts.js';
   import { createSite } from '$lib/site.js';
@@ -8,7 +10,16 @@
   let { children } = $props();
   const site = createSite();
   setContext('site', site);
-  const { backend, account, authState, authError, notice, pending } = site;
+  const { backend, account, authState, authError, notice, dirty, pending } = site;
+
+  // 站內導覽也須詢問是否捨棄草稿；瀏覽器離頁由 beforeUnload 處理。
+  beforeNavigate(({ cancel, to }) => {
+    if (!to || (!get(dirty) && !get(pending))) return;
+    // 欄位錯誤摘要的錨點只移動頁內位置，不會捨棄草稿。
+    if (to.url.pathname === window.location.pathname && to.url.search === window.location.search) return;
+    if (!window.confirm('目前輸入或請求可能尚未完成。要捨棄並離開嗎？')) cancel();
+    else site.dirty.set(false);
+  });
 
   // 只在瀏覽器讀取分頁儲存與驗證登入，SSR 不接觸共享的業務狀態。
   onMount(() => {
@@ -57,7 +68,9 @@
     <nav class="main-nav" aria-label="主要導覽">
       <a aria-current={$page.url.pathname === `${BASE}/` ? 'page' : undefined} href={`${BASE}/`}>所有文章</a>
       {#if $authState === 'active'}
-        <span class="nav-note">作者頁面即將提供</span>
+        <a aria-current={$page.url.pathname === `${BASE}/articles/new` ? 'page' : undefined} href={`${BASE}/articles/new`}>發文</a>
+        <a aria-current={$page.url.pathname === `${BASE}/me/articles` ? 'page' : undefined} href={`${BASE}/me/articles`}>我的文章</a>
+        <a aria-current={$page.url.pathname === `${BASE}/me/comments` ? 'page' : undefined} href={`${BASE}/me/comments`}>我的留言</a>
       {:else}
         <a aria-current={$page.url.pathname === `${BASE}/login` ? 'page' : undefined} href={`${BASE}/login`}>登入</a>
         <a aria-current={$page.url.pathname === `${BASE}/register` ? 'page' : undefined} href={`${BASE}/register`}>註冊</a>
@@ -70,6 +83,10 @@
         {#if $authState !== 'active'}
           <a href={`${BASE}/login`}>登入</a>
           <a href={`${BASE}/register`}>註冊</a>
+        {:else}
+          <a href={`${BASE}/articles/new`}>發文</a>
+          <a href={`${BASE}/me/articles`}>我的文章</a>
+          <a href={`${BASE}/me/comments`}>我的留言</a>
         {/if}
       </nav>
     </details>

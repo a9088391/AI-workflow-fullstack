@@ -41,8 +41,8 @@ const canSwitchNextPage = (page === 'register' || page === 'login' || nextReturn
 // Angular 已完成全部語意頁；登入返回仍只接受已知且 ID 合法的頁面。
 const angularReturnPages = ['articles', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
 const canSwitchAngularPage = (page === 'register' || page === 'login' || angularReturnPages.includes(page)) && (page !== 'login' || target === null || angularReturnPages.includes(articlePage(target)))
-// SvelteKit 此票只提供公開閱讀與帳號頁，登入返回也只能指向已完成的閱讀頁。
-const svelteReturnPages = ['articles', 'article']
+// 切換只保留 SvelteKit 已完成的作者語意頁；管理頁與非法返回目標仍排除。
+const svelteReturnPages = ['articles', 'article', 'article-new', 'my-articles', 'my-comments', 'article-edit', 'comment', 'comment-edit']
 const canSwitchSveltePage = (page === 'register' || page === 'login' || svelteReturnPages.includes(page)) && (page !== 'login' || target === null || svelteReturnPages.includes(articlePage(target)))
 const editing = page === 'article-edit' || page === 'comment-edit'
 const articleResource = page === 'article' || page === 'article-edit'

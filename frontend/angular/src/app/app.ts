@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import {
   Account, apiRequest, Article, BACKENDS, BACKEND_KEY, clearSessionIfOwned, Comment, countdown,
   FRONTENDS, frontendTarget, normalizeEmail, Page, positiveNumber, problem, Problem,
-  readBackend, readSession, retryAfterSeconds, saveSession, Session, SESSION_KEY,
+  readBackend, readSession, retryAfterSeconds, saveSession, Session, SESSION_KEY, supportsSvelteRoute,
   validReturn, validateAccount, validateContent,
 } from './contracts';
 import { isLockoutSettings, isMember, LockoutSettings, Member, memberKeyword, settingErrors } from './admin';
@@ -634,11 +634,10 @@ export class App implements OnInit, OnDestroy {
     ),
   ); }
 
-  // SvelteKit 目前只提供公開閱讀與帳號入口；Nuxt 仍只支援前四個後端。
+  // SvelteKit 已有作者頁；登入返回也須落在它已完成且 ID 合法的路徑。
   canSwitchFrontend(id: string): boolean {
-    if (id === 'sveltekit') return ['list', 'article', 'login', 'register'].includes(this.route)
-      && (this.route !== 'login' || this.returnTo === '/angular/'
-        || positiveNumber(this.returnTo.match(/^\/angular\/articles\/([0-9]+)$/)?.[1] ?? null) !== null);
+    if (id === 'sveltekit') return supportsSvelteRoute(this.path)
+      && (this.route !== 'login' || supportsSvelteRoute(this.returnTo));
     return id !== 'nuxt' || ([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]] as string[]).includes(this.backend());
   }
 

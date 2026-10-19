@@ -96,6 +96,13 @@ export function validReturn(path: string): boolean {
   return Boolean(match && positiveNumber(match[1] || match[2]) !== null);
 }
 
+// SvelteKit 作者頁已可接收相同語意；管理頁仍待下一票才開放切換。
+export function supportsSvelteRoute(path: string): boolean {
+  if (['/angular/', '/angular/login', '/angular/register', '/angular/articles/new', '/angular/me/articles', '/angular/me/comments'].includes(path)) return true;
+  const match = path.match(/^\/angular\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/);
+  return Boolean(match && positiveNumber(match[1]) !== null);
+}
+
 // 切換版本只搬已知語意路徑；登入頁的返回目標也映射到目標基底路徑。
 export function frontendTarget(path: string, frontend: keyof typeof FRONTENDS, returnTo = '/angular/'): string {
   if (path === '/angular/login') {

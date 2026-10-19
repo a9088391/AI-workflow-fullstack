@@ -125,9 +125,10 @@ export function createSite() {
     window.location.assign(`${BASE}/login${safe !== `${BASE}/` ? `?return_to=${encodeURIComponent(safe)}` : ''}`);
   }
 
-  // 登出只在伺服器確認撤銷後清除本地憑證；失敗保留重試能力。
+  // 有草稿先確認捨棄；伺服器確認撤銷後才清除本地憑證，失敗保留重試能力。
   async function logout() {
     if (get(pending)) return;
+    if (get(dirty) && !window.confirm('尚有未儲存文字，確定要捨棄並登出嗎？')) return;
     const sent = get(session);
     if (!sent) return;
     const attempt = generation;
@@ -142,6 +143,7 @@ export function createSite() {
       }
       pending.set(false);
       generation++;
+      dirty.set(false);
       session.set(null); account.set(null); authState.set('guest');
       notice.set('已登出目前這次登入。');
       if (window.location.pathname !== `${BASE}/`) {

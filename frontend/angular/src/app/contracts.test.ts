@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
+import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, supportsSvelteRoute, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
 
 // 模擬同一分頁儲存，核對跨版登入不改寫原到期時間與舊回應隔離。
 function storage(): Storage {
@@ -69,4 +69,19 @@ test('作者頁切換與純文字輸入', function authorContract() {
   assert.deepEqual(Object.keys(validateContent('a'.repeat(2001))), ['body']);
   assert.deepEqual(validateContent('內文', '標題'), {});
   assert.deepEqual(Object.keys(validateContent('內文', 'a'.repeat(201))), ['title']);
+});
+
+// SvelteKit 已完成作者路由，但管理頁、非法 ID 與外站不可作登入返回目標。
+test('SvelteKit 作者路由白名單', function svelteAuthorRoutes() {
+  for (const path of ['/angular/', '/angular/login', '/angular/register', '/angular/articles/new',
+    '/angular/me/articles', '/angular/me/comments', '/angular/articles/001', '/angular/articles/001/edit',
+    '/angular/comments/009', '/angular/comments/009/edit']) {
+    assert.equal(supportsSvelteRoute(path), true, path);
+    if (path !== '/angular/login') assert.equal(frontendTarget(path, 'sveltekit'), path.replace('/angular/', '/sveltekit/'));
+  }
+  for (const path of ['/angular/admin/members', '/angular/admin/articles', '/angular/articles/0/edit',
+    '/angular/comments/9007199254740992', '/angular/comments/009?preview=1', 'https://evil.test']) {
+    assert.equal(supportsSvelteRoute(path), false, path);
+  }
+  assert.equal(frontendTarget('/angular/login', 'sveltekit', '/angular/comments/009/edit'), '/sveltekit/login?return_to=%2Fsveltekit%2Fcomments%2F009%2Fedit');
 });

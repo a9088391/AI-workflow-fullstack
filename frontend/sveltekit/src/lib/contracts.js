@@ -87,7 +87,8 @@ export function positiveNumber(value) {
 // 返回目標限制為核准的語意頁面與合法 ID，不接受外站或任意路徑。
 export function validReturn(path) {
   if (path === `${BASE}/`) return true;
-  const match = path.match(/^\/sveltekit\/articles\/([0-9]+)$/);
+  if ([`${BASE}/articles/new`, `${BASE}/me/articles`, `${BASE}/me/comments`].includes(path)) return true;
+  const match = path.match(/^\/sveltekit\/(?:articles|comments)\/([0-9]+)(?:\/edit)?$/);
   return Boolean(match && positiveNumber(match[1]) !== null);
 }
 
@@ -172,11 +173,29 @@ export function isArticle(value) {
 
 // 留言需有其所屬文章與公開作者，避免將破損資料混入文章頁。
 export function isComment(value, articleId) {
-  return value && positiveNumber(String(value.id)) !== null && value.article_id === articleId
+  return value && positiveNumber(String(value.id)) !== null && positiveNumber(String(value.article_id)) !== null
+    && (articleId === undefined || value.article_id === articleId)
     && typeof value.body === 'string' && value.author && positiveNumber(String(value.author.id)) !== null
     && typeof value.author.nickname === 'string' && typeof value.created_at === 'string'
     && typeof value.created_backend === 'string' && positiveNumber(String(value.version)) !== null
     && ['visible', 'hidden'].includes(value.visibility) && typeof value.can_restore === 'boolean';
+}
+
+const blankContent = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
+
+// 本地提示沿用共同 Unicode 碼點與空白規則；伺服器仍是最後驗證者。
+export function validateContent(title, body, comment = false) {
+  const errors = {};
+  if (!comment && (typeof title !== 'string' || ![...title].length || [...title].length > 200
+    || blankContent.test(title) || title.includes('\0'))) errors.title = ['欄位格式或範圍不正確'];
+  if (typeof body !== 'string' || ![...body].length || [...body].length > (comment ? 2000 : 20000)
+    || blankContent.test(body) || body.includes('\0')) errors.body = ['欄位格式或範圍不正確'];
+  return errors;
+}
+
+// 已送出的寫入若沒有確定拒絕，先查證伺服器值，避免重複建立或覆寫。
+export function uncertainWrite(failure) {
+  return !['E0001', 'E0002', 'E0003', 'E0004', 'E0102', 'E0201'].includes(failure?.code);
 }
 
 // 僅回傳 API 已核准的安全錯誤文案與追查碼，網路失敗另由呼叫端處理。

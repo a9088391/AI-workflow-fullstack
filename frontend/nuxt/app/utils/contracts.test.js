@@ -6,23 +6,38 @@ import * as vueAuth from '../../../vue/src/auth.js'
 const account = { id: 1, email: 'reader@example.test', nickname: '林', role: 'member', status: 'active', created_at: '2026-09-24 10:00:00' }
 const article = { id: 101, title: '一篇文章', body: '第一行\n第二行', author: { id: 1, nickname: '林' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
 
-// SvelteKit 此票只接收公開閱讀與帳號頁，登入返回也須落在已完成的頁面。
-test('SvelteKit target maps supported routes and rejects unsafe or unfinished routes', () => {
+// SvelteKit 接收本票已完成的公開、帳號與作者頁；登入返回仍限合法目標。
+test('SvelteKit target maps public and author routes and rejects unsafe or unfinished routes', () => {
   for (const [source, target] of [
     ['/nuxt/', '/sveltekit/'], ['/nuxt/register', '/sveltekit/register'],
     ['/nuxt/login', '/sveltekit/login'], ['/nuxt/articles/001', '/sveltekit/articles/001'],
     ['/nuxt/articles/9007199254740991', '/sveltekit/articles/9007199254740991'],
+    ['/nuxt/articles/new', '/sveltekit/articles/new'], ['/nuxt/me/articles', '/sveltekit/me/articles'],
+    ['/nuxt/me/comments', '/sveltekit/me/comments'], ['/nuxt/articles/001/edit', '/sveltekit/articles/001/edit'],
+    ['/nuxt/articles/9007199254740991/edit', '/sveltekit/articles/9007199254740991/edit'],
+    ['/nuxt/comments/009', '/sveltekit/comments/009'], ['/nuxt/comments/9007199254740991', '/sveltekit/comments/9007199254740991'],
+    ['/nuxt/comments/009/edit', '/sveltekit/comments/009/edit'], ['/nuxt/comments/9007199254740991/edit', '/sveltekit/comments/9007199254740991/edit'],
   ]) assert.equal(svelteFrontendTarget(source), target)
   assert.equal(svelteFrontendTarget('/nuxt/login', '/nuxt/'), '/sveltekit/login')
   assert.equal(svelteFrontendTarget('/nuxt/login', '/nuxt/articles/001'), '/sveltekit/login?return_to=%2Fsveltekit%2Farticles%2F001')
   for (const source of [
-    '/nuxt/articles/new', '/nuxt/articles/001/edit', '/nuxt/me/articles', '/nuxt/me/comments',
-    '/nuxt/comments/009', '/nuxt/admin/members', '/nuxt/unknown',
+    '/nuxt/articles/new', '/nuxt/me/articles', '/nuxt/me/comments', '/nuxt/articles/001/edit',
+    '/nuxt/articles/9007199254740991/edit', '/nuxt/comments/009', '/nuxt/comments/009/edit',
+    '/nuxt/comments/9007199254740991/edit',
+  ]) assert.equal(svelteFrontendTarget('/nuxt/login', source), `/sveltekit/login?return_to=${encodeURIComponent(source.replace('/nuxt/', '/sveltekit/'))}`, source)
+  for (const source of [
+    '/nuxt/admin/members', '/nuxt/admin/members/001', '/nuxt/admin/articles', '/nuxt/admin/comments',
+    '/nuxt/admin/settings/login-lockout', '/nuxt/unknown',
     '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/articles/001?preview=1',
+    '/nuxt/articles/0/edit', '/nuxt/articles/9007199254740992/edit',
+    '/nuxt/comments/0', '/nuxt/comments/9007199254740992',
+    '/nuxt/comments/0/edit', '/nuxt/comments/9007199254740992/edit',
   ]) assert.equal(svelteFrontendTarget(source), null, source)
   for (const source of [
-    '/nuxt/articles/new', '/nuxt/articles/001/edit', '/nuxt/me/articles', '/nuxt/admin/members',
-    '/nuxt/register', '/nuxt/login', '/nuxt/articles/0', '/nuxt/articles/9007199254740992',
+    '/nuxt/admin/members', '/nuxt/admin/members/001', '/nuxt/admin/articles', '/nuxt/admin/comments',
+    '/nuxt/admin/settings/login-lockout', '/nuxt/register', '/nuxt/login',
+    '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/articles/9007199254740992/edit',
+    '/nuxt/comments/0', '/nuxt/comments/9007199254740992/edit',
     'https://evil.test', '//evil.test',
   ]) assert.equal(svelteFrontendTarget('/nuxt/login', source), null, source)
 })

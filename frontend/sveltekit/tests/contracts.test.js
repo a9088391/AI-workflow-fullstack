@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BACKEND_KEY, BACKENDS, SESSION_KEY, clearSessionIfOwned, countdown, describeFailure, expired,
   frontendTarget, isArticle, isComment, isPage, readBackend, readSession,
-  retryAfterSeconds, saveSession, validReturn, validateAccount
+  retryAfterSeconds, saveSession, uncertainWrite, validReturn, validateAccount, validateContent
 } from '../src/lib/contracts.js';
 
 // 模擬同源分頁儲存，確定六版共用欄位時不依賴框架私有狀態。
@@ -56,6 +56,25 @@ test('frontend and login targets stay on approved paths', () => {
   assert.equal(frontendTarget('/sveltekit/articles/101', 'vue'), '/vue/articles/101');
   assert.equal(frontendTarget('/sveltekit/login', 'next', '/sveltekit/articles/101'), '/next/login?return_to=%2Fnext%2Farticles%2F101');
   assert.equal(frontendTarget('/sveltekit/', 'constructor'), '/sveltekit/');
+  for (const path of ['/sveltekit/articles/new', '/sveltekit/me/articles', '/sveltekit/me/comments',
+    '/sveltekit/articles/101/edit', '/sveltekit/comments/201', '/sveltekit/comments/201/edit']) {
+    assert.equal(validReturn(path), true);
+    assert.equal(frontendTarget(path, 'vue'), path.replace('/sveltekit/', '/vue/'));
+  }
+  assert.equal(validReturn('/sveltekit/comments/9007199254740992/edit'), false);
+});
+
+// 本地文字與結果不明判斷須保留原文，且不把已知拒絕誤當可能寫入。
+test('content validation and uncertain writes follow author recovery rules', () => {
+  assert.deepEqual(validateContent('標題', '換行\n文字'), {});
+  assert.deepEqual(validateContent(' ', '內容').title, ['欄位格式或範圍不正確']);
+  assert.deepEqual(validateContent('', '😀'.repeat(2000), true), {});
+  assert.equal(Boolean(validateContent('', '😀'.repeat(2001), true).body), true);
+  assert.equal(Boolean(validateContent('標題', '\0').body), true);
+  assert.equal(uncertainWrite({ code: 'E0201' }), false);
+  assert.equal(uncertainWrite({ code: 'E0002' }), false);
+  assert.equal(uncertainWrite({ status: 503, code: 'E9999' }), true);
+  assert.equal(uncertainWrite(new TypeError('Failed to fetch')), true);
 });
 
 // 倒數不猜測無效標頭，歸零不保留假的剩餘時間。
