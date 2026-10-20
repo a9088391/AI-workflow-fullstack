@@ -472,6 +472,7 @@ function AdminMembers({ backend, credential, account, authStatus, ready, page, k
   }
   // 搜尋字串變動後移除舊的長度錯誤，保留輸入直到送出。
   function changeSearch(event) { setInput(event.target.value); setSearchError(null) }
+  // 指定超頁優先顯示此頁無資料，首頁才區分搜尋無結果與尚無會員。
   return <AdminFrame title="會員管理"><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
     <form className="admin-toolbar" onSubmit={search}><label htmlFor="keyword">搜尋暱稱或 Email</label><input id="keyword" value={input} onChange={changeSearch} aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'keyword-error' : undefined} /><button className="outline-button" type="submit">搜尋會員</button>{searchError && <p id="keyword-error" className="field-error">最多 254 個 Unicode 字元</p>}</form>
     <ErrorNotice error={searchError || (keyword === null ? { message: '網址中的搜尋關鍵字過長，請修正後再搜尋。' } : null)} focusRef={searchRef} />
@@ -479,7 +480,7 @@ function AdminMembers({ backend, credential, account, authStatus, ready, page, k
       {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
         // 列表只連到一般會員詳情，不在前端推測狀態寫入結果。
         (member) => <li className="admin-row" key={member.id}><div><small>會員 #{member.id}</small><h2><a href={`/next/admin/members/${member.id}`}>{member.nickname}</a></h2></div><p className="break">{member.email}</p><p>{member.status === 'active' ? '啟用' : '停用'}</p><a href={`/next/admin/members/${member.id}`}>查看詳情</a></li>,
-      )}</ol> : <p className="notice">{page > read.data.pagination.total_pages && read.data.pagination.total > 0 ? '此頁沒有會員資料。' : keyword ? '沒有符合搜尋條件的會員。' : '目前尚無會員。'}</p>}
+      )}</ol> : <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有會員資料。' : keyword ? '沒有符合搜尋條件的會員。' : '目前尚無會員。'}</p>}
       <Pagination pagination={read.data.pagination} base="/next/admin/members" query={keyword ? `keyword=${encodeURIComponent(keyword)}` : ''} />
     </>}</>}
   </>}</AdminFrame>
@@ -515,12 +516,13 @@ function AdminContent({ kind, backend, credential, account, authStatus, ready, p
   const route = article ? 'articles' : 'comments'
   const path = article ? `/api/articles?page=${page}&per_page=20&filters%5Bscope%5D=management` : `/api/comments?page=${page}&per_page=20`
   const read = useApiRead(backend, credential, path, article ? 'articles' : 'managed-comments', page, null, ready, onAuthFailure)
+  // 零筆超頁仍保留 API 原頁碼與返回第一頁入口，不宣稱整個管理列表為空。
   return <AdminFrame title={article ? '文章管理' : '留言管理'}><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
     {read.loading && <p className="notice" role="status">正在載入{article ? '文章' : '留言'}…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <>
       {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
         // 完整內文和版本操作留在已知 ID 詳情，列表只呈現可辨識摘要。
         (item) => <li className="admin-row" key={item.id}><div><small>{article ? '文章' : '留言'} #{item.id}</small><h2><a href={`/next/${route}/${item.id}`}>{article ? item.title : `留言 #${item.id}`}</a></h2></div><p>作者 {item.author.nickname}<br />建立於 {BACKENDS[item.created_backend][0]}</p><p>{item.visibility === 'hidden' ? '已下架' : '公開'}</p><a href={`/next/${route}/${item.id}`}>查看詳情</a><p className="excerpt">{item.body}</p></li>,
-      )}</ol> : <p className="notice">{page > read.data.pagination.total_pages && read.data.pagination.total > 0 ? '此頁沒有資料。' : `目前尚無${article ? '文章' : '留言'}。`}</p>}
+      )}</ol> : <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : `目前尚無${article ? '文章' : '留言'}。`}</p>}
       <Pagination pagination={read.data.pagination} base={`/next/admin/${route}`} />
     </>}
   </>}</AdminFrame>
@@ -901,11 +903,11 @@ export default function Site({ path, query }) {
       (entry) => entry[1] === backend,
     )?.[0] : '讀取中…'}</strong></span></div>
       <label className="select-wrap">切換版本<select value="next" onChange={changeFrontend} aria-label="切換前端版本">{Object.entries(FRONTENDS).map(
-        // Nuxt 需核對後端，SvelteKit 另檢查原始返回目標；未提供的路由保持停用。
+        // 固定後端與目標路由都須合法；SvelteKit 另檢查原始返回目標。
         ([id, name]) => {
           const backendReady = canSwitchFrontend(id, backend)
           const routeReady = frontendTarget(path, id, id === 'sveltekit' ? query.return_to ?? '/next/' : returnTo) !== null
-          return <option key={id} value={id} disabled={!backendReady || !routeReady}>{name}{id === 'nuxt' && !backendReady ? '（此後端尚未提供）' : !routeReady ? '（此頁尚未提供）' : ''}</option>
+          return <option key={id} value={id} disabled={!backendReady || !routeReady}>{name}{!routeReady ? '（此頁尚未提供）' : ''}</option>
         },
       )}</select></label>
       <label className="select-wrap">切換後端<select value={backend || ''} onChange={changeBackend} disabled={!backend} aria-label="切換目前後端">{!backend && <option value="">讀取中…</option>}{Object.entries(BACKENDS).map(

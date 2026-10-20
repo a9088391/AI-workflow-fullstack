@@ -9,10 +9,9 @@ export const BACKENDS = {
   fastify: ['Fastify', 'http://localhost:8091'], nestjs: ['NestJS', 'http://localhost:8092'],
 }
 export const FRONTENDS = { vue: 'Vue 3＋Vite', nuxt: 'Nuxt', react: 'React＋Vite', next: 'Next.js', angular: 'Angular', sveltekit: 'SvelteKit' }
-const nuxtBackends = new Set([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]])
-// Nuxt 尚只認得前四個後端；切換前先檢查，避免目標清掉共用登入。
+// 前端切換只接受固定的六版與十二個 API 來源，避免不明目的地接收共用登入。
 export function canSwitchFrontend(frontend, backend) {
-  return Object.hasOwn(FRONTENDS, frontend) && (frontend !== 'nuxt' || nuxtBackends.has(backend))
+  return Object.hasOwn(FRONTENDS, frontend) && bases.includes(backend)
 }
 // 固定基底位址清單供儲存與送出驗證，阻止任意來源接收 JWT。
 const bases = Object.values(BACKENDS).map((entry) => entry[1])

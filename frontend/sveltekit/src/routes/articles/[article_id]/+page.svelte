@@ -200,8 +200,12 @@
       {:else if commentsError}
         <div class="state-panel state-error" role="alert"><p>{commentsError}</p><button class="button" type="button" onclick={loadComments}>重新讀取留言</button></div>
       {:else if comments?.list.length === 0}
-        <div class="state-panel"><p>{comments.pagination.total === 0 ? '尚無留言。' : '此頁沒有留言。'}</p>
-          {#if comments.pagination.total > 0}<a class="button" href={`${BASE}/articles/${articleId}`}>回留言第一頁</a>{/if}
+        <!-- 留言零筆超頁不表示整篇沒有留言，須保留原頁碼與返回入口。 -->
+        <div class="state-panel"><p>{comments.pagination.page > 1 || comments.pagination.total > 0 ? '此頁沒有留言。' : '尚無留言。'}</p>
+          {#if comments.pagination.page > 1 || comments.pagination.total > 0}
+            <p>第 {comments.pagination.page} 頁，共 {comments.pagination.total} 則</p>
+            <a class="button" href={`${BASE}/articles/${articleId}`}>回留言第一頁</a>
+          {/if}
         </div>
       {:else if comments}
         <div class="comment-list">

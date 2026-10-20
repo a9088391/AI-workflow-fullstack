@@ -4,6 +4,16 @@ import { get } from 'svelte/store';
 import { BACKENDS, readSession, saveSession } from '../src/lib/contracts.js';
 import { createSite } from '../src/lib/site.js';
 
+// 全部固定後端都可在同一分頁切至 Nuxt；未知前端值仍不得導覽。
+test('frontend switch accepts Nuxt for every backend', () => {
+  const site = createSite();
+  for (const [, base] of Object.values(BACKENDS)) {
+    site.backend.set(base);
+    assert.equal(site.canSwitchFrontend('nuxt'), true, base);
+  }
+  assert.equal(site.canSwitchFrontend('unknown'), false);
+});
+
 // 模擬同分頁儲存，檢查失效與其他帳號登入不會誤清目前憑證。
 function storage() {
   const values = new Map();

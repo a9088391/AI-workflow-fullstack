@@ -48,8 +48,12 @@
   <div class="state-panel state-error" role="alert"><p>{error}</p><button class="button" type="button" onclick={load}>重新讀取</button></div>
 {:else if result?.list.length === 0}
   <div class="state-panel">
-    <p>{result.pagination.total === 0 ? '尚無文章，稍後再來看看。' : '此頁沒有文章。'}</p>
-    {#if result.pagination.total > 0}<a class="button" href={`${BASE}/`}>回第一頁</a>{/if}
+    <!-- 零筆超頁仍保留 API 原頁碼和總數，首頁才顯示整體尚無文章。 -->
+    <p>{result.pagination.page > 1 || result.pagination.total > 0 ? '此頁沒有文章。' : '尚無文章，稍後再來看看。'}</p>
+    {#if result.pagination.page > 1 || result.pagination.total > 0}
+      <p>第 {result.pagination.page} 頁，共 {result.pagination.total} 篇</p>
+      <a class="button" href={`${BASE}/`}>回第一頁</a>
+    {/if}
   </div>
 {:else}
   <div class="article-grid">

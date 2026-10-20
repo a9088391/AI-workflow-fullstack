@@ -272,7 +272,8 @@
         {/each}
       </div>{/if}
       {#if mode === 'articles' || mode === 'comments'}
-        {#if result?.list.length === 0}<div class="state-panel"><p>{result.pagination.total === 0 ? '目前沒有自己的內容。' : '此頁沒有資料。'}</p>{#if result.pagination.total > 0}<a class="button" href={`${BASE}/me/${mode}`}>回第一頁</a>{/if}</div>{/if}
+        <!-- 自己的內容零筆超頁保留原頁碼，返回入口指回同一列表。 -->
+        {#if result?.list.length === 0}<div class="state-panel"><p>{result.pagination.page > 1 || result.pagination.total > 0 ? '此頁沒有資料。' : '目前沒有自己的內容。'}</p>{#if result.pagination.page > 1}<a class="button" href={`${BASE}/me/${mode}`}>回第一頁</a>{/if}</div>{/if}
         {#if result?.list.length}<div class="author-list">
           {#each result.list as item (item.id)}
             <article class="article-card"><h2><a href={`${BASE}/${commentMode ? 'comments' : 'articles'}/${item.id}`}>{commentMode ? `留言 #${item.id}` : item.title}</a></h2>

@@ -117,6 +117,32 @@ async function respond(request, status, body, headers = {}) {
   await setImmediate()
 }
 
+// 零筆首頁與零筆超頁須有不同提示；有資料的超頁仍保留 API 原總數。
+test('article and comment lists distinguish zero-total overpage from first-page empty state', async (t) => {
+  for (const [path, privateList, comments] of [
+    ['/vue/', false, false], ['/vue/me/articles', true, false], ['/vue/me/comments', true, false], ['/vue/articles/7', false, true],
+  ]) {
+    for (const [requested, total] of [[1, 0], [7, 0], [7, 41]]) {
+      const app = articleApp(path, privateList ? 'jwt' : null, `?page=${requested}`)
+      t.after(app.close)
+      if (privateList) await respond(app.requests[0], 200, success(member))
+      if (comments) await respond(app.requests[0], 200, success(sample))
+      const request = app.requests.at(-1)
+      assert.match(request.url, new RegExp(`page=${requested}&per_page=20$`))
+      await respond(request, 200, success({ list: [], pagination: { page: requested, per_page: 20, total, total_pages: Math.ceil(total / 20) } }))
+      const html = await renderArticleApp(app)
+      assert.match(html, new RegExp(`共 ${total} [篇則] · 第 ${requested} 頁`))
+      if (requested === 1) {
+        assert.match(html, comments || path.includes('comments') ? /目前尚無留言/ : /目前尚無文章/)
+        assert.doesNotMatch(html, /回第一頁/)
+      } else {
+        assert.match(html, comments || path.includes('comments') ? /此頁沒有留言，總數仍保留/ : /此頁沒有文章，總數仍保留/)
+        assert.match(html, /回第一頁/)
+      }
+    }
+  }
+})
+
 // JWT 逾期後保留原草稿；同帳號重登只能手動再次發表。
 test('article draft survives 401 and same-account re-login without automatic retry', async (t) => {
   const app = articleApp('/vue/articles/new')
@@ -655,6 +681,19 @@ test('frontend switch reaches Nuxt management routes and login return targets', 
   }
 })
 
+// 所有固定後端都可切到 Nuxt；切前端只導覽，不改寫同分頁的後端與原憑證期限。
+test('all backend selections reach Nuxt without changing the shared session', (t) => {
+  for (const [name, selectedBackend] of Object.entries(auth.BACKENDS)) {
+    const app = articleApp('/vue/articles/007', `${name}-jwt`, '', false, selectedBackend)
+    t.after(app.close)
+    assert.equal(app.page.canSwitchNuxt.value, true, name)
+    app.page.chooseFrontend({ target: { value: 'nuxt' } })
+    assert.deepEqual(app.redirects, ['/nuxt/articles/007'], name)
+    assert.equal(auth.readBackend(app.sessionStorage), selectedBackend, name)
+    assert.deepEqual(auth.readSession(app.sessionStorage), { backend: selectedBackend, accessToken: `${name}-jwt`, expiresAt: '2026-09-24 18:00:00' }, name)
+  }
+})
+
 // 取消保留文字與憑證；確認後清除憑證並帶合法頁面返回登入，不重送草稿。
 test('backend switch cancels or discards draft without retrying and isolates old responses', async (t) => {
   const cancelled = articleApp('/vue/articles/new')
@@ -893,7 +932,7 @@ test('Fastify author deep links verify identity and return through login', async
   assert.match(html, /href="\/vue\/admin\/members"/)
 })
 
-// Fastify 使用既有表單與公開閱讀畫面；作者操作可用，Nuxt 切換仍不可用。
+// Fastify 使用既有表單與公開閱讀畫面；作者操作及 Nuxt 切換都可用。
 test('Fastify registration, login, logout, article and comment reading', async (t) => {
   const registration = articleApp('/vue/register', null, '', false, auth.BACKENDS.fastify)
   t.after(registration.close)
@@ -915,9 +954,9 @@ test('Fastify registration, login, logout, article and comment reading', async (
   assert.match(listHtml, /Fastify/)
   assert.match(listHtml, /標題/)
   assert.match(listHtml, /href="\/vue\/articles\/new"/)
-  assert.equal(list.page.canSwitchNuxt.value, false)
+  assert.equal(list.page.canSwitchNuxt.value, true)
   list.page.versionsOpen.value = true
-  assert.match(await renderArticleApp(list), /Nuxt 尚未支援目前選擇的 Fastify 後端/)
+  assert.match(await renderArticleApp(list), /已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留/)
 
   const guest = articleApp('/vue/', null, '', false, auth.BACKENDS.fastify)
   t.after(guest.close)
@@ -1182,7 +1221,7 @@ test('Flask selection clears prior JWT and ignores old backend response', async 
   assert.equal(auth.readBackend(switched.sessionStorage), 'http://localhost:8085')
   assert.equal(auth.readSession(switched.sessionStorage), null)
   assert.equal(switched.page.backendLabel.value, 'Flask')
-  assert.equal(switched.page.canSwitchNuxt.value, false)
+  assert.equal(switched.page.canSwitchNuxt.value, true)
   assert.deepEqual(switched.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
   await respond(switched.requests[0], 200, { success: true, message: 'OK', data: member })
   assert.equal(switched.page.account.value, null)
@@ -1196,18 +1235,17 @@ test('Flask selection clears prior JWT and ignores old backend response', async 
   assert.deepEqual(reverse.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
 })
 
-// Nuxt 尚未接受 Flask 後端 key，選單應拒絕切換並保留目前的 Flask 憑證。
-test('Flask selection keeps Nuxt switch unavailable', (t) => {
+// Flask 也能切到 Nuxt；切前端仍須保留原後端憑證與到期時間。
+test('Flask selection reaches Nuxt with the original session', (t) => {
   const app = articleApp('/vue/', 'flask-jwt', '', false, auth.BACKENDS.flask)
   t.after(app.close)
   const choice = { target: { value: 'nuxt' } }
   app.page.chooseFrontend(choice)
-  assert.equal(app.page.canSwitchNuxt.value, false)
-  assert.equal(choice.target.value, 'vue')
-  assert.deepEqual(app.redirects, [])
-  assert.equal(auth.readSession(app.sessionStorage).accessToken, 'flask-jwt')
+  assert.equal(app.page.canSwitchNuxt.value, true)
+  assert.deepEqual(app.redirects, ['/nuxt/'])
+  assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.flask, accessToken: 'flask-jwt', expiresAt: '2026-09-24 18:00:00' })
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /flaskBackend \|\| fastapiBackend \|\| ginBackend \|\| echoBackend \? '（此後端尚未提供）'/)
+  assert.match(descriptor.template.content, /Nuxt\{\{ canSwitchNuxt \? '' : '（此頁尚未提供）' \}\}/)
 })
 
 // Flask 註冊與登入沿用共用路徑，429 倒數期間阻擋送出，成功後只保存原 JWT 期限。
@@ -1344,19 +1382,18 @@ test('FastAPI selection clears prior JWT and ignores old backend response', asyn
   assert.deepEqual(reverse.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2F001'])
 })
 
-// Nuxt 尚未支援 FastAPI；使用者即使觸發 change 也保留目前 JWT 與 Vue 畫面。
-test('FastAPI keeps Nuxt switch unavailable without clearing JWT', (t) => {
+// FastAPI 切到 Nuxt 時保留目前 JWT，不把切前端誤當成切後端。
+test('FastAPI reaches Nuxt without clearing JWT', (t) => {
   const app = articleApp('/vue/', 'fastapi-jwt', '', false, auth.BACKENDS.fastapi)
   t.after(app.close)
   const choice = { target: { value: 'nuxt' } }
   app.page.chooseFrontend(choice)
-  assert.equal(app.page.canSwitchNuxt.value, false)
-  assert.equal(choice.target.value, 'vue')
-  assert.deepEqual(app.redirects, [])
-  assert.equal(auth.readSession(app.sessionStorage).accessToken, 'fastapi-jwt')
+  assert.equal(app.page.canSwitchNuxt.value, true)
+  assert.deepEqual(app.redirects, ['/nuxt/'])
+  assert.deepEqual(auth.readSession(app.sessionStorage), { backend: auth.BACKENDS.fastapi, accessToken: 'fastapi-jwt', expiresAt: '2026-09-24 18:00:00' })
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   assert.match(descriptor.template.content, /<option :value="BACKENDS\.fastapi">FastAPI<\/option>/)
-  assert.match(descriptor.template.content, /fastapiBackend \? 'Nuxt 尚未支援目前選擇的 FastAPI 後端/)
+  assert.match(descriptor.template.content, /已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留/)
 })
 
 // FastAPI 沿用正式表單、429 倒數與公開 API，登入後只保存 8086 對應的原 JWT 期限。
@@ -1507,16 +1544,16 @@ test('Gin uses its own session and ordered public auth and reading requests', as
   assert.match(await renderArticleApp(guestDetail), /目前尚無留言/)
 })
 
-// Nuxt 尚未支援 Gin 後端；切換控制保留目前 Vue 與原登入憑證。
-test('Gin frontend switch keeps the selected backend in Vue', async (t) => {
+// Gin 切到 Nuxt 時沿用同分頁原後端與憑證。
+test('Gin frontend switch reaches Nuxt with the selected backend', async (t) => {
   const app = articleApp('/vue/', 'gin-jwt', '', false, auth.BACKENDS.gin)
   t.after(app.close)
-  assert.equal(app.page.canSwitchNuxt.value, false)
+  assert.equal(app.page.canSwitchNuxt.value, true)
   const choice = { target: { value: 'nuxt' } }
   app.page.chooseFrontend(choice)
-  assert.equal(choice.target.value, 'vue')
+  assert.deepEqual(app.redirects, ['/nuxt/'])
   app.page.versionsOpen.value = true
-  assert.match(await renderArticleApp(app), /Nuxt 尚未支援目前選擇的 Gin 後端/)
+  assert.match(await renderArticleApp(app), /已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留/)
 })
 
 // Echo 切換先清舊 JWT，再保留合法作者與管理目標供新後端重新驗權。
@@ -1556,17 +1593,16 @@ test('Echo selection and login return preserve protected routes', async (t) => {
   await login
   assert.deepEqual(adminLogin.redirects, ['/vue/admin/articles'])
 
-  // Nuxt 尚未接入 Echo，切換前端仍保留原憑證和 Vue 畫面。
+  // Echo 切到 Nuxt 仍保留同分頁原憑證與到期時間。
   const frontend = articleApp('/vue/', 'echo-jwt', '', false, auth.BACKENDS.echo)
   t.after(frontend.close)
   const choice = { target: { value: 'nuxt' } }
   frontend.page.chooseFrontend(choice)
-  assert.equal(choice.target.value, 'vue')
-  assert.equal(frontend.page.canSwitchNuxt.value, false)
-  assert.equal(auth.readSession(frontend.sessionStorage).accessToken, 'echo-jwt')
-  assert.deepEqual(frontend.redirects, [])
+  assert.equal(frontend.page.canSwitchNuxt.value, true)
+  assert.deepEqual(auth.readSession(frontend.sessionStorage), { backend: auth.BACKENDS.echo, accessToken: 'echo-jwt', expiresAt: '2026-09-24 18:00:00' })
+  assert.deepEqual(frontend.redirects, ['/nuxt/'])
   frontend.page.versionsOpen.value = true
-  assert.match(await renderArticleApp(frontend), /Nuxt 尚未支援目前選擇的 Echo 後端/)
+  assert.match(await renderArticleApp(frontend), /已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留/)
 
   // 已保存的 Echo JWT 在登入頁重驗後，仍保留合法管理目標供該頁驗權。
   const restored = articleApp('/vue/login', 'echo-jwt', '?return_to=%2Fvue%2Fadmin%2Fmembers', false, auth.BACKENDS.echo)
@@ -1630,7 +1666,7 @@ test('Fiber author deep links verify account before reading resources', async (t
   }
 })
 
-// Fiber 詳情提供作者及管理入口；Nuxt 切換與登出維持原契約。
+// Fiber 詳情提供作者及管理入口；Nuxt 可切換，登出仍撤銷目前登入。
 test('Fiber reads public content and presents author and admin controls', async (t) => {
   const app = articleApp('/vue/articles/7', 'fiber-jwt', '', false, auth.BACKENDS.fiber)
   t.after(app.close)
@@ -1649,15 +1685,12 @@ test('Fiber reads public content and presents author and admin controls', async 
   assert.match(html, /發表留言|編輯文章|>下架</)
   assert.match(html, /href="\/vue\/admin\/articles"/)
   assert.match(html, /href="\/vue\/admin\/comments"/)
-  assert.equal(app.page.canSwitchNuxt.value, false)
+  assert.equal(app.page.canSwitchNuxt.value, true)
   assert.equal(app.page.canComment.value, true)
   assert.equal(app.page.canEdit.value, true)
   assert.equal(app.page.canManageVisibility.value, true)
   app.page.versionsOpen.value = true
-  assert.match(await renderArticleApp(app), /Nuxt 尚未支援目前選擇的 Fiber 後端/)
-  const frontendChoice = { target: { value: 'nuxt' } }
-  app.page.chooseFrontend(frontendChoice)
-  assert.equal(frontendChoice.target.value, 'vue')
+  assert.match(await renderArticleApp(app), /已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留/)
   assert.equal(auth.readSession(app.sessionStorage).accessToken, 'fiber-jwt')
   const logout = app.page.submitLogout()
   assert.equal(app.requests[3].url, `${auth.BACKENDS.fiber}/api/auth/logout`)
@@ -2101,7 +2134,7 @@ test('logout 401 blocks guest retry and keeps public login return target', async
   }
 })
 
-// NestJS 作者內容仍可操作；管理員在詳情頁可回管理列表，Nuxt 切換仍受限制。
+// NestJS 作者內容仍可操作；管理員在詳情頁可回管理列表並切到 Nuxt。
 test('NestJS reads articles and comments with author and management links', async (t) => {
   const list = articleApp('/vue/', null, '', false, auth.BACKENDS.nestjs)
   t.after(list.close)
@@ -2124,9 +2157,7 @@ test('NestJS reads articles and comments with author and management links', asyn
   for (const available of ['發表留言', '發文', '我的文章', '閱讀留言詳情', '編輯文章']) assert.match(html, new RegExp(available))
   assert.match(html, /href="\/vue\/admin\/articles"[^>]*>返回文章管理<\/a>/)
   for (const href of ['/vue/admin/members', '/vue/admin/articles', '/vue/admin/comments', '/vue/admin/settings/login-lockout']) assert.match(html, new RegExp(`href="${href}"`))
-  assert.equal(detail.page.canSwitchNuxt.value, false)
-  detail.page.chooseFrontend({ target: { value: 'nuxt' } })
-  assert.equal(detail.redirects.length, 0)
+  assert.equal(detail.page.canSwitchNuxt.value, true)
   const logout = detail.page.submitLogout()
   assert.equal(detail.requests[3].url, `${auth.BACKENDS.nestjs}/api/auth/logout`)
   await respond(detail.requests[3], 200, success({}))

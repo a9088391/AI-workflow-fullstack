@@ -31,7 +31,8 @@ const target = new URLSearchParams(window.location.search).get('return_to')
 const returnTo = target && localPage(target) && target !== '/vue/login' && target !== '/vue/register' ? target : '/vue/'
 // Nuxt 已提供同組 15 種語意頁；登入返回目標只接受已實作的對應頁。
 const nuxtPages = ['articles', 'login', 'register', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
-const canSwitchNuxtPage = nuxtPages.includes(page) && (page !== 'login' || !target || nuxtPages.includes(articlePage(returnTo)))
+// 只依同類頁面與安全登入返回目標決定能否切換；十二個後端共用相同支援範圍。
+const canSwitchNuxt = computed(() => nuxtPages.includes(page) && (page !== 'login' || !target || nuxtPages.includes(articlePage(returnTo))))
 // React 已有相同的公開、帳號、作者與管理語意頁；登入返回仍須是合法已知路徑。
 const reactReturnPages = ['articles', 'article', 'article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings']
 const canSwitchReactPage = (page === 'register' || page === 'login' || reactReturnPages.includes(page)) && (page !== 'login' || target === null || reactReturnPages.includes(articlePage(target)))
@@ -119,22 +120,6 @@ const nestBackend = computed(() => backend.value === BACKENDS.nestjs)
 const safeReturnTo = computed(() => nestBackend.value && !nestPageSupported(returnTo) ? '/vue/' : returnTo)
 // 從目前 API 基底導出顯示名稱，讓選單切換後標頭與頁尾同步更新。
 const backendLabel = computed(() => nestBackend.value ? 'NestJS' : backend.value === BACKENDS.fastify ? 'Fastify' : backend.value === BACKENDS.express ? 'Express' : backend.value === BACKENDS.fiber ? 'Fiber' : backend.value === BACKENDS.echo ? 'Echo' : backend.value === BACKENDS.gin ? 'Gin' : backend.value === BACKENDS.fastapi ? 'FastAPI' : backend.value === BACKENDS.flask ? 'Flask' : backend.value === BACKENDS.django ? 'Django' : backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel')
-// Nuxt 尚未支援 Fastify 選擇；Vue 的管理頁仍可使用共用流程。
-const fastifyBackend = computed(() => backend.value === BACKENDS.fastify)
-// Express 仍需辨識後端選擇，以限制 Nuxt 尚未支援的後端切換。
-const expressBackend = computed(() => backend.value === BACKENDS.express)
-// Fiber 的管理頁沿用共用流程；仍辨識後端，以限制尚未支援的 Nuxt 切換。
-const fiberBackend = computed(() => backend.value === BACKENDS.fiber)
-// Echo 仍需辨識後端選擇，以限制尚未支援 Echo 的 Nuxt 切換。
-const echoBackend = computed(() => backend.value === BACKENDS.echo)
-// Gin 使用共用管理流程；此後端 key 仍用於限制尚未支援的 Nuxt 切換。
-const ginBackend = computed(() => backend.value === BACKENDS.gin)
-// Flask 的共用後端 key 尚未供 Nuxt 切換使用。
-const flaskBackend = computed(() => backend.value === BACKENDS.flask)
-// FastAPI 的管理頁沿用共用流程；後端 key 仍用於限制尚未支援的 Nuxt 切換。
-const fastapiBackend = computed(() => backend.value === BACKENDS.fastapi)
-// Nuxt 尚未認得 Fastify 等後端的共用 key；避免跨前端誤用目前 JWT。
-const canSwitchNuxt = computed(() => !nestBackend.value && !fastifyBackend.value && !expressBackend.value && !fiberBackend.value && !flaskBackend.value && !fastapiBackend.value && !ginBackend.value && !echoBackend.value && canSwitchNuxtPage)
 const account = ref(null)
 const authChecking = ref(false)
 const logoutPending = ref(false)
@@ -1351,7 +1336,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="versionsOpen" id="version-panel" class="version-panel">
         <div class="version-panel-inner">
-          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : nestBackend || fastifyBackend || expressBackend || fiberBackend || flaskBackend || fastapiBackend || ginBackend || echoBackend ? '（此後端尚未提供）' : '（此頁尚未提供）' }}</option><option value="react" :disabled="!canSwitchReactPage">React＋Vite{{ canSwitchReactPage ? '' : '（此頁尚未提供）' }}</option><option value="next" :disabled="!canSwitchNextPage">Next.js{{ canSwitchNextPage ? '' : '（此頁尚未提供）' }}</option><option value="angular" :disabled="!canSwitchAngularPage">Angular{{ canSwitchAngularPage ? '' : '（此頁尚未提供）' }}</option><option value="sveltekit" :disabled="!canSwitchSveltePage">SvelteKit{{ canSwitchSveltePage ? '' : '（此頁尚未提供）' }}</option></select><p id="frontend-help" class="muted">{{ nestBackend ? 'Nuxt 尚未支援目前選擇的 NestJS 後端；請留在 Vue。' : fastifyBackend ? 'Nuxt 尚未支援目前選擇的 Fastify 後端；請留在 Vue。' : expressBackend ? 'Nuxt 尚未支援目前選擇的 Express 後端；請留在 Vue。' : fiberBackend ? 'Nuxt 尚未支援目前選擇的 Fiber 後端；請留在 Vue。' : echoBackend ? 'Nuxt 尚未支援目前選擇的 Echo 後端；請留在 Vue。' : ginBackend ? 'Nuxt 尚未支援目前選擇的 Gin 後端；請留在 Vue。' : flaskBackend ? 'Nuxt 尚未支援目前選擇的 Flask 後端；請留在 Vue。' : fastapiBackend ? 'Nuxt 尚未支援目前選擇的 FastAPI 後端；請留在 Vue。' : '已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留。' }}</p></div>
+          <div><label for="frontend-version" class="panel-heading">前端版本</label><select id="frontend-version" aria-describedby="frontend-help" value="vue" @change="chooseFrontend"><option value="vue">Vue 3＋Vite（目前使用）</option><option value="nuxt" :disabled="!canSwitchNuxt">Nuxt{{ canSwitchNuxt ? '' : '（此頁尚未提供）' }}</option><option value="react" :disabled="!canSwitchReactPage">React＋Vite{{ canSwitchReactPage ? '' : '（此頁尚未提供）' }}</option><option value="next" :disabled="!canSwitchNextPage">Next.js{{ canSwitchNextPage ? '' : '（此頁尚未提供）' }}</option><option value="angular" :disabled="!canSwitchAngularPage">Angular{{ canSwitchAngularPage ? '' : '（此頁尚未提供）' }}</option><option value="sveltekit" :disabled="!canSwitchSveltePage">SvelteKit{{ canSwitchSveltePage ? '' : '（此頁尚未提供）' }}</option></select><p id="frontend-help" class="muted">已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留。</p></div>
           <div><label for="backend-version" class="panel-heading">後端版本</label><select id="backend-version" aria-describedby="backend-help" :value="backend" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option><option :value="BACKENDS.flask">Flask</option><option :value="BACKENDS.fastapi">FastAPI</option><option :value="BACKENDS.gin">Gin</option><option :value="BACKENDS.echo">Echo</option><option :value="BACKENDS.fiber">Fiber</option><option :value="BACKENDS.express">Express</option><option :value="BACKENDS.fastify">Fastify</option><option :value="BACKENDS.nestjs">NestJS</option></select><p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p></div>
           <button class="panel-close" type="button" @click="closePanel('versions')">關閉</button>
         </div>
@@ -1391,17 +1376,19 @@ onBeforeUnmount(() => {
           <p class="pending-note">{{ page === 'article-new' || page === 'article' || editing ? '原頁內容會暫留在此頁記憶體。請重新登入；成功後由您手動送出。' : '請重新登入後讀取原頁內容。' }}</p>
           <form class="relogin-form" novalidate @submit.prevent="submitLogin"><div class="field"><label for="email">Email</label><input id="email" v-model="email" type="email" autocomplete="email" :disabled="pending || locked" :aria-invalid="Boolean(errors.email)" /><p v-if="errors.email" class="field-error">{{ errors.email.join('；') }}</p></div><div class="field"><label for="password">密碼</label><input id="password" v-model="password" type="password" autocomplete="current-password" :disabled="pending || locked" :aria-invalid="Boolean(errors.password)" /><p v-if="errors.password" class="field-error">{{ errors.password.join('；') }}</p></div><button class="primary-button" type="submit" :disabled="pending || locked">{{ pending ? '登入處理中…' : '重新登入' }}</button><p v-if="lockText" class="lock-note" aria-live="off">{{ lockText }}</p></form>
         </template>
+        <!-- total_pages=0 也可能是第 1 頁空列表；依原頁碼區分合法超頁。 -->
         <template v-if="page === 'articles' || page === 'my-articles'">
-          <div v-if="articleList && contentReady" class="article-results"><p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁<span v-if="articleList.pagination.total_pages">／共 {{ articleList.pagination.total_pages }} 頁</span></p><p v-if="!articleList.list.length" role="status">{{ articleList.pagination.total && listPage > articleList.pagination.total_pages ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。' }}</p><ol v-else class="article-list"><li v-for="item in articleList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><h2><a :href="`/vue/articles/${item.id}`">{{ item.title }}</a></h2><p class="article-excerpt">{{ item.body }}</p><a class="read-link" :href="`/vue/articles/${item.id}`">閱讀全文</a></li></ol><nav v-if="articleList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="文章分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < articleList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="articleList.pagination.total && listPage > articleList.pagination.total_pages" :href="path">回第一頁</a></nav></div>
+          <div v-if="articleList && contentReady" class="article-results"><p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁<span v-if="articleList.pagination.total_pages">／共 {{ articleList.pagination.total_pages }} 頁</span></p><p v-if="!articleList.list.length" role="status">{{ listPage > 1 && listPage > articleList.pagination.total_pages ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。' }}</p><ol v-else class="article-list"><li v-for="item in articleList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><h2><a :href="`/vue/articles/${item.id}`">{{ item.title }}</a></h2><p class="article-excerpt">{{ item.body }}</p><a class="read-link" :href="`/vue/articles/${item.id}`">閱讀全文</a></li></ol><nav v-if="articleList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="文章分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < articleList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="listPage > 1 && listPage > articleList.pagination.total_pages" :href="path">回第一頁</a></nav></div>
           <button v-else-if="!contentLoading && !authChecking && !reLogin && !disabledAccount && summaryCode !== 'E0002' && (!protectedPage || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button>
         </template>
         <template v-else-if="page === 'article'"><article v-if="articleData && contentReady" class="article-detail"><p class="article-meta">{{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span></p><h2>{{ articleData.title }}</h2><div class="article-body">{{ articleData.body }}</div></article><button v-else-if="!contentLoading && !authChecking && !disabledAccount && summaryCode !== 'E0002' && (!credential || account)" type="button" class="secondary-button" @click="loadContent">重新讀取</button><p class="detail-return-links"><a class="text-link" href="/vue/">返回文章列表</a><a v-if="account?.role === 'admin'" class="text-link" href="/vue/admin/articles">返回文章管理</a></p></template>
+        <!-- 我的留言也以原頁碼判斷零筆超頁，不能把第 7 頁說成尚無留言。 -->
         <template v-else-if="page === 'my-comments'">
           <div v-if="commentList && contentReady" class="article-results">
             <p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p>
-            <p v-if="!commentList.list.length" role="status">{{ commentList.pagination.total && listPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p>
+            <p v-if="!commentList.list.length" role="status">{{ listPage > 1 && listPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p>
             <ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><a class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></li></ol>
-            <nav v-if="commentList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="我的留言分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < commentList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="commentList.pagination.total && listPage > commentList.pagination.total_pages" :href="path">回第一頁</a></nav>
+            <nav v-if="commentList.pagination.total_pages > 1 || listPage > 1" class="pagination" aria-label="我的留言分頁"><a v-if="listPage > 1" :href="`${path}?page=${listPage - 1}`">上一頁</a><span>第 {{ listPage }} 頁</span><a v-if="listPage < commentList.pagination.total_pages" :href="`${path}?page=${listPage + 1}`">下一頁</a><a v-if="listPage > 1 && listPage > commentList.pagination.total_pages" :href="path">回第一頁</a></nav>
           </div>
           <button v-if="!contentReady && !contentLoading && !authChecking && !reLogin && !disabledAccount && account" type="button" class="secondary-button" :disabled="contentPending" @click="loadContent">重新讀取留言</button>
         </template>
@@ -1443,7 +1430,8 @@ onBeforeUnmount(() => {
           <h2 id="comments-title">留言</h2><p v-if="relatedLoading" role="status">正在讀取留言，請稍候…</p>
           <section v-if="relatedError" ref="relatedSummary" class="error-summary" tabindex="-1" aria-labelledby="related-error-title"><h3 id="related-error-title">{{ relatedError }}</h3><div v-if="relatedLogId" class="trace"><span>追蹤編號：<span class="trace-id">{{ relatedLogId }}</span></span><button type="button" @click="copyRelatedLogId">複製編號</button><span role="status">{{ copyState }}</span></div></section>
           <button v-if="relatedError && !relatedLoading" type="button" class="secondary-button" :disabled="contentPending" @click="loadRelated">重新讀取留言</button>
-          <template v-if="commentList"><p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p><p v-if="!commentList.list.length" role="status">{{ commentList.pagination.total && commentPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p><ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><a v-if="account && (account.id === item.author.id || account.role === 'admin')" class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></li></ol><nav v-if="commentList.pagination.total_pages > 1 || commentPage > 1" class="pagination" aria-label="文章留言分頁"><a v-if="commentPage > 1" :href="`${path}?page=${commentPage - 1}#comments`">上一頁</a><span>第 {{ commentPage }} 頁</span><a v-if="commentPage < commentList.pagination.total_pages" :href="`${path}?page=${commentPage + 1}#comments`">下一頁</a><a v-if="commentList.pagination.total && commentPage > commentList.pagination.total_pages" :href="`${path}#comments`">回第一頁</a></nav></template>
+          <!-- 文章留言的頁碼不因零筆回應重設，返回入口仍指向同一文章的留言區。 -->
+          <template v-if="commentList"><p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁<span v-if="commentList.pagination.total_pages">／共 {{ commentList.pagination.total_pages }} 頁</span></p><p v-if="!commentList.list.length" role="status">{{ commentPage > 1 && commentPage > commentList.pagination.total_pages ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。' }}</p><ol v-else class="article-list"><li v-for="item in commentList.list" :key="item.id" class="article-card"><p class="article-meta">{{ item.author.nickname }} · {{ item.created_at }} · 建立於 {{ backendName(item.created_backend) }}<span v-if="item.visibility === 'hidden'"> · 已下架</span></p><p class="article-body comment-body">{{ item.body }}</p><a v-if="account && (account.id === item.author.id || account.role === 'admin')" class="read-link" :href="`/vue/comments/${item.id}`">閱讀留言詳情</a></li></ol><nav v-if="commentList.pagination.total_pages > 1 || commentPage > 1" class="pagination" aria-label="文章留言分頁"><a v-if="commentPage > 1" :href="`${path}?page=${commentPage - 1}#comments`">上一頁</a><span>第 {{ commentPage }} 頁</span><a v-if="commentPage < commentList.pagination.total_pages" :href="`${path}?page=${commentPage + 1}#comments`">下一頁</a><a v-if="commentPage > 1 && commentPage > commentList.pagination.total_pages" :href="`${path}#comments`">回第一頁</a></nav></template>
         </section>
         <section v-if="page === 'article' && (articleData && contentReady || reLogin && commentBody)" class="comment-form" aria-labelledby="comment-form-title">
           <h2 id="comment-form-title">發表留言</h2>
@@ -1588,12 +1576,13 @@ onBeforeUnmount(() => {
               @click="submitMemberStatus">{{ statusPending ? '更新處理中…' : memberData.status === 'active' ? '停用會員' : '恢復會員' }}</button>
             <p v-if="statusPending" class="pending-note" role="status">正在更新會員；請勿重複送出。</p>
           </article>
+          <!-- 管理搜尋首頁零筆仍顯示無符合結果，其他頁零筆則保留原頁碼。 -->
           <div v-if="page === 'members' && memberList && contentReady">
             <p class="result-count">共 {{ memberList.pagination.total }} 位 · 第 {{ memberList.pagination.page }} 頁<span
               v-if="memberList.pagination.total_pages">／共 {{ memberList.pagination.total_pages }} 頁</span>
             </p>
             <p v-if="!memberList.list.length" role="status">{{
-              memberList.pagination.total && listPage > memberList.pagination.total_pages
+              listPage > 1 && listPage > memberList.pagination.total_pages
                 ? '此頁沒有會員，總數仍保留。' : searchedKeyword ? '沒有符合搜尋的會員。' : '目前尚無會員。'
             }}</p>
             <ol v-else class="admin-list">
@@ -1617,7 +1606,7 @@ onBeforeUnmount(() => {
           <div v-if="page === 'managed-articles' && articleList && contentReady">
             <p class="result-count">共 {{ articleList.pagination.total }} 篇 · 第 {{ articleList.pagination.page }} 頁</p>
             <p v-if="!articleList.list.length" role="status">{{
-              articleList.pagination.total && listPage > articleList.pagination.total_pages
+              listPage > 1 && listPage > articleList.pagination.total_pages
                 ? '此頁沒有文章，總數仍保留。' : '目前尚無文章。'
             }}</p>
             <ol v-else class="admin-list">
@@ -1641,7 +1630,7 @@ onBeforeUnmount(() => {
           <div v-if="page === 'managed-comments' && commentList && contentReady">
             <p class="result-count">共 {{ commentList.pagination.total }} 則 · 第 {{ commentList.pagination.page }} 頁</p>
             <p v-if="!commentList.list.length" role="status">{{
-              commentList.pagination.total && listPage > commentList.pagination.total_pages
+              listPage > 1 && listPage > commentList.pagination.total_pages
                 ? '此頁沒有留言，總數仍保留。' : '目前尚無留言。'
             }}</p>
             <ol v-else class="admin-list">
@@ -1668,7 +1657,7 @@ onBeforeUnmount(() => {
             <a v-if="listPage > 1" :href="adminPageHref(listPage - 1)">上一頁</a>
             <span>第 {{ listPage }} 頁</span>
             <a v-if="listPage < (memberList || articleList || commentList).pagination.total_pages" :href="adminPageHref(listPage + 1)">下一頁</a>
-            <a v-if="(memberList || articleList || commentList).pagination.total && listPage > (memberList || articleList || commentList).pagination.total_pages"
+            <a v-if="listPage > 1 && listPage > (memberList || articleList || commentList).pagination.total_pages"
               :href="adminPageHref(1)">回第一頁</a>
           </nav>
           <button

@@ -123,7 +123,7 @@
         <label>前端
           <select value="sveltekit" onchange={chooseFrontend}>
             {#each Object.entries(FRONTENDS) as [id, name]}
-              <option value={id} disabled={!site.canSwitchFrontend(id, $backend)}>{name}{site.canSwitchFrontend(id, $backend) ? '' : '（此後端尚未提供）'}</option>
+              <option value={id}>{name}</option>
             {/each}
           </select>
         </label>

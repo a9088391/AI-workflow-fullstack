@@ -131,8 +131,9 @@ onBeforeUnmount(
             <a class="secondary-button" :href="kind === 'members' ? `/nuxt/admin/members/${item.id}` : kind === 'articles' ? `/nuxt/articles/${item.id}` : `/nuxt/comments/${item.id}`">查看{{ kind === 'members' ? '會員' : kind === 'articles' ? '文章' : '留言' }}</a>
           </li>
         </ol>
-        <div v-else class="state-block"><p>{{ data.pagination.total === 0 ? kind === 'members' && searchedKeyword() ? '沒有符合條件的會員。' : '目前沒有資料。' : '此頁沒有資料，前面的頁面仍有內容。' }}</p><a v-if="requestedPage() > 1" :href="pageHref(1)">回第一頁</a></div>
-        <nav v-if="data.pagination.total_pages > 1" class="pagination" aria-label="管理清單分頁"><a v-if="requestedPage() > 1" :href="pageHref(requestedPage() - 1)">上一頁</a><span>第 {{ requestedPage() }} 頁／共 {{ data.pagination.total_pages }} 頁</span><a v-if="requestedPage() < data.pagination.total_pages" :href="pageHref(requestedPage() + 1)">下一頁</a></nav>
+        <!-- 零筆搜尋首頁顯示無符合結果；零筆超頁仍顯示原頁碼與返回入口。 -->
+        <div v-else class="state-block"><p>{{ requestedPage() > 1 && requestedPage() > data.pagination.total_pages ? data.pagination.total === 0 ? '此頁沒有資料。' : '此頁沒有資料，前面的頁面仍有內容。' : kind === 'members' && searchedKeyword() ? '沒有符合條件的會員。' : '目前沒有資料。' }}</p><a v-if="requestedPage() > 1" :href="pageHref(1)">回第一頁</a></div>
+        <nav v-if="data.pagination.total_pages > 1 || requestedPage() > 1" class="pagination" aria-label="管理清單分頁"><a v-if="requestedPage() > 1" :href="pageHref(requestedPage() - 1)">上一頁</a><span>第 {{ requestedPage() }} 頁／共 {{ data.pagination.total_pages }} 頁</span><a v-if="requestedPage() < data.pagination.total_pages" :href="pageHref(requestedPage() + 1)">下一頁</a></nav>
       </template>
     </template>
   </main>

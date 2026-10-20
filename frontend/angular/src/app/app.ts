@@ -634,11 +634,11 @@ export class App implements OnInit, OnDestroy {
     ),
   ); }
 
-  // SvelteKit 已有作者頁；登入返回也須落在它已完成且 ID 合法的路徑。
+  // SvelteKit 的登入返回仍須落在已完成頁；Nuxt 已支援全部十二個後端。
   canSwitchFrontend(id: string): boolean {
     if (id === 'sveltekit') return supportsSvelteRoute(this.path)
       && (this.route !== 'login' || supportsSvelteRoute(this.returnTo));
-    return id !== 'nuxt' || ([BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]] as string[]).includes(this.backend());
+    return Object.hasOwn(FRONTENDS, id);
   }
 
   // 切換前端只改 URL，不複製 JWT、後端、列表頁碼或表單文字。

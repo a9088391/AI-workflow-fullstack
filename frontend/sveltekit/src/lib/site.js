@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store';
 import {
-  apiRequest, BACKEND_KEY, BACKENDS, BASE, clearSessionIfOwned, describeFailure, expired,
+  apiRequest, BACKEND_KEY, BACKENDS, BASE, FRONTENDS, clearSessionIfOwned, describeFailure, expired,
   frontendTarget, readBackend, readSession, saveSession, SESSION_KEY, validReturn
 } from './contracts.js';
 
@@ -94,9 +94,9 @@ export function createSite() {
     window.location.assign(frontendTarget(path, frontend, returnTo));
   }
 
-  // Nuxt 目前只接收前四個後端，選單和程式切換共用同一限制。
-  function canSwitchFrontend(frontend, selectedBackend = get(backend)) {
-    return frontend !== 'nuxt' || [BACKENDS.laravel[1], BACKENDS.symfony[1], BACKENDS['aspnet-core'][1], BACKENDS.django[1]].includes(selectedBackend);
+  // 六版前端共用全部十二個後端；只接受固定的前端選項。
+  function canSwitchFrontend(frontend) {
+    return Object.hasOwn(FRONTENDS, frontend);
   }
 
   // 表單以切換世代辨識晚到回應，避免離開時把舊結果存入共用 session。

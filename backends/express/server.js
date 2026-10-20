@@ -286,10 +286,10 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     respondOK(res);
   });
 
-  // 健康檢查查全部業務表的權限與連線，避免只驗 HTTP socket 的假就緒。
+  // 健康檢查驗連線及共用表讀取權；LIMIT 0 不掃描資料，避免表變大後拖垮資料庫。
   app.get('/up', async (req, res) => {
     try {
-      await db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 1');
+      await db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 0');
       res.type('text').send('OK');
     } catch { res.status(503).type('text').send('unavailable'); }
   });

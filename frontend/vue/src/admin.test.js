@@ -644,7 +644,7 @@ for (const [name, selectedBackend] of [['FastAPI', auth.BACKENDS.fastapi], ['Fas
       menu.page.versionsOpen.value = true
       const versionHtml = await rendered(menu.page)
       assert.doesNotMatch(versionHtml, /管理頁尚未提供/)
-      assert.match(versionHtml, /Nuxt 尚未支援目前選擇的 Fastify 後端/)
+      assert.match(versionHtml, /已知頁面可切換至 Nuxt；目前後端與登入到期時間會保留/)
     }
   })
 
@@ -976,6 +976,29 @@ test('admin search sends literal keyword and renders overpage recovery', async (
   instance.page.keyword.value = `${astral}😀`
   instance.page.submitMemberSearch()
   assert.equal(instance.redirects.length, 2, '255 Unicode code points must be rejected')
+})
+
+// 管理清單各類型都要辨認零筆超頁，會員搜尋在第一頁仍是無符合結果。
+test('admin lists preserve zero-total overpage and first-page empty messages', async (t) => {
+  for (const [path, search, emptyText, overpageText] of [
+    ['/vue/admin/members', '?keyword=missing', /沒有符合搜尋的會員/, /此頁沒有會員，總數仍保留/],
+    ['/vue/admin/articles', '', /目前尚無文章/, /此頁沒有文章，總數仍保留/],
+    ['/vue/admin/comments', '', /目前尚無留言/, /此頁沒有留言，總數仍保留/],
+  ]) {
+    for (const requested of [1, 7]) {
+      const query = `${search}${search ? '&' : '?'}page=${requested}`
+      const instance = app(path, query)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      assert.match(instance.requests[1].url, new RegExp(`page=${requested}&per_page=20`))
+      await respond(instance.requests[1], 200, list([], requested, 0))
+      const html = await rendered(instance.page)
+      assert.match(html, new RegExp(`共 0 [位篇則] · 第 ${requested} 頁`))
+      assert.match(html, requested === 1 ? emptyText : overpageText)
+      if (requested === 1) assert.doesNotMatch(html, /回第一頁/)
+      else assert.match(html, /回第一頁/)
+    }
+  }
 })
 
 // 伺服器與本機 422 均要在搜尋欄旁顯示錯誤；未知欄位仍留在可聚焦摘要。

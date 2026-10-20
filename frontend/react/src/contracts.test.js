@@ -29,6 +29,10 @@ test('shared session schema and backend switch', () => {
   assert.equal(readSession(s), null)
   assert.equal(readBackend(s), BACKENDS.nestjs[1])
   assert.equal(saveSession(s, BACKENDS.nestjs[1], 'new', '2026-10-16 18:00:00'), true)
+  // Nuxt 已可延續 NestJS 登入；只映射合法頁面與 ID，不更新目前後端或登入期限。
+  assert.equal(frontendTarget('/react/articles/007', 'nuxt'), '/nuxt/articles/007')
+  assert.equal(frontendTarget('/react/login', 'nuxt', '/react/admin/members/7'), '/nuxt/login?return_to=%2Fnuxt%2Fadmin%2Fmembers%2F7')
+  assert.deepEqual(readSession(s), { backend: BACKENDS.nestjs[1], accessToken: 'new', expiresAt: '2026-10-16 18:00:00' })
   clearSession(s)
   assert.equal(readBackend(s), BACKENDS.nestjs[1])
   assert.equal(readSession(s), null)

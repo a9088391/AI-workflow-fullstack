@@ -388,7 +388,8 @@ func (s *server) me(c *gin.Context) {
 // health 同時確認金鑰已載入及全部業務表可讀，避免假就緒。
 func (s *server) health(c *gin.Context) {
 	var n int
-	err := s.db.QueryRowContext(c.Request.Context(), "SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 1").Scan(&n)
+	// LIMIT 0 驗證全部表及讀取權限，避免健康檢查掃描多表笛卡兒積。
+	err := s.db.QueryRowContext(c.Request.Context(), "SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 0").Scan(&n)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		c.String(503, "unavailable")
 		return

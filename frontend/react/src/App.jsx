@@ -204,7 +204,8 @@ function MyContent({ kind, backend, credential, enabled, onAuthFailure, switchEp
   const read = useRead(backend, credential, `/api${path}?page=${listPage}&per_page=20`, listPage, enabled, onAuthFailure, switchEpoch, kind)
   return <section className="content"><p className="eyebrow">MY CONTENT / REACT</p><h1>{isArticle ? '我的文章' : '我的留言'}</h1>
     {read.loading && enabled && <p role="status">正在載入…</p>}<ErrorNotice error={read.error} retry={read.retry} />
-    {read.data && <>{read.data.list.length === 0 ? <p className="notice">{read.data.pagination.total === 0 ? '目前尚無內容。' : '此頁沒有資料。'}</p> : <div className="article-list">{read.data.list.map(
+    {/* 指定超頁即使總數為零，也只表示這一頁沒有資料。 */}
+    {read.data && <>{read.data.list.length === 0 ? <p className="notice">{read.data.pagination.page > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無內容。'}</p> : <div className="article-list">{read.data.list.map(
       // 穩定 ID 對應個別內容，留言的 article_id 不授予父文章讀取權。
       (item) => <article className="article-row" key={item.id}><h2><a href={`/react/${isArticle ? 'articles' : 'comments'}/${item.id}`}>{isArticle ? item.title : `留言 #${item.id}`}</a></h2><p className="excerpt">{item.body}</p><Metadata item={item} /><p>{item.visibility === 'hidden' ? '已下架' : '公開'}</p></article>,
     )}</div>}<Pagination pagination={read.data.pagination} base={`/react${path}`} /></>}
@@ -311,7 +312,8 @@ function Articles({ backend, credential, enabled, onAuthFailure, switchEpoch }) 
     {read.loading && <p role="status">正在載入文章…</p>}
     <ErrorNotice error={read.error} retry={read.retry} />
     {read.data && <>
-      {read.data.list.length === 0 ? <p className="notice">{read.data.pagination.total === 0 ? '目前尚無文章。' : '此頁沒有文章。'}</p> : <div className="article-list">{read.data.list.map(
+      {/* 只有首頁總數為零才是整個列表尚無文章；超頁保留原分頁資訊。 */}
+      {read.data.list.length === 0 ? <p className="notice">{read.data.pagination.page > 1 || read.data.pagination.total > 0 ? '此頁沒有文章。' : '目前尚無文章。'}</p> : <div className="article-list">{read.data.list.map(
         // ID 是後端資源穩定鍵，跨頁更新不依賴陣列位置。
         (item) => <article className="article-row" key={item.id}>
           <h2><a href={`/react/articles/${item.id}`}>{item.title}</a></h2>
@@ -404,7 +406,8 @@ function Article({ backend, credential, account, enabled, onAuthFailure, switchE
             // 使用留言 ID 保留穩定身份，全文依純文字呈現。
             (item) => <article className="comment" key={item.id}><Metadata item={item} /><p className="prose">{item.body}</p>{account && (account.id === item.author.id || account.role === 'admin') && <a href={`/react/comments/${item.id}`}>留言詳情</a>}</article>,
           )}
-          {showCommentPagination(comments.data.pagination) && <nav className="pagination" aria-label="留言分頁"><span>第 {commentPage} 頁／共 {comments.data.pagination.total_pages} 頁</span>{commentPage > 1 && <button className="text-button" onClick={previousComments}>上一頁</button>}{commentPage < comments.data.pagination.total_pages && <button className="text-button" onClick={nextComments}>下一頁</button>}{commentPage > comments.data.pagination.total_pages && <button className="text-button" onClick={firstComments}>返回第一頁</button>}</nav>}
+          {/* 留言分頁直接呈現 API 原頁碼與總筆數，超頁也不誤報為零筆。 */}
+          {showCommentPagination(comments.data.pagination) && <nav className="pagination" aria-label="留言分頁"><span>第 {comments.data.pagination.page} 頁／共 {comments.data.pagination.total_pages} 頁，{comments.data.pagination.total} 筆</span>{commentPage > 1 && <button className="text-button" onClick={previousComments}>上一頁</button>}{commentPage < comments.data.pagination.total_pages && <button className="text-button" onClick={nextComments}>下一頁</button>}{commentPage > comments.data.pagination.total_pages && <button className="text-button" onClick={firstComments}>返回第一頁</button>}</nav>}
         </>}
       </section>
     </>}
@@ -778,7 +781,11 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
       if (controller.signal.aborted || startedEpoch !== switchEpoch.current || !ownsSession(sessionStorage, backend, credential)) return
       if (status === 200 && body?.success === true && body.message === 'OK' && body.data && !Array.isArray(body.data) && Object.keys(body.data).length === 0) onLogout(null, backend, credential)
       else if (body?.error_code === 'E0002' || body?.error_code === 'E0102') onLogout(failure(body), backend, credential)
-      else setLogoutError(failure(body))
+      else {
+        // 已知登出失敗須明示未完成，仍保留原錯誤與追蹤編號供使用者手動重試。
+        const problem = failure(body)
+        setLogoutError({ ...problem, message: `登出未完成；請再次按「登出」手動重試。${problem.message}` })
+      }
     } catch { if (!controller.signal.aborted && startedEpoch === switchEpoch.current && ownsSession(sessionStorage, backend, credential)) setLogoutError({ message: '登出尚未確認；請稍後手動重試。' }) }
     finally { if (!controller.signal.aborted && startedEpoch === switchEpoch.current) setBusy(false) }
   }
@@ -787,19 +794,12 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
     // 六版入口保持可見；只啟用目前頁面在目標版已完成且可用的選項。
     ([id, label]) => {
       const unavailable = id === 'sveltekit' && !svelteTarget || id === 'angular' && !angularReady || id === 'next' && !nextReady
-      const nuxtDisabled = id === 'nuxt' && !Object.values(BACKENDS).slice(0, 4).some(
-        // Nuxt 現階段只支援四個已驗證後端，其他來源不強制改選。
-        (entry) => entry[1] === backend,
-      )
-      return <option key={id} value={id} disabled={unavailable || nuxtDisabled}>{label}{(id === 'next' && !nextReady || id === 'angular' && !angularReady || id === 'sveltekit' && !svelteTarget) ? '（此頁尚未提供）' : unavailable ? '（尚未提供）' : ''}</option>
+      return <option key={id} value={id} disabled={unavailable}>{label}{(id === 'next' && !nextReady || id === 'angular' && !angularReady || id === 'sveltekit' && !svelteTarget) ? '（此頁尚未提供）' : unavailable ? '（尚未提供）' : ''}</option>
     },
   )}</select><label htmlFor="backend">目前後端</label><select id="backend" value={backend} onChange={switchBackend}>{Object.entries(BACKENDS).map(
     // 十二個後端共享 API 路徑，只需更換固定基底。
     ([id, [label, url]]) => <option key={id} value={url}>{label}</option>,
-  )}</select><p className="switch-help">切換後端會清除登入，請重新登入。{!Object.values(BACKENDS).slice(0, 4).some(
-    // 提醒目前後端無法在 Nuxt 延續，避免選單停用而無說明。
-    (entry) => entry[1] === backend,
-  ) && '目前後端尚未支援 Nuxt。'}</p></div></details></header>
+  )}</select><p className="switch-help">切換後端會清除登入，請重新登入。</p></div></details></header>
     <button className="mobile-nav-toggle" ref={navToggle} type="button" aria-controls="react-main-nav" aria-expanded={mobileNavOpen} onClick={toggleMobileNav}>{mobileNavOpen ? '關閉導覽' : '開啟導覽'}</button>
     <nav id="react-main-nav" className={`site-nav${mobileNavOpen ? ' open' : ''}`} aria-label="主導覽" onKeyDown={mobileNavKeyDown}><a href="/react/" aria-current={page === 'articles' || page === 'article' ? 'page' : undefined}>所有文章</a>{account ? <><a href="/react/articles/new" aria-current={page === 'article-new' ? 'page' : undefined}>發表文章</a><a href="/react/me/articles" aria-current={page === 'my-articles' ? 'page' : undefined}>我的文章</a><a href="/react/me/comments" aria-current={page === 'my-comments' ? 'page' : undefined}>我的留言</a>{account.role === 'admin' && <details className="admin-nav" open={page.startsWith('managed-') || ['members', 'member', 'lockout-settings'].includes(page)}><summary>管理介面</summary><a href="/react/admin/members" aria-current={page === 'members' || page === 'member' ? 'page' : undefined}>會員管理</a><a href="/react/admin/articles" aria-current={page === 'managed-articles' ? 'page' : undefined}>文章管理</a><a href="/react/admin/comments" aria-current={page === 'managed-comments' ? 'page' : undefined}>留言管理</a><a href="/react/admin/settings/login-lockout" aria-current={page === 'lockout-settings' ? 'page' : undefined}>鎖定設定</a></details>}<span className="account-name">{account.nickname}</span><button className="nav-button" type="button" disabled={busy} onClick={logout}>{busy ? '登出中…' : '登出'}</button></> : authStatus === 'checking' ? <span>驗證登入中…</span> : <><a href="/react/login" aria-current={page === 'login' ? 'page' : undefined}>登入</a><a href="/react/register" aria-current={page === 'register' ? 'page' : undefined}>註冊</a></>}<button className="nav-close" type="button" onClick={closeMobileNav}>關閉導覽</button></nav>
     {logoutError && <div className="shell-error"><ErrorNotice error={logoutError} /></div>}

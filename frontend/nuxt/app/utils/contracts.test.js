@@ -182,24 +182,26 @@ test('ASP.NET Core backend selection clears the previous session', () => {
   assert.equal(readBackend(s), 'http://localhost:8083')
 })
 
-// Vue 與 Nuxt 必須讀同一份 Django JWT 與原到期時間，切後端則拒絕舊配對。
-test('Django session survives both frontend implementations without reissue', () => {
-  const s = storage()
-  assert.equal(vueAuth.BACKENDS.django, BACKENDS.django)
-  assert.equal(backendName('django'), 'Django')
-  vueAuth.selectBackend(s, vueAuth.BACKENDS.django)
-  vueAuth.saveSession(s, 'django-jwt', '2026-09-24 18:00:00')
-  assert.deepEqual(readSession(s), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
-  assert.equal(readBackend(s), BACKENDS.django)
-  assert.equal(s.getItem(SESSION_KEY), JSON.stringify({ backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' }))
-  assert.equal(vueAuth.readSession(s).expiresAt, '2026-09-24 18:00:00')
-  assert.equal(selectBackend(s, 'http://localhost:8085'), false)
-  assert.equal(readSession(s).accessToken, 'django-jwt')
-  saveSession(s, 'nuxt-jwt', '2026-09-24 18:00:00')
-  assert.deepEqual(vueAuth.readSession(s), { backend: BACKENDS.django, accessToken: 'nuxt-jwt', expiresAt: '2026-09-24 18:00:00' })
-  selectBackend(s, BACKENDS.symfony)
-  assert.equal(vueAuth.readSession(s), null)
-  assert.equal(readBackend(s), BACKENDS.symfony)
+// 十二個後端都須讀取 Vue 留下的原 JWT／期限；只有改選後端才清除憑證。
+test('all Vue backend sessions survive Nuxt and remain bound to their backend', () => {
+  assert.equal(Object.keys(BACKENDS).length, 12)
+  for (const [name, backend] of Object.entries(vueAuth.BACKENDS)) {
+    const s = storage()
+    assert.equal(BACKENDS[name], backend, name)
+    vueAuth.selectBackend(s, backend)
+    vueAuth.saveSession(s, `${name}-jwt`, '2026-09-24 18:00:00')
+    const original = { backend, accessToken: `${name}-jwt`, expiresAt: '2026-09-24 18:00:00' }
+    assert.equal(readBackend(s), backend, name)
+    assert.deepEqual(readSession(s), original, name)
+    assert.equal(s.getItem(SESSION_KEY), JSON.stringify(original), name)
+    assert.equal(selectBackend(s, 'http://localhost:8093'), false, name)
+    assert.deepEqual(readSession(s), original, name)
+    const next = backend === BACKENDS.laravel ? BACKENDS.symfony : BACKENDS.laravel
+    assert.equal(selectBackend(s, next), true, name)
+    assert.equal(s.getItem(SESSION_KEY), null, name)
+    assert.equal(vueAuth.readSession(s), null, name)
+    assert.equal(readBackend(s), next, name)
+  }
 })
 
 // 清除 JWT 若遭瀏覽器拒絕，新後端選擇不能已寫入儲存。

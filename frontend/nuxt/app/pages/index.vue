@@ -93,11 +93,12 @@ onBeforeUnmount(
         <div class="teaser-copy"><p class="teaser-meta">{{ article.created_at }}　/　{{ backendName(article.created_backend) }}</p><h2><a :href="`/nuxt/articles/${article.id}`">{{ article.title }}</a></h2><p class="teaser-excerpt">{{ preview(article.body) }}</p><p class="teaser-author">文字／{{ article.author.nickname }}</p></div>
       </article>
     </div>
+    <!-- total_pages=0 也可能是第 1 頁空列表；只有原頁碼大於 1 才算超頁。 -->
     <div v-else-if="data" class="state-block">
-      <p>{{ data.pagination.total === 0 ? '目前還沒有公開文章。' : '此頁沒有文章，前面的頁面仍有內容。' }}</p>
+      <p>{{ page > 1 && page > data.pagination.total_pages ? data.pagination.total === 0 ? '此頁沒有文章。' : '此頁沒有文章，前面的頁面仍有內容。' : '目前還沒有公開文章。' }}</p>
       <a v-if="page > 1" href="/nuxt/">回第一頁</a>
     </div>
-    <nav v-if="data && data.pagination.total_pages > 1" class="pagination" aria-label="文章分頁">
+    <nav v-if="data && (data.pagination.total_pages > 1 || page > 1)" class="pagination" aria-label="文章分頁">
       <a v-if="page > 1" :href="pageHref(page - 1)">上一頁</a>
       <span>第 {{ page }} 頁／共 {{ data.pagination.total_pages }} 頁</span>
       <a v-if="page < data.pagination.total_pages" :href="pageHref(page + 1)">下一頁</a>

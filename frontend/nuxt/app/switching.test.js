@@ -85,7 +85,7 @@ function switchingPage(page, withSession = false, selectedBackend = BACKENDS.sym
   }
   const scope = vue.effectScope()
   // app 掌握切換與共用身分，頁面在另一 SFC 作用域執行。
-  const app = scope.run(() => run('./app.vue', '({ site, reactTarget, nextTarget, angularTarget, svelteTarget, chooseFrontend, chooseBackend, submitLogout })'))
+  const app = scope.run(() => run('./app.vue', '({ site, backendLabels, reactTarget, nextTarget, angularTarget, svelteTarget, chooseFrontend, chooseBackend, submitLogout })'))
   // 列表與詳情只需 app 的切換狀態；其餘表單頁仍執行正式 submit/save。
   const switchOnlyPage = page === 'index' || /^articles\/[0-9]+$/.test(page)
     || ['admin/members', 'admin/articles', 'admin/comments'].includes(page)
@@ -172,6 +172,22 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.equal(app.app.site.account.value, null)
   assert.deepEqual(readSession(app.storage), { backend: BACKENDS.symfony, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' })
   assert.deepEqual(app.redirects, ['/vue/'])
+})
+
+// Nuxt 掛載時讀取十二個固定來源的共用憑證，標頭與選單都取同一份顯示名稱。
+test('Nuxt initializes every backend with its original session and menu label', (t) => {
+  const template = parse(readFileSync(new URL('./app.vue', import.meta.url), 'utf8')).descriptor.template.content
+  assert.match(template, /目前後端 <strong>\{\{ backendLabels\[site\.backend\.value\] \}\}<\/strong>/)
+  assert.match(template, /<option v-for="\(label, value\) in backendLabels" :key="value" :value="value">\{\{ label \}\}<\/option>/)
+  const names = ['Laravel', 'Symfony', 'ASP.NET Core Controllers', 'Django', 'Flask', 'FastAPI', 'Gin', 'Echo', 'Fiber', 'Express', 'Fastify', 'NestJS']
+  for (const [index, [name, backend]] of Object.entries(BACKENDS).entries()) {
+    const page = switchingPage('index', true, backend)
+    t.after(page.close)
+    assert.equal(page.app.site.backend.value, backend, name)
+    assert.equal(page.app.backendLabels[backend], names[index], name)
+    assert.equal(page.requests[0].url, `${backend}/api/me`, name)
+    assert.deepEqual(readSession(page.storage), { backend, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' }, name)
+  }
 })
 
 // SvelteKit 已完成的公開、帳號、作者與管理路由保留原憑證；來源晚到 /me 不可恢復舊畫面。

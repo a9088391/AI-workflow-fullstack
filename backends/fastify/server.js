@@ -275,10 +275,10 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     return ok();
   });
 
-  // up 查核本票依賴的共用表讀取權，避免只有 HTTP socket 就顯示就緒。
+  // up 驗連線及共用表讀取權；LIMIT 0 不掃描資料，避免表變大後拖垮資料庫。
   app.get('/up', async function health(req, reply) {
     try {
-      await db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 1');
+      await db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 0');
       return reply.type('text/plain').send('OK');
     } catch {
       return reply.code(503).type('text/plain').send('unavailable');

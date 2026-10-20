@@ -1,6 +1,6 @@
 export const API_BASE = 'http://localhost:8081'
 export const BACKEND_KEY = 'article-collection.backend.v1'
-export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084' }
+export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084', flask: 'http://localhost:8085', fastapi: 'http://localhost:8086', gin: 'http://localhost:8087', echo: 'http://localhost:8088', fiber: 'http://localhost:8089', express: 'http://localhost:8090', fastify: 'http://localhost:8091', nestjs: 'http://localhost:8092' }
 export const SESSION_KEY = 'article-collection.auth.v1'
 const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
 const backends = { laravel: 'Laravel', symfony: 'Symfony', 'aspnet-core': 'ASP.NET Core', django: 'Django', flask: 'Flask', fastapi: 'FastAPI', gin: 'Gin', echo: 'Echo', fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS' }

@@ -79,8 +79,9 @@ onBeforeUnmount(
     <template v-else-if="data">
       <div class="section-rule"><span>{{ kind === 'articles' ? '文章索引' : '留言索引' }}</span><span>共 {{ data.pagination.total }} 則</span></div>
       <ol v-if="data.list.length" class="author-list"><li v-for="item in data.list" :key="item.id"><p class="teaser-meta">{{ item.created_at }}　/　{{ backendName(item.created_backend) }}　/　{{ item.visibility === 'hidden' ? '已下架' : '公開' }}</p><h2 v-if="kind === 'articles'"><a :href="`/nuxt/articles/${item.id}`">{{ item.title }}</a></h2><p v-else class="author-excerpt">{{ item.body }}</p><div class="author-actions"><a v-if="kind === 'articles'" :href="`/nuxt/articles/${item.id}/edit`">編輯文章</a><a v-else :href="`/nuxt/comments/${item.id}`">查看留言詳情</a></div></li></ol>
-      <div v-else class="state-block"><p>{{ data.pagination.total === 0 ? '目前還沒有自己的內容。' : '此頁沒有內容，前面的頁面仍有資料。' }}</p><a v-if="page > 1" :href="pageHref(1)">回第一頁</a></div>
-      <nav v-if="data.pagination.total_pages > 1" class="pagination" aria-label="我的內容分頁"><a v-if="page > 1" :href="pageHref(page - 1)">上一頁</a><span>第 {{ page }} 頁／共 {{ data.pagination.total_pages }} 頁</span><a v-if="page < data.pagination.total_pages" :href="pageHref(page + 1)">下一頁</a></nav>
+      <!-- total_pages=0 時仍用原頁碼分辨尚無內容與合法超頁。 -->
+      <div v-else class="state-block"><p>{{ page > 1 && page > data.pagination.total_pages ? data.pagination.total === 0 ? '此頁沒有內容。' : '此頁沒有內容，前面的頁面仍有資料。' : '目前還沒有自己的內容。' }}</p><a v-if="page > 1" :href="pageHref(1)">回第一頁</a></div>
+      <nav v-if="data.pagination.total_pages > 1 || page > 1" class="pagination" aria-label="我的內容分頁"><a v-if="page > 1" :href="pageHref(page - 1)">上一頁</a><span>第 {{ page }} 頁／共 {{ data.pagination.total_pages }} 頁</span><a v-if="page < data.pagination.total_pages" :href="pageHref(page + 1)">下一頁</a></nav>
     </template>
   </main>
 </template>

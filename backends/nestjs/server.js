@@ -90,8 +90,8 @@ class ApiService {
   // lockoutSettings 以設定列為第一把鎖完成完整更新及關閉副作用。
   async lockoutSettings(req, body) { return lockoutSettings(this.db, this.key, req, body); }
 
-  // health 查必要共用表的讀取權，讓 Compose 不把空 HTTP socket 當成就緒。
-  async health() { await this.db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 1'); }
+  // health 驗連線及共用表讀取權；LIMIT 0 不掃描資料，避免表變大後拖垮資料庫。
+  async health() { await this.db.query('SELECT 1 FROM accounts,login_sessions,login_failures,login_lockout_settings,articles,comments LIMIT 0'); }
 }
 Injectable()(ApiService);
 

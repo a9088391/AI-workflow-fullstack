@@ -12,6 +12,8 @@ const reactTarget = ref(null)
 const nextTarget = ref(null)
 const angularTarget = ref(null)
 const svelteTarget = ref(null)
+// 選單與標頭共用固定後端名稱，避免改選後顯示與實際 API 來源不一致。
+const backendLabels = { [BACKENDS.laravel]: 'Laravel', [BACKENDS.symfony]: 'Symfony', [BACKENDS.aspnet]: 'ASP.NET Core Controllers', [BACKENDS.django]: 'Django', [BACKENDS.flask]: 'Flask', [BACKENDS.fastapi]: 'FastAPI', [BACKENDS.gin]: 'Gin', [BACKENDS.echo]: 'Echo', [BACKENDS.fiber]: 'Fiber', [BACKENDS.express]: 'Express', [BACKENDS.fastify]: 'Fastify', [BACKENDS.nestjs]: 'NestJS' }
 
 // 掛載後才能讀同一分頁的 sessionStorage，伺服器只傳不含憑證的外殼。
 onMounted(
@@ -107,7 +109,7 @@ async function submitLogout() {
         <p class="edition">一份關於文字的日常刊物</p>
         <div class="environment" aria-label="目前版本與後端">
           <span>目前前端 <strong>Nuxt</strong></span>
-          <span>目前後端 <strong>{{ site.backend.value === BACKENDS.django ? 'Django' : site.backend.value === BACKENDS.aspnet ? 'ASP.NET Core Controllers' : site.backend.value === BACKENDS.symfony ? 'Symfony' : 'Laravel' }}</strong></span>
+          <span>目前後端 <strong>{{ backendLabels[site.backend.value] }}</strong></span>
         </div>
       </div>
       <div class="masthead-rule" />
@@ -136,7 +138,7 @@ async function submitLogout() {
         <summary>切換版本</summary>
         <div class="version-fields">
           <div><label for="nuxt-frontend-version">前端版本</label><select id="nuxt-frontend-version" value="nuxt" @change="chooseFrontend"><option value="nuxt">Nuxt（目前使用）</option><option value="vue" :disabled="!frontendTarget">Vue 3＋Vite{{ frontendTarget ? '' : '（此頁不可切換）' }}</option><option value="react" :disabled="!reactTarget">React＋Vite{{ reactTarget ? '' : '（此頁不可切換）' }}</option><option value="next" :disabled="!nextTarget">Next.js{{ nextTarget ? '' : '（此頁不可切換）' }}</option><option value="angular" :disabled="!angularTarget">Angular{{ angularTarget ? '' : '（此頁不可切換）' }}</option><option value="sveltekit" :disabled="!svelteTarget">SvelteKit{{ svelteTarget ? '' : '（此頁不可切換）' }}</option></select></div>
-          <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version" :value="site.backend.value" @change="chooseBackend"><option :value="BACKENDS.laravel">Laravel</option><option :value="BACKENDS.symfony">Symfony</option><option :value="BACKENDS.aspnet">ASP.NET Core Controllers</option><option :value="BACKENDS.django">Django</option></select></div>
+          <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version" :value="site.backend.value" @change="chooseBackend"><option v-for="(label, value) in backendLabels" :key="value" :value="value">{{ label }}</option></select></div>
           <p>切換後端會清除目前登入並要求重新登入。</p>
         </div>
       </details>

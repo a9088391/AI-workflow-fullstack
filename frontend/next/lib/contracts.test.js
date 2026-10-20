@@ -188,20 +188,23 @@ test('author content validation and controls use actual authorship and server re
   assert.equal(canRestoreContent({ ...item, can_restore: true }, other), false)
 })
 
-// Nuxt 只能承接目前已支援的四個後端，否則切換會使共用登入失效。
+// Nuxt 可承接十二個固定後端；切換前端只搬移合法路由，不更動來源 JWT 或期限。
 test('frontend availability preserves the selected backend and session', () => {
-  for (const backend of Object.values(BACKENDS).slice(0, 4)) assert.equal(canSwitchFrontend('nuxt', backend[1]), true)
-  for (const backend of Object.values(BACKENDS).slice(4)) assert.equal(canSwitchFrontend('nuxt', backend[1]), false)
+  for (const backend of Object.values(BACKENDS)) assert.equal(canSwitchFrontend('nuxt', backend[1]), true)
   const tab = storage()
   saveSession(tab, BACKENDS.nestjs[1], 'original-token', '2026-10-17 20:00:00')
-  assert.equal(canSwitchFrontend('nuxt', readBackend(tab)), false)
+  assert.equal(canSwitchFrontend('nuxt', readBackend(tab)), true)
   assert.deepEqual(readSession(tab), { backend: BACKENDS.nestjs[1], accessToken: 'original-token', expiresAt: '2026-10-17 20:00:00' })
   assert.equal(frontendTarget('/next/articles/9', 'nuxt'), '/nuxt/articles/9')
+  assert.equal(frontendTarget('/next/login', 'nuxt', '/next/admin/members/9'), '/nuxt/login?return_to=%2Fnuxt%2Fadmin%2Fmembers%2F9')
+  assert.equal(frontendTarget('/next/login', 'nuxt', '//attacker.invalid'), '/nuxt/login')
   assert.equal(canSwitchFrontend('react', BACKENDS.nestjs[1]), true)
   saveSession(tab, BACKENDS.django[1], 'supported-token', '2026-10-17 21:00:00')
   assert.equal(canSwitchFrontend('nuxt', readBackend(tab)), true)
   assert.equal(readSession(tab).expiresAt, '2026-10-17 21:00:00')
   assert.equal(canSwitchFrontend('unknown', BACKENDS.laravel[1]), false)
+  assert.equal(canSwitchFrontend('nuxt', 'https://attacker.invalid'), false)
+  assert.deepEqual(readSession(tab), { backend: BACKENDS.django[1], accessToken: 'supported-token', expiresAt: '2026-10-17 21:00:00' })
 })
 
 // 前端格式檢查避免無效登入累計鎖定，密碼不 trim 或改寫。

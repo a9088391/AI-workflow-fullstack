@@ -282,8 +282,9 @@ onBeforeUnmount(
         <p v-if="loading && !comments" class="state-block" role="status">正在載入留言…</p>
         <div v-else-if="commentError" class="state-block" role="alert"><p>{{ commentError }}</p><small v-if="commentLogId">log_id：{{ commentLogId }}</small><button type="button" class="inline-button" @click="load">重新讀取</button></div>
         <ol v-else-if="comments && comments.list.length" class="comment-list"><li v-for="comment in comments.list" :key="comment.id"><div class="comment-meta"><strong>{{ comment.author.nickname }}</strong><span>{{ comment.created_at }} / 建立來源 {{ backendName(comment.created_backend) }}</span></div><p>{{ comment.body }}</p><a v-if="site.account.value && (site.account.value.id === comment.author.id || site.account.value.role === 'admin')" :href="`/nuxt/comments/${comment.id}`">留言詳情</a></li></ol>
-        <div v-else-if="comments" class="state-block"><p>{{ comments.pagination.total === 0 ? '目前還沒有留言。' : '此頁沒有留言，前面的頁面仍有內容。' }}</p><a v-if="page > 1" :href="pageHref(1)">回第一頁</a></div>
-        <nav v-if="comments && comments.pagination.total_pages > 1" class="pagination" aria-label="留言分頁"><a v-if="page > 1" :href="pageHref(page - 1)">上一頁</a><span>第 {{ page }} 頁／共 {{ comments.pagination.total_pages }} 頁</span><a v-if="page < comments.pagination.total_pages" :href="pageHref(page + 1)">下一頁</a></nav>
+        <!-- 留言零筆時保留原頁碼，第 1 頁與超頁使用不同提示。 -->
+        <div v-else-if="comments" class="state-block"><p>{{ page > 1 && page > comments.pagination.total_pages ? comments.pagination.total === 0 ? '此頁沒有留言。' : '此頁沒有留言，前面的頁面仍有內容。' : '目前還沒有留言。' }}</p><a v-if="page > 1" :href="pageHref(1)">回第一頁</a></div>
+        <nav v-if="comments && (comments.pagination.total_pages > 1 || page > 1)" class="pagination" aria-label="留言分頁"><a v-if="page > 1" :href="pageHref(page - 1)">上一頁</a><span>第 {{ page }} 頁／共 {{ comments.pagination.total_pages }} 頁</span><a v-if="page < comments.pagination.total_pages" :href="pageHref(page + 1)">下一頁</a></nav>
         <div v-if="article.visibility === 'visible'" class="comment-compose">
           <div v-if="!site.account.value && commentOwner === null" class="state-block"><p>登入後可以留言。</p><a :href="loginHref(route.path)">前往登入</a></div>
           <template v-else>
