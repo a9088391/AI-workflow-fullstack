@@ -49,6 +49,8 @@ function app(path, token = 'saved-token', search = '', selectedBackend = auth.AP
   const history = []
   const storage = new Map()
   const lifecycle = {}
+  const timeouts = new Map()
+  let nextTimeout = 0
   const sessionStorage = {
     // 保留缺值語意，讓正式認證函式讀取儲存資料。
     getItem(key) { return storage.get(key) ?? null },
@@ -62,7 +64,11 @@ function app(path, token = 'saved-token', search = '', selectedBackend = auth.AP
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
     ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
-    AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage, document: {},
+    AbortController, URLSearchParams, performance, console, setInterval, clearInterval, sessionStorage, document: {},
+    // 用受控逾時 callback 驗證獨立讀取，不必等待實際網路計時。
+    setTimeout(callback) { const id = ++nextTimeout; timeouts.set(id, callback); return id },
+    // 真正 owner 結束等待時必須回收自己的 timer，避免後續頁面誤觸舊逾時。
+    clearTimeout(id) { timeouts.delete(id) },
     window: {
       // 記錄使用者確認；預設取消，避免測試意外捨棄既有草稿。
       confirm(message) { confirmations.push(message); return approve },
@@ -97,6 +103,10 @@ function app(path, token = 'saved-token', search = '', selectedBackend = auth.AP
   return { page, requests, redirects, history, sessionStorage, confirmations,
     // 測試明確改變確認選擇，仍透過正式事件入口送出。
     approve(value) { approve = value },
+    // 只觸發呼叫當下既有的 timer，重試建立的新計時器留待下一次操作。
+    expireRequests() { for (const callback of [...timeouts.values()]) callback() },
+    // 供取消與完成案例確認計時器確實回收。
+    timeoutCount() { return timeouts.size },
     // 元件清理後再停止 Vue effect，避免 timer 和 watcher 留在下一個案例。
     close() { lifecycle.unmount(); scope.stop() },
   }
@@ -497,6 +507,7 @@ test('comment retry cannot interrupt pending write after list failure', async (t
   assert.equal(instance.requests.length, 5)
   assert.equal(instance.page.contentPending.value, true)
   assert.equal(instance.page.credential.value.accessToken, 'saved-token')
+  assert.match(await renderedPage(instance.page), /<button[^>]*disabled[^>]*>重新讀取留言<\/button>/)
   await respond(post, 201, success({}))
   await write
   assert.equal(instance.page.commentPosted.value, true)
@@ -522,8 +533,49 @@ test('comment retry cannot interrupt pending write after list failure', async (t
   assert.equal(instance.page.commentPosted.value, true)
   assert.equal(instance.page.credential.value.accessToken, 'saved-token')
 
-  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<button[^>]*:disabled="contentPending"[^>]*@click="loadRelated">重新讀取留言<\/button>/)
+})
+
+// 父文章逾時保留作者留言及編輯草稿；只有獨立重試成功才恢復編修，離頁拒絕後續舊父文。
+test('parent reading timeout preserves own draft and retry qualification then disposes on leave', async (t) => {
+  const instance = app('/vue/comments/009/edit')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(member))
+  assert.equal(instance.requests[1].url, `${auth.API_BASE}/api/comments/9`)
+  await respond(instance.requests[1], 200, success(comment))
+  const expired = instance.requests[2]
+  instance.page.commentBody.value = '仍需保留的編輯草稿'
+  instance.expireRequests()
+  await setImmediate()
+  assert.equal(expired.signal.aborted, true)
+  assert.equal(instance.page.relatedLoading.value, false)
+  assert.equal(instance.timeoutCount(), 0)
+  assert.equal(instance.page.commentData.value.body, comment.body)
+  assert.equal(instance.page.canEdit.value, false)
+  assert.equal(instance.page.commentBody.value, '仍需保留的編輯草稿')
+  const failed = await renderedPage(instance.page)
+  assert.match(failed, /讀取失敗或伺服器回應不完整/)
+  assert.match(failed, /重新讀取所屬文章/)
+  assert.doesNotMatch(failed, /公開正文/)
+  const retry = instance.page.loadRelated()
+  await respond(expired, 200, success({ ...article, title: '過期父文不得顯示' }))
+  assert.equal(instance.page.parentArticle.value, null)
+  assert.equal(instance.page.relatedLoading.value, true)
+  await respond(instance.requests[3], 200, success(article))
+  await retry
+  assert.equal(instance.page.canEdit.value, true)
+  assert.equal(instance.page.commentBody.value, '仍需保留的編輯草稿')
+  assert.equal(instance.timeoutCount(), 0)
+  const leavingRead = instance.page.loadRelated()
+  const lateParent = instance.requests[4]
+  instance.page.onPageHide()
+  assert.equal(lateParent.signal.aborted, true)
+  assert.equal(instance.page.relatedLoading.value, false)
+  assert.equal(instance.timeoutCount(), 0)
+  await respond(lateParent, 200, success(article))
+  await leavingRead
+  assert.equal(instance.page.parentArticle.value, null)
+  assert.equal(instance.page.contentReady.value, false)
+  assert.equal(instance.page.commentBody.value, '仍需保留的編輯草稿')
 })
 
 // 用已安裝的 Vue compiler 與 renderer 產出實際模板 HTML，避免只驗證旗標而漏掉外層 v-if。

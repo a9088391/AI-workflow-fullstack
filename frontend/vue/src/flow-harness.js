@@ -36,10 +36,11 @@ function accountForm() {
 export const AccountForm = accountForm()
 export const navigationBindings = { ...navigation, AccountForm }
 
-// composable 與 App 共用同一個受控 HTTP／Storage／時鐘環境；這是輔助 harness，並非瀏覽器。
+// session、閱讀 owner 與 App 共用同一個受控 HTTP／Storage／時鐘環境；這是輔助 harness，並非瀏覽器。
 export function appScript(descriptor) {
   const session = readFileSync(new URL('./useAccountSession.js', import.meta.url), 'utf8')
-  return `${executableModule(session)}\n${executableModule(descriptor.scriptSetup.content)}`
+  const reading = readFileSync(new URL('./useContentReading.js', import.meta.url), 'utf8')
+  return `${executableModule(session)}\n${executableModule(reading)}\n${executableModule(descriptor.scriptSetup.content)}`
 }
 
 // 由編譯器辨識解構與多行宣告，不再依頂層名稱的文字排列猜測可觀察狀態。

@@ -48,6 +48,8 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   let clock = 0
   const intervals = new Map()
   let nextInterval = 0
+  const timeouts = new Map()
+  let nextTimeout = 0
   const sessionStorage = {
     // 維持 Storage 缺值語意，讓正式 session 函式運作。
     getItem(key) { return values.get(key) ?? null },
@@ -60,7 +62,11 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   if (savedToken) auth.saveSession(sessionStorage, savedToken, '2026-09-24 18:00:00')
   const context = {
     ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
-    AbortController, URLSearchParams, console, setTimeout, clearTimeout, sessionStorage,
+    AbortController, URLSearchParams, console, sessionStorage,
+    // 保存真正的逾時 callback，讓讀取逾時可在受控時鐘下重現，不等待二十秒。
+    setTimeout(callback) { const id = ++nextTimeout; timeouts.set(id, callback); return id },
+    // 正式 owner 完成、重試或離頁時須回收自己的逾時計時器。
+    clearTimeout(id) { timeouts.delete(id) },
     performance: {
       // 可控單調時間可模擬背景分頁節流，不依賴內部 lockDeadline。
       now() { return clock },
@@ -111,6 +117,10 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   return { page, requests, redirects, confirmations, sessionStorage,
     // 時間只跳一次仍須按完整經過時間歸零，不能靠觸發次數扣秒。
     advanceClock(milliseconds) { clock += milliseconds; for (const callback of intervals.values()) callback() },
+    // 觸發目前等待中的逾時；複製清單，避免 callback 清理時計入新建立的重試。
+    expireRequests() { for (const callback of [...timeouts.values()]) callback() },
+    // 檢查生命週期是否留下逾時計時器，不以測試程序退出替代正式清理。
+    timeoutCount() { return timeouts.size },
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
     close() { lifecycle.unmount(); scope.stop() },
   }
@@ -2083,16 +2093,112 @@ test('backend switch from unknown route uses a safe local return target', async 
   assert.deepEqual(app.redirects, ['/vue/login?return_to=%2Fvue%2F'])
 })
 
-// 公開列表無 JWT 可讀；離頁後延遲回應不能恢復舊資料。
+// 公開列表無 JWT 可讀；離頁立即結束等待，延遲回應不能恢復舊資料。
 test('public article request ignores response after page leave', async (t) => {
   const app = articleApp('/vue/', null)
   t.after(app.close)
   assert.equal(app.requests[0].url, `${auth.API_BASE}/api/articles?page=1&per_page=20`)
   assert.equal(app.requests[0].headers.Authorization, undefined)
   app.page.onPageHide()
+  assert.equal(app.page.contentLoading.value, false)
   await respond(app.requests[0], 200, { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
   assert.equal(app.page.articleList.value, null)
   assert.equal(app.page.contentReady.value, false)
+  assert.equal(app.timeoutCount(), 0)
+})
+
+// 逾時必須結束等待並保留重試；忽略 abort 的舊回應不能清掉新請求或假裝讀到空列表。
+test('public reading timeout ignores late response and permits a clean manual retry', async (t) => {
+  const app = articleApp('/vue/', null, '?page=7')
+  t.after(app.close)
+  const expired = app.requests[0]
+  assert.equal(app.page.contentLoading.value, true)
+  app.expireRequests()
+  await setImmediate()
+  assert.equal(expired.signal.aborted, true)
+  assert.equal(app.page.contentLoading.value, false)
+  assert.equal(app.timeoutCount(), 0)
+  const failed = await renderArticleApp(app)
+  assert.match(failed, /讀取失敗或伺服器回應不完整/)
+  assert.match(failed, /重新讀取/)
+  assert.doesNotMatch(failed, /目前尚無文章|此頁沒有文章/)
+  const retry = app.page.loadContent()
+  assert.equal(app.requests.length, 2)
+  assert.equal(app.page.contentLoading.value, true)
+  await respond(expired, 200, success({ list: [sample], pagination: { page: 7, per_page: 20, total: 121, total_pages: 7 } }))
+  assert.equal(app.page.articleList.value, null)
+  assert.equal(app.page.contentLoading.value, true)
+  assert.equal(app.timeoutCount(), 1)
+  await respond(app.requests[1], 200, success({ list: [], pagination: { page: 7, per_page: 20, total: 41, total_pages: 3 } }))
+  await retry
+  assert.equal(app.page.articleList.value.pagination.total, 41)
+  assert.equal(app.page.contentLoading.value, false)
+  assert.equal(app.timeoutCount(), 0)
+  assert.equal(app.page.summary.value, '')
+  assert.match(await renderArticleApp(app), /此頁沒有文章，總數仍保留/)
+})
+
+// 管理員的一般閱讀仍走公開 scope；自己的列表先完成 /me，且讀取錯誤不呈現為零筆成功。
+test('public and personal list owners preserve scope verification and error recovery', async (t) => {
+  for (const [path, actor, endpoint] of [
+    ['/vue/', { ...member, role: 'admin' }, '/api/articles'],
+    ['/vue/me/articles', member, '/api/me/articles'],
+    ['/vue/me/comments', member, '/api/me/comments'],
+  ]) {
+    const app = articleApp(path, 'jwt', '?page=7')
+    t.after(app.close)
+    assert.equal(app.requests.length, 1)
+    assert.equal(app.requests[0].url, `${auth.API_BASE}/api/me`)
+    assert.equal(app.page.contentReady.value, false)
+    await respond(app.requests[0], 200, success(actor))
+    assert.equal(app.requests[1].url, `${auth.API_BASE}${endpoint}?page=7&per_page=20`)
+    await respond(app.requests[1], 500, { success: false, error_code: 'E9999' })
+    const failed = await renderArticleApp(app)
+    assert.match(failed, /系統暫時無法處理，請稍後再試/)
+    assert.doesNotMatch(failed, /目前尚無文章|目前尚無留言|此頁沒有文章|此頁沒有留言/)
+    const retry = app.page.loadContent()
+    await respond(app.requests[2], 200, success({ list: [], pagination: { page: 7, per_page: 20, total: 41, total_pages: 3 } }))
+    await retry
+    assert.match(await renderArticleApp(app), /共 41 [篇則] · 第 7 頁/)
+    assert.equal(app.page.contentLoading.value, false)
+  }
+})
+
+// 讀取與登出可交錯；較早 GET 401 撤權後，登出仍須結束等待並讓使用者手動重新登入。
+test('read authentication failure during logout releases pending and restores manual login', async (t) => {
+  for (const [status, body] of [[200, success({})], [500, { success: false, error_code: 'E9999' }]]) {
+    const app = articleApp('/vue/me/articles', 'old-token', '?page=7')
+    t.after(app.close)
+    await respond(app.requests[0], 200, success(member))
+    const reading = app.requests[1]
+    const logout = app.page.submitLogout()
+    assert.equal(app.requests[2].url, `${auth.API_BASE}/api/auth/logout`)
+    await respond(reading, 401, { success: false, error_code: 'E0002' })
+    assert.equal(app.page.credential.value, null)
+    assert.equal(app.page.contentLoading.value, false)
+    assert.equal(app.page.reLogin.value, true)
+    assert.equal(app.page.logoutPending.value, true)
+    await app.page.loadContent()
+    await app.page.submitLogin()
+    assert.equal(app.requests.length, 3)
+    await respond(app.requests[2], status, body)
+    await logout
+    assert.equal(app.page.logoutPending.value, false)
+    assert.equal(app.page.summaryCode.value, 'E0002')
+    app.page.email.value = member.email
+    app.page.password.value = 'abcd'
+    await vue.nextTick()
+    const login = app.page.submitLogin()
+    await respond(app.requests[3], 200, success({ access_token: 'recovered-token', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member }))
+    await login
+    assert.equal(app.requests[4].url, `${auth.API_BASE}/api/me/articles?page=7&per_page=20`)
+    await respond(app.requests[4], 200, success({ list: [], pagination: { page: 7, per_page: 20, total: 41, total_pages: 3 } }))
+    assert.equal(app.page.contentReady.value, true)
+    assert.equal(app.page.reLogin.value, false)
+    assert.equal(app.page.pending.value, false)
+    assert.equal(app.page.logoutPending.value, false)
+    assert.match(await renderArticleApp(app), /共 41 篇 · 第 7 頁/)
+  }
 })
 
 // 公開 API 已帶 JWT 時，401 必須留在逾期狀態，不以訪客身分補讀。
