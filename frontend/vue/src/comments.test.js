@@ -21,6 +21,129 @@ const article = { ...comment, id: 7, title: '文章', body: '公開正文', visi
 // 建立核准 envelope，讓案例只變動本次要驗證的資源與分頁。
 function success(data) { return { success: true, message: 'OK', data } }
 
+// 即使 HTTP 忽略 abort，逾時也必須離開等待並保留草稿及結果不明，晚到成功不得清掉它。
+test('author write timeout ends pending and ignores a late success', async (t) => {
+  const instance = await writableArticle(t)
+  instance.page.commentBody.value = '逾時仍保留的草稿'
+  const write = instance.page.submitComment()
+  instance.expireRequests()
+  await vue.nextTick()
+  assert.equal(instance.page.contentPending.value, false)
+  assert.equal(instance.page.writeUnknown.value, true)
+  assert.equal(instance.timeoutCount(), 0)
+  await respond(instance.requests[3], 201, success({}))
+  await write
+  assert.equal(instance.page.commentBody.value, '逾時仍保留的草稿')
+  assert.equal(instance.page.commentPosted.value, false)
+  assert.equal(instance.requests.length, 4)
+})
+
+// 已確認 PUT 後仍要讀到同 ID 才能更新草稿基準；回讀失敗不可取消離頁保護。
+test('confirmed edit with failed readback retains the editor baseline and leave protection', async (t) => {
+  const instance = await resourcePage(t, '/vue/comments/9/edit')
+  instance.page.commentBody.value = '已送達但尚未讀回的修改'
+  const write = instance.page.submitEdit()
+  await respond(instance.requests[3], 200, success({}))
+  await write
+  await respond(instance.requests[4], 500, { success: false, error_code: 'E9999' })
+  assert.equal(instance.page.editLoaded.value, true)
+  assert.equal(instance.page.editVersion.value, 1)
+  assert.equal(instance.page.hasDraft.value, true)
+  assert.equal(instance.page.commentBody.value, '已送達但尚未讀回的修改')
+  const recovery = instance.page.loadContent()
+  await respond(instance.requests[5], 200, success({ ...comment, body: '已送達但尚未讀回的修改', version: 2 }))
+  await recovery
+  await respond(instance.requests[6], 200, success(article))
+  assert.equal(instance.page.editVersion.value, 2)
+  assert.equal(instance.page.hasDraft.value, false)
+  assert.equal(instance.requests.length, 7)
+})
+
+// 409 後失敗重讀仍保護原稿；人工整合／捨棄後才用新版本 PUT，完整回讀後才更新基準。
+test('conflict failed reread preserves drafts until manual merge or discard and confirmed readback', async (t) => {
+  for (const discard of [false, true]) {
+    const path = discard ? '/vue/comments/9/edit' : '/vue/articles/7/edit'
+    const original = discard ? comment : article
+    const instance = await resourcePage(t, path)
+    const draft = discard ? instance.page.commentBody : instance.page.articleBody
+    draft.value = '我的比較草稿\r\n'
+    const firstIndex = instance.requests.length
+    const write = instance.page.submitEdit()
+    await respond(instance.requests[firstIndex], 409, { success: false, error_code: 'E0201' })
+    await write
+    const failedRead = instance.page.loadContent()
+    await respond(instance.requests.at(-1), 500, { success: false, error_code: 'E9999' })
+    await failedRead
+    assert.equal(instance.page.hasDraft.value, true)
+    assert.equal(instance.page.editVersion.value, 1)
+    assert.equal(instance.page.comparison.value, null)
+    await instance.page.submitEdit()
+    assert.equal(instance.requests.length, firstIndex + 2)
+    const latest = { ...original, body: '最新原文\r\n', version: 2 }
+    const read = instance.page.loadContent()
+    await respond(instance.requests.at(-1), 200, success(latest))
+    await read
+    if (discard) await respond(instance.requests.at(-1), 200, success(article))
+    assert.equal(draft.value, '我的比較草稿\r\n')
+    assert.equal(instance.page.editVersion.value, 1)
+    instance.page.acceptComparison(discard)
+    assert.equal(instance.page.editVersion.value, 2)
+    assert.equal(draft.value, discard ? latest.body : '我的比較草稿\r\n')
+    const submittedBody = draft.value
+    const merged = instance.page.submitEdit()
+    assert.equal(JSON.parse(instance.requests.at(-1).body).version, 2)
+    await respond(instance.requests.at(-1), 200, success({}))
+    await merged
+    await respond(instance.requests.at(-1), 200, success({ ...latest, body: submittedBody, version: discard ? 2 : 3 }))
+    if (discard) await respond(instance.requests.at(-1), 200, success(article))
+    assert.equal(instance.page.hasDraft.value, false)
+    assert.equal(instance.page.editVersion.value, discard ? 2 : 3)
+    assert.equal(instance.page.contentPending.value, false)
+    assert.equal(instance.timeoutCount(), 0)
+  }
+})
+
+// 等待中取消切換維持原請求；接受後立即結束等待，三種晚到結果均不能建立新讀取或撤權。
+test('pending author edit cancellation and accepted switches isolate late success rejection and unknown', async (t) => {
+  for (const destination of ['frontend', 'backend']) {
+    for (const outcome of ['success', 'rejection', 'unknown']) {
+      const instance = await resourcePage(t, '/vue/comments/9/edit')
+      instance.page.commentBody.value = '原帳號尚未送完的草稿'
+      const write = instance.page.submitEdit()
+      const request = instance.requests[3]
+      const event = { target: { value: destination === 'frontend' ? 'react' : auth.BACKENDS.nestjs } }
+      instance.approve(false)
+      if (destination === 'frontend') instance.page.chooseFrontend(event)
+      else await instance.page.chooseBackend(event)
+      assert.equal(request.signal.aborted, false)
+      assert.equal(instance.page.contentPending.value, true)
+      assert.equal(instance.page.commentBody.value, '原帳號尚未送完的草稿')
+      instance.approve(true)
+      event.target.value = destination === 'frontend' ? 'react' : auth.BACKENDS.nestjs
+      if (destination === 'frontend') instance.page.chooseFrontend(event)
+      else await instance.page.chooseBackend(event)
+      assert.equal(request.signal.aborted, true)
+      assert.equal(instance.page.contentPending.value, false)
+      assert.equal(instance.timeoutCount(), 0)
+      if (outcome === 'success') await respond(request, 200, success({}))
+      else if (outcome === 'rejection') await respond(request, 401, { success: false, error_code: 'E0002' })
+      else request.reject(new Error('late network interruption'))
+      await write
+      assert.equal(instance.requests.length, 4)
+      assert.equal(instance.page.reLogin.value, false)
+      assert.equal(instance.page.commentData.value, null)
+      assert.equal(instance.page.editVersion.value, 1)
+      assert.equal(instance.page.contentPending.value, false)
+      assert.equal(instance.timeoutCount(), 0)
+      assert.equal(instance.redirects.length, 1)
+      if (destination === 'backend') {
+        assert.equal(instance.page.backend.value, auth.BACKENDS.nestjs)
+        assert.equal(instance.page.credential.value, null)
+      } else assert.equal(instance.page.credential.value.accessToken, 'saved-token')
+    }
+  }
+})
+
 // 分頁使用原請求 page 與真實 total，不因合法超頁改成零筆。
 function list(items, page = 1, total = items.length) { return success({ list: items, pagination: { page, per_page: 20, total, total_pages: Math.ceil(total / 20) } }) }
 
@@ -340,15 +463,15 @@ test('FastAPI article form waits for verified author state', async (t) => {
   t.after(visitor.close)
   t.after(author.close)
   assert.deepEqual(visitor.redirects, ['/vue/login?return_to=%2Fvue%2Farticles%2Fnew'])
-  assert.doesNotMatch(await renderedPage(visitor.page), /<form[^>]*><div class="field"><label for="title">/)
-  assert.doesNotMatch(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  assert.doesNotMatch(await renderedPage(visitor.page), /<input id="title"/)
+  assert.doesNotMatch(await renderedPage(author.page), /<input id="title"/)
   await respond(author.requests[0], 200, success(member))
-  assert.match(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  assert.match(await renderedPage(author.page), /<input id="title"/)
   const recheck = author.page.verifyAccount()
-  assert.doesNotMatch(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  assert.doesNotMatch(await renderedPage(author.page), /<input id="title"/)
   await respond(author.requests[1], 200, success(member))
   await recheck
-  assert.match(await renderedPage(author.page), /<form[^>]*><div class="field"><label for="title">/)
+  assert.match(await renderedPage(author.page), /<input id="title"/)
 })
 
 // 格式與後端 422 都保留草稿，欄位明細留在原表單且不產生額外送出。
@@ -365,6 +488,18 @@ test('comment validation and server 422 retain text and field errors', async (t)
   assert.equal(instance.page.commentBody.value, '原文\r\n')
   assert.equal(instance.page.contentPending.value, false)
   assert.equal(instance.page.commentPosted.value, false)
+  const failed = await renderedPage(instance.page)
+  assert.match(failed, /<button type="button">內文：欄位格式或範圍不正確<\/button>/)
+  assert.match(failed, /id="body"[^>]*aria-invalid="true"/)
+  assert.match(failed, /id="body-error"/)
+  instance.page.commentBody.value = '手動修正\r\n保留換行'
+  const corrected = instance.page.submitComment()
+  await respond(instance.requests[4], 201, success({}))
+  await corrected
+  await respond(instance.requests[5], 200, list([]))
+  assert.equal(instance.page.commentPosted.value, true)
+  assert.equal(instance.page.commentBody.value, '')
+  assert.equal(instance.requests.length, 6)
 })
 
 // 401 同帳號重登保留原文並僅重讀文章；另一帳號不能接收原草稿，皆不得自動寫入。
@@ -584,7 +719,7 @@ async function renderedPage(state) {
   const code = compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true }).code
   const render = runInNewContext(`(function () { ${code} })()`, { Vue: vue })
   return renderToString(vue.createSSRApp({
-    components: { AccountForm: navigationBindings.AccountForm },
+    components: { AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm },
     // 交給 Vue 解包正式 refs，保留模板與正式元件相同的顯示語意。
     setup() { return state },
     render,
@@ -726,7 +861,7 @@ test('no-op article edit sends raw server text and rereads the same ID after emp
   assert.equal(instance.page.hasDraft.value, false)
   assert.deepEqual(instance.redirects, [])
   // 原生 textarea 只在真的輸入時改草稿，避免 mount 的換行正規化造成假修改。
-  instance.page.editBodyInput({ target: { value: '新文字\n第二行' } })
+  instance.page.updateEditorBody('新文字\n第二行')
   assert.equal(instance.page.articleBody.value, '新文字\n第二行')
   assert.equal(instance.page.hasDraft.value, true)
 })
@@ -1166,6 +1301,16 @@ test('edit failure contracts distinguish validation, disabled account and unknow
     if (status === 422) {
       assert.deepEqual(Array.from(instance.page.errors.value.body), ['欄位格式或範圍不正確'])
       assert.match(instance.page.summary.value, /版本資料不正確/)
+      assert.match(await renderedPage(instance.page), /id="body-error"/)
+      instance.page.articleBody.value = '手動修正後的內容\r\n'
+      const corrected = instance.page.submitEdit()
+      assert.deepEqual(JSON.parse(instance.requests[3].body), { title: article.title, body: '手動修正後的內容\r\n', version: 1 })
+      await respond(instance.requests[3], 200, success({}))
+      await corrected
+      await respond(instance.requests[4], 200, success({ ...article, body: '手動修正後的內容\r\n', version: 2 }))
+      assert.equal(instance.page.editVersion.value, 2)
+      assert.equal(instance.page.hasDraft.value, false)
+      assert.equal(instance.requests.length, 5)
     }
     if (status === 403) {
       assert.equal(instance.page.disabledAccount.value, true)

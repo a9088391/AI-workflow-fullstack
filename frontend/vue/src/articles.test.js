@@ -38,7 +38,7 @@ test('article contract keeps original text and validates routes and envelopes', 
 })
 
 // 真正執行 App script；HTTP 與頁面導向改為可控制的記憶體邊界。
-function articleApp(path, savedToken = 'old-token', search = '', confirmResult = false, selectedBackend = auth.API_BASE, simulateBeforeUnload = false) {
+function articleApp(path, savedToken = 'old-token', search = '', confirmResult = false, selectedBackend = auth.API_BASE, simulateBeforeUnload = false, savedStorage = null) {
   const requests = []
   const redirects = []
   const confirmations = []
@@ -50,7 +50,7 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   let nextInterval = 0
   const timeouts = new Map()
   let nextTimeout = 0
-  const sessionStorage = {
+  const sessionStorage = savedStorage || {
     // 維持 Storage 缺值語意，讓正式 session 函式運作。
     getItem(key) { return values.get(key) ?? null },
     // 保存 JWT 供換帳號及失效情境驗證。
@@ -126,13 +126,21 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   }
 }
 
+// 僅有網址旗標不能證明發文成功；提示必須來自相同帳號與後端的已確認建立事件。
+test('published query without a confirmed event never announces success', async (t) => {
+  const instance = articleApp('/vue/me/articles', 'old-token', '?published=1')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(member))
+  assert.doesNotMatch(await renderArticleApp(instance), /文章已發表，以下為我的文章/)
+})
+
 // 用 Vue 正式編譯與 SSR 渲染目前元件模板，檢查控制與提示實際是否出現在畫面。
 async function renderArticleApp(app) {
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   const render = vue.compile(descriptor.template.content)
   // 模板使用 script setup 與既有匯入的純函式；測試提供相同的公開綁定。
   function renderBindings() { return { ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings, ...app.page } }
-  return renderToString(vue.h({ components: { AccountForm: navigationBindings.AccountForm }, setup: renderBindings, render }))
+  return renderToString(vue.h({ components: { AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm }, setup: renderBindings, render }))
 }
 
 // 等待回應及 Vue 微任務；可指定 Retry-After 等標頭檢查登入互動。
@@ -196,9 +204,24 @@ test('article draft survives 401 and same-account re-login without automatic ret
   assert.deepEqual(app.redirects, ['/vue/me/articles?published=1'])
 })
 
-// 成功頁從 URL 顯示通知；第一頁不受前次分頁狀態影響，且一般瀏覽不顯示誤導提示。
+// 透過真實作者事件產生跨導頁通知，測試不自行偽造成功事件的格式。
+async function confirmedPublish(t, selectedBackend = auth.API_BASE) {
+  const source = articleApp('/vue/articles/new', 'old-token', '', false, selectedBackend)
+  t.after(source.close)
+  await respond(source.requests[0], 200, success(member))
+  source.page.articleTitle.value = '已確認標題'
+  source.page.articleBody.value = '已確認原文\r\n第二行'
+  const write = source.page.submitArticle()
+  await respond(source.requests[1], 201, success({}))
+  await write
+  assert.deepEqual(source.redirects, ['/vue/me/articles?published=1'])
+  return source.sessionStorage
+}
+
+// 成功頁須核對已確認事件與身分；第一頁不受前次分頁狀態影響，一般瀏覽不誤示成功。
 test('confirmed article publish opens my articles first page with success notice', async (t) => {
-  const published = articleApp('/vue/me/articles', 'old-token', '?published=1')
+  const storage = await confirmedPublish(t)
+  const published = articleApp('/vue/me/articles', 'old-token', '?published=1', false, auth.API_BASE, false, storage)
   const ordinary = articleApp('/vue/me/articles', null)
   t.after(published.close)
   t.after(ordinary.close)
@@ -206,17 +229,21 @@ test('confirmed article publish opens my articles first page with success notice
   await respond(published.requests[0], 200, { success: true, message: 'OK', data: member })
   assert.equal(published.requests[1].url, `${auth.API_BASE}/api/me/articles?page=1&per_page=20`)
   await respond(published.requests[1], 200, { success: true, message: 'OK', data: { list: [sample], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } } })
-  assert.equal(published.page.published, true)
+  assert.equal(published.page.published.value, true)
   assert.equal(published.page.listPage, 1)
   assert.equal(published.page.contentReady.value, true)
-  assert.equal(ordinary.page.published, false)
-  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /v-if="published && account"[^>]*role="status"[^>]*>文章已發表/)
+  assert.equal(ordinary.page.published.value, false)
+  assert.match(await renderArticleApp(published), /文章已發表，以下為我的文章/)
+  const refreshed = articleApp('/vue/me/articles', 'old-token', '?published=1', false, auth.API_BASE, false, storage)
+  t.after(refreshed.close)
+  await respond(refreshed.requests[0], 200, success(member))
+  assert.doesNotMatch(await renderArticleApp(refreshed), /文章已發表，以下為我的文章/)
 })
 
 // NestJS 發文確認後的目標頁仍從第一頁讀取本人文章，並在驗權後顯示成功提示。
 test('NestJS published return reads my articles first page', async (t) => {
-  const published = articleApp('/vue/me/articles', 'nest-jwt', '?published=1', false, auth.BACKENDS.nestjs)
+  const storage = await confirmedPublish(t, auth.BACKENDS.nestjs)
+  const published = articleApp('/vue/me/articles', 'nest-jwt', '?published=1', false, auth.BACKENDS.nestjs, false, storage)
   t.after(published.close)
   await respond(published.requests[0], 200, success(member))
   assert.equal(published.requests[1].url, `${auth.BACKENDS.nestjs}/api/me/articles?page=1&per_page=20`)
@@ -224,6 +251,87 @@ test('NestJS published return reads my articles first page', async (t) => {
   const html = await renderArticleApp(published)
   assert.match(html, /文章已發表，以下為我的文章/)
   assert.match(html, /建立於 NestJS/)
+})
+
+// 暫時無法驗權不是明確換帳號，已確認事件必須等待同帳號恢復後再顯示與消費。
+test('confirmed publish notice survives temporary verification failure and same-actor recovery', async (t) => {
+  const storage = await confirmedPublish(t)
+  const destination = articleApp('/vue/me/articles', 'old-token', '?published=1', false, auth.API_BASE, false, storage)
+  t.after(destination.close)
+  destination.requests[0].reject(new Error('temporary offline'))
+  await setImmediate()
+  assert.equal(destination.page.published.value, false)
+  assert.doesNotMatch(await renderArticleApp(destination), /文章已發表，以下為我的文章/)
+  const verification = destination.page.verifyAccount()
+  await respond(destination.requests[1], 200, success(member))
+  await verification
+  assert.equal(destination.page.published.value, true)
+  assert.match(await renderArticleApp(destination), /文章已發表，以下為我的文章/)
+  assert.equal(destination.requests.length, 3, 'recovery only reads /me and first-page articles')
+})
+
+// 已確認的新身分或新後端不接受前次成功提示，切回原身分也不能復活已否定事件。
+test('confirmed publish notice rejects actor and backend mismatch', async (t) => {
+  for (const mismatch of ['actor', 'backend']) {
+    const storage = await confirmedPublish(t)
+    const selectedBackend = mismatch === 'backend' ? auth.BACKENDS.nestjs : auth.API_BASE
+    const destination = articleApp('/vue/me/articles', 'old-token', '?published=1', false, selectedBackend, false, storage)
+    t.after(destination.close)
+    await respond(destination.requests[0], 200, success(mismatch === 'actor' ? { ...member, id: 99 } : member))
+    assert.equal(destination.page.published.value, false)
+    assert.doesNotMatch(await renderArticleApp(destination), /文章已發表，以下為我的文章/)
+    const original = articleApp('/vue/me/articles', 'old-token', '?published=1', false, auth.API_BASE, false, storage)
+    t.after(original.close)
+    await respond(original.requests[0], 200, success(member))
+    assert.equal(original.page.published.value, false)
+  }
+})
+
+// 201 後儲存提示失敗只失去跨頁通知，不可把已確認寫入當成未知或再開放相同 POST。
+test('confirmed publish remains successful when notice storage fails', async (t) => {
+  const source = articleApp('/vue/articles/new')
+  t.after(source.close)
+  await respond(source.requests[0], 200, success(member))
+  source.page.articleTitle.value = '已確認'
+  source.page.articleBody.value = '不要因通知儲存失敗而重送'
+  // 模擬儲存已滿，仍透過正式 201 成功分支前往我的文章。
+  source.sessionStorage.setItem = () => { throw new Error('storage unavailable') }
+  const write = source.page.submitArticle()
+  await respond(source.requests[1], 201, success({}))
+  await write
+  assert.equal(source.page.writeUnknown.value, false)
+  assert.equal(source.page.contentPending.value, false)
+  assert.equal(source.page.submitted.value, true)
+  assert.deepEqual(source.redirects, ['/vue/me/articles?published=1'])
+  await source.page.submitArticle()
+  assert.equal(source.requests.length, 2)
+})
+
+// 422 的欄位訊息與摘要須一起顯示；使用者修正後才送第二次 POST，成功仍前往本人列表。
+test('article server validation renders fields and allows only a manual corrected publish', async (t) => {
+  const instance = articleApp('/vue/articles/new')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(member))
+  instance.page.articleTitle.value = '原標題'
+  instance.page.articleBody.value = '原內文\r\n'
+  const write = instance.page.submitArticle()
+  await respond(instance.requests[1], 422, { success: false, error_code: 'E0001', errors: { title: ['標題格式不正確'], body: ['內文格式不正確'] } })
+  await write
+  const html = await renderArticleApp(instance)
+  assert.match(html, /<button type="button">標題：標題格式不正確<\/button>/)
+  assert.match(html, /<button type="button">內文：內文格式不正確<\/button>/)
+  assert.match(html, /id="title"[^>]*aria-invalid="true"/)
+  assert.match(html, /id="body-error"/)
+  assert.equal(instance.page.articleBody.value, '原內文\r\n')
+  assert.equal(instance.requests.length, 2)
+  instance.page.articleTitle.value = '已修正標題'
+  instance.page.articleBody.value = '已修正內文\r\n'
+  const corrected = instance.page.submitArticle()
+  assert.deepEqual(JSON.parse(instance.requests[2].body), { title: '已修正標題', body: '已修正內文\r\n' })
+  await respond(instance.requests[2], 201, success({}))
+  await corrected
+  assert.deepEqual(instance.redirects, ['/vue/me/articles?published=1'])
+  assert.equal(instance.page.contentPending.value, false)
 })
 
 // 201 若缺少核准的空 data 格式仍視為結果未知，不能顯示成功或重送寫入。

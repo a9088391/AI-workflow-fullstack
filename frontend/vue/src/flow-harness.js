@@ -18,8 +18,8 @@ export function executableModule(source) {
 }
 
 // 使用已安裝的 SFC compiler 編譯真正欄位元件，SSR 斷言也會經過正式元件模板。
-function accountForm() {
-  const source = readFileSync(new URL('./AccountForm.vue', import.meta.url), 'utf8')
+function compileForm(filename) {
+  const source = readFileSync(new URL(filename, import.meta.url), 'utf8')
   const { descriptor } = parse(source)
   const compiled = compileScript(descriptor, { id: 'account-form-test', inlineTemplate: true, genDefaultAs: 'component' })
   const ast = babelParse(compiled.content, { sourceType: 'module' })
@@ -33,14 +33,16 @@ function accountForm() {
   return runInNewContext(`${imports.join('\n')}\n${executableModule(compiled.content)}\n;component`, { Vue: vue })
 }
 
-export const AccountForm = accountForm()
-export const navigationBindings = { ...navigation, AccountForm }
+export const AccountForm = compileForm('./AccountForm.vue')
+export const AuthorContentForm = compileForm('./AuthorContentForm.vue')
+export const navigationBindings = { ...navigation, AccountForm, AuthorContentForm }
 
 // session、閱讀 owner 與 App 共用同一個受控 HTTP／Storage／時鐘環境；這是輔助 harness，並非瀏覽器。
 export function appScript(descriptor) {
   const session = readFileSync(new URL('./useAccountSession.js', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./useContentReading.js', import.meta.url), 'utf8')
-  return `${executableModule(session)}\n${executableModule(reading)}\n${executableModule(descriptor.scriptSetup.content)}`
+  const writing = readFileSync(new URL('./useAuthorWriting.js', import.meta.url), 'utf8')
+  return `${executableModule(session)}\n${executableModule(reading)}\n${executableModule(writing)}\n${executableModule(descriptor.scriptSetup.content)}`
 }
 
 // 由編譯器辨識解構與多行宣告，不再依頂層名稱的文字排列猜測可觀察狀態。
