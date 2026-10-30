@@ -16,6 +16,39 @@ export type Comment = { id: number; body: string; author: { id: number; nickname
 export type Page<T> = { list: T[]; pagination: { page: number; per_page: number; total: number; total_pages: number } };
 export type Problem = { message: string; code?: string; errors?: Record<string, string[]>; logId?: string };
 
+// 認證只接受完整成功 envelope，避免破損回應提前保存登入或宣稱登出。
+export function isAuthSuccess(status: number, body: any, expected: number): boolean {
+  return status === expected && body?.success === true && body.message === 'OK'
+    && body.data !== null && typeof body.data === 'object' && !Array.isArray(body.data);
+}
+
+// 本人資料須有有效識別、角色與啟用狀態，才可開放會員導覽及受保護操作。
+export function isAccount(value: any): value is Account {
+  return value && Number.isSafeInteger(value.id) && value.id > 0 && typeof value.email === 'string'
+    && typeof value.nickname === 'string' && (value.role === 'member' || value.role === 'admin')
+    && value.status === 'active' && typeof value.created_at === 'string' && timestamp.test(value.created_at);
+}
+
+// JWT、Bearer、本人及原到期格式均齊全，才能保存同分頁共用的三欄登入資料。
+export function isLogin(value: any): value is { access_token: string; token_type: 'Bearer'; expires_at: string; user: Account } {
+  return value && typeof value.access_token === 'string' && value.access_token.length > 0
+    && value.token_type === 'Bearer' && typeof value.expires_at === 'string' && timestamp.test(value.expires_at)
+    && isAccount(value.user);
+}
+
+// 錯誤明細先驗訊息陣列，避免不完整錯誤被當作確定撤權或讓表單摘要中斷。
+export function isAuthProblem(body: any): boolean {
+  return body?.success === false && typeof body.message === 'string' && typeof body.error_code === 'string'
+    && typeof body.log_id === 'string' && (body.errors === undefined || body.errors !== null
+      && typeof body.errors === 'object' && !Array.isArray(body.errors) && Object.values(body.errors).every(
+        // 每欄都必須可安全顯示為字串陣列，保留 API 未繪製欄位的完整訊息。
+        (errors) => Array.isArray(errors) && errors.every(
+          // 摘要只顯示文字，不接受巢狀物件或可執行內容。
+          (message) => typeof message === 'string',
+        ),
+      ));
+}
+
 const bases: string[] = Object.values(BACKENDS).map(
   // 儲存與送出請求只接受固定清單內的 API 基底。
   (entry) => entry[1],

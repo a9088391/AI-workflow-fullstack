@@ -1,0 +1,60 @@
+<form (submit)="submit($event)" [class.reauth-form]="mode() === 'reauth'" novalidate>
+  @if (mode() === 'reauth') {
+    <h2>在原頁重新登入</h2>
+    <p>原帳號登入後會保留本頁未送出的文字，仍須手動送出。</p>
+  }
+  @if (notice(); as message) {
+    <div class="notice" [class.error]="message.code || message.logId" role="alert">
+      <p>{{ message.message }}</p>
+      @if (message.logId) {
+        <small>log_id：{{ message.logId }}</small>
+        <button type="button" (click)="copyLogId(message.logId)">複製 log_id</button>
+      }
+    </div>
+  }
+  @if (errorEntries().length) {
+    <div #summary class="field-summary" tabindex="-1" role="alert" [attr.aria-labelledby]="fieldId('error-title')">
+      <strong [id]="fieldId('error-title')">請檢查下列欄位</strong>
+      @for (entry of errorEntries(); track entry[0]) {
+        @if (hasField(entry[0])) {
+          <a [href]="fieldHref(entry[0])" (click)="focusField($event, entry[0])">{{ entry[0] === 'email' ? 'Email' : entry[0] === 'password' ? '密碼' : '暱稱' }}：{{ entry[1].join('；') }}</a>
+        } @else {
+          <span>{{ entry[0] }}：{{ entry[1].join('；') }}</span>
+        }
+      }
+    </div>
+  }
+  <label [for]="fieldId('email')">Email</label>
+  <input [id]="fieldId('email')" name="email" type="email" autocomplete="email"
+    [(ngModel)]="email" (ngModelChange)="fieldChanged()"
+    [disabled]="blocked() || !!session.operation() || !!lockedTime()"
+    [attr.aria-invalid]="errors()['email'] ? 'true' : null" [attr.aria-describedby]="errors()['email'] ? fieldId('email-error') : null">
+  <small [id]="fieldId('email-error')" class="field-error">{{ errors()['email']?.join('；') }}</small>
+  <label [for]="fieldId('password')">密碼</label>
+  <input [id]="fieldId('password')" name="password" type="password" [attr.autocomplete]="mode() === 'register' ? 'new-password' : 'current-password'"
+    [(ngModel)]="password" (ngModelChange)="fieldChanged()"
+    [disabled]="blocked() || !!session.operation() || !!lockedTime()"
+    [attr.aria-invalid]="errors()['password'] ? 'true' : null" [attr.aria-describedby]="fieldId('password-error')">
+  <small [id]="fieldId('password-error')" class="field-error">{{ errors()['password']?.join('；') || '4–16 碼英文字母或數字' }}</small>
+  @if (mode() === 'register') {
+    <label for="nickname">暱稱</label>
+    <input id="nickname" name="nickname" autocomplete="nickname" [(ngModel)]="nickname" (ngModelChange)="fieldChanged()"
+      [disabled]="blocked() || !!session.operation()" [attr.aria-invalid]="errors()['nickname'] ? 'true' : null"
+      [attr.aria-describedby]="errors()['nickname'] ? 'nickname-error' : null">
+    <small id="nickname-error" class="field-error">{{ errors()['nickname']?.join('；') }}</small>
+  }
+  @if (lockedTime()) {
+    <p class="lock-note" aria-live="off">登入暫時鎖定，約剩 <strong>{{ lockedTime() }}</strong></p>
+  }
+  @if (lockEnded()) { <p class="notice" role="status">可再次嘗試登入</p> }
+  <button class="primary-button" type="submit" [disabled]="blocked() || !!session.operation() || !!lockedTime()">
+    {{ session.operation() ? '處理中…' : mode() === 'register' ? '建立帳號' : mode() === 'reauth' ? '重新登入' : '登入' }}
+    <span aria-hidden="true">→</span>
+  </button>
+  @if (mode() !== 'reauth') {
+    <p class="form-foot">
+      @if (mode() === 'register') { 已有帳號？ <a href="/angular/login">前往登入</a> }
+      @else { 還沒有帳號？ <a href="/angular/register">註冊會員</a> }
+    </p>
+  }
+</form>

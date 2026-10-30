@@ -1,0 +1,26 @@
+:host { display: block; min-width: 0; }
+form { display: grid; gap: 5px; }
+label { margin-top: 14px; font-weight: 700; }
+input { width: 100%; min-width: 0; min-height: 48px; padding: 10px 13px; border: 1px solid #9fb299; border-radius: 7px; background: #fffefa; }
+input[aria-invalid="true"] { border-color: #ad6d4a; }
+.field-error { min-height: 18px; color: #a45437; font-size: 12px; }
+.field-summary { display: grid; gap: 5px; padding: 13px; background: #fff2e9; border-left: 4px solid #b97645; border-radius: 4px; font-size: 13px; }
+.field-summary a { display: flex; align-items: center; min-height: 44px; overflow-wrap: anywhere; }
+.lock-note { margin: 13px 0 0; color: #824b2d; font-weight: 700; font-variant-numeric: tabular-nums; }
+.primary-button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 50px; margin-top: 17px; padding: 11px 18px; border: 0; border-radius: 8px; background: #245744; color: #fffef5; font-weight: 700; transition: transform 150ms ease, background-color 150ms ease; }
+.primary-button:not(:disabled):active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .primary-button:not(:disabled):hover { background: #357158; } }
+.form-foot { margin-top: 19px; color: #5f7065; font-size: 14px; }
+.form-foot a { display: inline-flex; align-items: center; min-height: 44px; color: #245744; font-weight: 700; text-underline-offset: 3px; }
+.notice { margin: 16px 0; padding: 16px 18px; background: #f1f5e9; border-left: 4px solid #81a075; border-radius: 4px; line-height: 1.6; overflow-wrap: anywhere; }
+.notice.error { background: #fff2e9; border-color: #b97645; color: #693d28; }
+.notice p { margin: 0 0 8px; }
+.notice button { min-height: 44px; margin-top: 6px; padding: 7px 14px; background: #fff; border: 1px solid currentColor; border-radius: 6px; color: inherit; font-weight: 700; }
+.notice small { display: block; overflow-wrap: anywhere; }
+.reauth-form { gap: 8px; width: min(100%, 850px); margin: 26px auto; padding: clamp(18px, 3vw, 35px); border: 1px solid #cad4bb; border-radius: 12px; background: #fafbf1; }
+.reauth-form h2 { margin: 0; color: #245744; font-family: "Noto Serif TC", "Songti TC", "PMingLiU", serif; }
+.reauth-form p { margin: 0; }
+.reauth-form label { margin-top: 12px; }
+.reauth-form input { padding: 12px; border-color: #91a98c; background: #fffef8; color: #203d33; }
+.reauth-form .primary-button { max-width: 270px; }
+@media (prefers-reduced-motion: reduce) { .primary-button { transition: none; } }

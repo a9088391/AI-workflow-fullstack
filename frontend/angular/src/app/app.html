@@ -2,7 +2,9 @@
 <div class="landscape" aria-hidden="true"></div>
 <div class="shell">
   <aside class="sidebar">
-    <a class="brand" href="/angular/"><span class="brand-mark" aria-hidden="true">✦</span>文章集<span class="brand-leaf" aria-hidden="true">❧</span></a>
+    <a class="brand" href="/angular/">
+      <span class="brand-mark" aria-hidden="true">✦</span>文章集<span class="brand-leaf" aria-hidden="true">❧</span>
+    </a>
     <p class="sidebar-caption">在文字裡慢慢走一段路</p>
     <nav class="side-nav" aria-label="主要導覽">
       <a href="/angular/" [attr.aria-current]="route === 'list' ? 'page' : null"><span aria-hidden="true">▤</span> 所有文章</a>
@@ -13,44 +15,96 @@
         <a href="/angular/articles/new" [attr.aria-current]="route === 'article-new' ? 'page' : null"><span aria-hidden="true">✎</span> 發表文章</a>
         <a href="/angular/me/articles" [attr.aria-current]="route === 'my-articles' ? 'page' : null"><span aria-hidden="true">▤</span> 我的文章</a>
         <a href="/angular/me/comments" [attr.aria-current]="route === 'my-comments' ? 'page' : null"><span aria-hidden="true">❀</span> 我的留言</a>
-        @if (account()?.role === 'admin') { <details class="admin-nav" [open]="isAdminRoute()"><summary>管理介面</summary><a href="/angular/admin/members">會員管理</a><a href="/angular/admin/articles">文章管理</a><a href="/angular/admin/comments">留言管理</a><a href="/angular/admin/settings/login-lockout">登入鎖定設定</a></details> }
+        @if (account()?.role === 'admin') {
+          <details class="admin-nav" [open]="isAdminRoute()">
+            <summary>管理介面</summary>
+            <a href="/angular/admin/members">會員管理</a>
+            <a href="/angular/admin/articles">文章管理</a>
+            <a href="/angular/admin/comments">留言管理</a>
+            <a href="/angular/admin/settings/login-lockout">登入鎖定設定</a>
+          </details>
+        }
       }
     </nav>
-    <details class="mobile-nav"><summary>選單</summary><nav aria-label="行動導覽"><a href="/angular/">所有文章</a>@if (!account()) { <a href="/angular/login">登入</a><a href="/angular/register">註冊</a> } @else { <a href="/angular/articles/new">發表文章</a><a href="/angular/me/articles">我的文章</a><a href="/angular/me/comments">我的留言</a>@if (account()?.role === 'admin') { <a href="/angular/admin/members">會員管理</a><a href="/angular/admin/articles">文章管理</a><a href="/angular/admin/comments">留言管理</a><a href="/angular/admin/settings/login-lockout">登入鎖定設定</a> } }</nav></details>
+    <details class="mobile-nav">
+      <summary>選單</summary>
+      <nav aria-label="行動導覽">
+        <a href="/angular/">所有文章</a>
+        @if (!account()) {
+          <a href="/angular/login">登入</a>
+          <a href="/angular/register">註冊</a>
+        } @else {
+          <a href="/angular/articles/new">發表文章</a>
+          <a href="/angular/me/articles">我的文章</a>
+          <a href="/angular/me/comments">我的留言</a>
+          @if (account()?.role === 'admin') {
+            <a href="/angular/admin/members">會員管理</a>
+            <a href="/angular/admin/articles">文章管理</a>
+            <a href="/angular/admin/comments">留言管理</a>
+            <a href="/angular/admin/settings/login-lockout">登入鎖定設定</a>
+          }
+        }
+      </nav>
+    </details>
     <div class="sidebar-foot" aria-hidden="true"><span>✿</span><span>❀</span><span>✿</span></div>
   </aside>
 
   <div class="workspace">
     <header class="toolbar">
-      <div class="current-labels"><span>目前前端 <strong>Angular</strong></span><span>目前後端 <strong>{{ backendName() }}</strong></span></div>
-      <details class="switch-panel"><summary>切換版本</summary><div class="switch-fields">
-        <label>切換前端<select aria-label="切換前端版本" value="angular" (change)="switchFrontend($event)">
-          @for (frontend of frontends; track frontend.id) { <option [value]="frontend.id" [selected]="frontend.id === 'angular'" [disabled]="!canSwitchFrontend(frontend.id)">{{ frontend.name }}{{ !canSwitchFrontend(frontend.id) ? '（此頁尚未提供）' : '' }}</option> }
-        </select></label>
-        <label>切換後端<select aria-label="切換目前後端" [value]="backend()" (change)="switchBackend($event)">
-          @for (entry of backends; track entry.id) { <option [value]="entry.base">{{ entry.name }}</option> }
-        </select></label>
-      </div></details>
-      @if (account(); as user) { <div class="account-actions"><span class="account-name">{{ user.nickname }}</span><button type="button" class="text-button" [disabled]="pending() || writePending()" (click)="logout()">{{ pending() ? '登出中…' : '登出' }}</button></div> }
+      <div class="current-labels">
+        <span>目前前端 <strong>Angular</strong></span>
+        <span>目前後端 <strong>{{ backendName() }}</strong></span>
+      </div>
+      <details class="switch-panel">
+        <summary>切換版本</summary>
+        <div class="switch-fields">
+          <label>切換前端
+            <select aria-label="切換前端版本" value="angular" [disabled]="session.operation() === 'logout'" (change)="switchFrontend($event)">
+              @for (frontend of frontends; track frontend.id) {
+                <option [value]="frontend.id" [selected]="frontend.id === 'angular'" [disabled]="!canSwitchFrontend(frontend.id)">{{ frontend.name }}{{ !canSwitchFrontend(frontend.id) ? '（此頁尚未提供）' : '' }}</option>
+              }
+            </select>
+          </label>
+          <label>切換後端
+            <select aria-label="切換目前後端" [value]="backend()" [disabled]="session.operation() === 'logout'" (change)="switchBackend($event)">
+              @for (entry of backends; track entry.id) { <option [value]="entry.base">{{ entry.name }}</option> }
+            </select>
+          </label>
+        </div>
+      </details>
+      @if (account(); as user) {
+        <div class="account-actions">
+          <span class="account-name">{{ user.nickname }}</span>
+          <button type="button" class="text-button" [disabled]="pending() || writePending()" (click)="logout()">{{ pending() ? '登出中…' : '登出' }}</button>
+        </div>
+      }
     </header>
 
     <main id="main" class="paper">
       @if (storageProblem()) { <p class="notice" role="alert">瀏覽器未開放此分頁儲存；可公開閱讀，但無法保留登入或後端選擇。</p> }
       @if (authState() === 'checking') { <p class="notice" role="status">正在驗證登入…</p> }
-      @if (authError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (authState() === 'error') { <button type="button" (click)="initialize()">重新驗證</button> }@else if (authState() === 'expired' && !hasResumeAccount()) { <a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">重新登入</a> }</div> }
+      @if (authError(); as failure) {
+        <div class="notice error" role="alert">
+          <p>{{ failure.message }}</p>
+          @if (failure.logId) {
+            <small>log_id：{{ failure.logId }}</small>
+            <button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button>
+          }
+          @if (authState() === 'error') {
+            <button type="button" [disabled]="pending() || writePending()" (click)="initialize()">重新驗證</button>
+          } @else if (authState() === 'expired' && !hasResumeAccount()) {
+            <a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">重新登入</a>
+          }
+        </div>
+      }
       @if (notice(); as message) { <div class="notice" [class.error]="message.code || message.logId" role="alert"><p>{{ message.message }}</p>@if (message.logId) { <small>log_id：{{ message.logId }}</small><button type="button" (click)="copyLogId(message.logId)">複製 log_id</button> }</div> }
-      @if (writeProblem(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }@if (writeUnknown() && (route === 'article-new' || route === 'article' && unknownNeedsCommentList())) { <button type="button" (click)="inspectUnknown()">讀取列表查證</button> }@if (failure.code === 'E0201' || isAdminRoute() && failure.code === 'E9999' || writeUnknown() && route !== 'article-new' && (route !== 'article' || !unknownNeedsCommentList())) { <button type="button" (click)="readContent()">重讀最新狀態</button> }</div> }
-      @if (unknownList(); as data) { <section class="compare-panel" aria-label="查證結果"><h2>目前列表</h2><p>請自行比對內容與時間；列表不能證明哪筆是剛才的提交。</p>@for (item of data.list; track item.id) { <p>第 {{ item.id }} 筆 · {{ item.body }}</p> }<button type="button" (click)="acknowledgeUnknown()">已查證，允許自行決定下一步</button></section> }
+      @if (writeProblem(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }@if (writeUnknown() && (route === 'article-new' || route === 'article' && unknownNeedsCommentList())) { <button type="button" [disabled]="authState() !== 'active' || pending() || writePending() || conflictLoading()" (click)="inspectUnknown()">讀取列表查證</button> }@if (failure.code === 'E0201' || isAdminRoute() && failure.code === 'E9999' || writeUnknown() && route !== 'article-new' && (route !== 'article' || !unknownNeedsCommentList())) { <button type="button" [disabled]="authState() !== 'active' || pending() || writePending()" (click)="readContent(true)">重讀最新狀態</button> }</div> }
+      @if (unknownList(); as data) { <section class="compare-panel" aria-label="查證結果"><h2>目前列表</h2><p>請自行比對內容與時間；列表不能證明哪筆是剛才的提交。</p>@for (item of data.list; track item.id) { <p>第 {{ item.id }} 筆 · {{ item.body }}</p> }@if (canAcknowledgeUnknown()) { <button type="button" class="text-button" (click)="acknowledgeUnknown()">已查證，允許自行決定下一步</button> }</section> }
       @if (writeUnknown() && canAcknowledgeUnknown() && !unknownList()) { <button type="button" class="text-button" (click)="acknowledgeUnknown()">已查證伺服器目前狀態，自行決定下一步</button> }
       @if ((['article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit'].includes(route) || isAdminRoute() || route === 'article' && authState() === 'expired' && hasResumeAccount()) && authState() !== 'active' && authState() !== 'checking') {
         @if (authState() === 'expired' && hasResumeAccount()) {
-          <form class="reauth-form" (submit)="reauthenticate($event)" novalidate><h2>在原頁重新登入</h2><p>原帳號登入後會保留本頁未送出的文字，仍須手動送出。</p>
-            @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@if (fieldErrors()['email']) { <a [href]="path + search + '#reauth-email'">Email：{{ fieldErrors()['email'].join('；') }}</a> }@if (fieldErrors()['password']) { <a [href]="path + search + '#reauth-password'">密碼：{{ fieldErrors()['password'].join('；') }}</a> }@for (message of otherErrors(); track message) { <span>{{ message }}</span> }</div> }
-            <label for="reauth-email">Email</label><input id="reauth-email" name="reauth-email" type="email" autocomplete="email" [(ngModel)]="reauthEmail" (ngModelChange)="fieldChanged(false)" [disabled]="pending() || !!lockedTime()" [attr.aria-invalid]="fieldErrors()['email'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['email'] ? 'reauth-email-error' : null"><small id="reauth-email-error" class="field-error">{{ fieldErrors()['email']?.join('；') }}</small>
-            <label for="reauth-password">密碼</label><input id="reauth-password" name="reauth-password" type="password" autocomplete="current-password" [(ngModel)]="reauthPassword" (ngModelChange)="fieldChanged(false)" [disabled]="pending() || !!lockedTime()" [attr.aria-invalid]="fieldErrors()['password'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['password'] ? 'reauth-password-error' : null"><small id="reauth-password-error" class="field-error">{{ fieldErrors()['password']?.join('；') }}</small>
-            @if (lockedTime()) { <p class="lock-note">登入暫時鎖定，約剩 {{ lockedTime() }}</p> }
-            <button class="primary-button" type="submit" [disabled]="pending() || !!lockedTime()">{{ pending() ? '驗證中…' : '重新登入' }}</button>
-          </form>
+          <app-account-form mode="reauth" [blocked]="writePending()"
+            (dirtyChange)="accountDirtyChanged($event)" (completed)="accountCompleted($event)" />
         } @else if (authState() === 'guest' || authState() === 'expired') { <p class="notice">此頁需要登入。<a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">前往登入</a></p> }
       }
 
@@ -63,7 +117,7 @@
         @if (articles(); as data) {
           @if (data.list.length === 0) { <div class="empty-state"><span aria-hidden="true">✿</span><p>{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無文章。' }}</p>@if (data.pagination.page > 1) { <a [href]="pageHref(1)">回第一頁</a> }</div> }
           @else { <div class="article-list"><div class="list-head"><span>文章</span><span>發佈日期</span><span>建立來源</span></div>
-            @for (item of data.list; track item.id) { <article class="article-row"><div><h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2><p class="excerpt">{{ item.body }}</p><p class="byline">作者　{{ item.author.nickname }} @if (item.visibility === 'hidden') { · 已下架 }</p>@if (route === 'my-articles' || route === 'managed-articles') { <div class="inline-actions">@if (item.author.id === account()?.id) { <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('article', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div> }</div><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span></article> }
+            @for (item of data.list; track item.id) { <article class="article-row"><div><h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2><p class="excerpt">{{ item.body }}</p><p class="byline">作者　{{ item.author.nickname }} @if (item.visibility === 'hidden') { · 已下架 }</p>@if (route === 'my-articles' || route === 'managed-articles') { <div class="inline-actions">@if (item.author.id === account()?.id) { <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('article', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div> }</div><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span></article> }
           </div> }
           <nav class="pagination" aria-label="文章分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 篇</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
@@ -74,7 +128,7 @@
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small> }<button type="button" (click)="readContent()">重新讀取</button></div> }
         @if (article(); as story) { <article class="reading"><p class="eyebrow">ARTICLE / 閱讀</p><h1>{{ story.title }}</h1><div class="story-meta"><span>作者　<strong>{{ story.author.nickname }}</strong></span><time>{{ story.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(story.created_backend) }}</span>@if (story.visibility === 'hidden') { <span>已下架</span> }</div><div class="story-body">{{ story.body }}</div>
           @if (account() && story.author.id === account()?.id) { <div class="inline-actions"><a [href]="'/angular/articles/' + story.id + '/edit'">編修文章</a></div> }
-          @if (account() && (story.visibility === 'visible' && (story.author.id === account()?.id || account()?.role === 'admin') || story.visibility === 'hidden' && story.can_restore)) { <div class="inline-actions"><button type="button" [disabled]="writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('article', story)">{{ story.visibility === 'visible' ? '下架文章' : '恢復文章' }}</button></div> }
+          @if (account() && (story.visibility === 'visible' && (story.author.id === account()?.id || account()?.role === 'admin') || story.visibility === 'hidden' && story.can_restore)) { <div class="inline-actions"><button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('article', story)">{{ story.visibility === 'visible' ? '下架文章' : '恢復文章' }}</button></div> }
         </article>
           <section class="comments" aria-labelledby="comments-title"><div class="section-heading"><h2 id="comments-title">讀者留言</h2><span aria-hidden="true">✿</span></div>
             @if (commentsLoading()) { <p class="notice" role="status">正在載入留言…</p> }
@@ -84,7 +138,7 @@
               @for (comment of data.list; track comment.id) { <article class="comment"><div class="comment-meta"><strong>{{ comment.author.nickname }}</strong><time>{{ comment.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(comment.created_backend) }}</span></div><p>{{ comment.body }}</p>@if (account() && (comment.author.id === account()?.id || account()?.role === 'admin')) { <a [href]="'/angular/comments/' + comment.id">留言詳情</a> }</article> }
               <nav class="pagination" aria-label="留言分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 則</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
             }
-            @if (account() && story.visibility === 'visible') { <form class="content-form" (submit)="submitComment($event)" novalidate><h3>留下留言</h3>@if (fieldErrors()['body']) { <div class="field-summary" role="alert"><a [href]="path + search + '#comment-body'">留言：{{ fieldErrors()['body'].join('；') }}</a></div> }<label for="comment-body">純文字留言</label><textarea id="comment-body" name="comment-body" rows="5" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small><button class="primary-button" type="submit" [disabled]="writePending() || writeUnknown()">{{ writePending() ? '處理中…' : '發表留言' }}</button></form> }
+            @if (account() && story.visibility === 'visible') { <form class="content-form" (submit)="submitComment($event)" novalidate><h3>留下留言</h3>@if (fieldErrors()['body']) { <div class="field-summary" role="alert"><a [href]="path + search + '#comment-body'">留言：{{ fieldErrors()['body'].join('；') }}</a></div> }<label for="comment-body">純文字留言</label><textarea id="comment-body" name="comment-body" rows="5" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small><button class="primary-button" type="submit" [disabled]="pending() || writePending() || writeUnknown()">{{ writePending() ? '處理中…' : '發表留言' }}</button></form> }
             @else if (!account()) { <p class="read-only-note"><a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">登入後留言</a></p> }
           </section>
         }
@@ -94,7 +148,7 @@
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p><button type="button" (click)="readContent()">重新讀取</button></div> }
         <!-- 自己的留言與公開列表使用相同超頁恢復規則。 -->
         @if (myComments(); as data) { @if (!data.list.length) { <p class="empty-state">{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無留言。' }} @if (data.pagination.page > 1) { <a href="/angular/me/comments">回第一頁</a> }</p> }
-          @for (item of data.list; track item.id) { <article class="comment"><div class="comment-meta"><strong>文章 #{{ item.article_id }}</strong><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span>@if (item.visibility === 'hidden') { <span>已下架</span> }</div><p>{{ item.body }}</p><div class="inline-actions"><a [href]="'/angular/comments/' + item.id">留言詳情</a><a [href]="'/angular/comments/' + item.id + '/edit'">編修</a>@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div></article> }
+          @for (item of data.list; track item.id) { <article class="comment"><div class="comment-meta"><strong>文章 #{{ item.article_id }}</strong><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span>@if (item.visibility === 'hidden') { <span>已下架</span> }</div><p>{{ item.body }}</p><div class="inline-actions"><a [href]="'/angular/comments/' + item.id">留言詳情</a><a [href]="'/angular/comments/' + item.id + '/edit'">編修</a>@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div></article> }
           <nav class="pagination" aria-label="我的留言分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 則</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
       } @else if (route === 'members') {
@@ -105,21 +159,21 @@
         <!-- 搜尋首頁零筆顯示無符合結果；超頁保留返回入口。 -->
         @if (members(); as data) {
           @if (!data.list.length) { <div class="empty-state"><span aria-hidden="true">✿</span><p>{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : hasMemberKeyword() ? '沒有符合搜尋條件的會員。' : '目前尚無會員。' }}</p>@if (data.pagination.page > 1) { <a [href]="pageHref(1)">回第一頁</a> }</div> }
-          @else { <div class="admin-list" aria-label="會員列表">@for (item of data.list; track item.id) { <article class="admin-row"><div><h2><a [href]="'/angular/admin/members/' + item.id">{{ item.nickname }}</a></h2><p>{{ item.email }}</p></div><div><span class="admin-label">狀態</span><strong>{{ item.status === 'active' ? '啟用' : '已停用' }}</strong></div><div><span class="admin-label">加入日期</span><time>{{ item.created_at.slice(0, 10) }}</time></div><div class="inline-actions"><a [href]="'/angular/admin/members/' + item.id">查看詳情</a><button type="button" [disabled]="writePending() || writeUnknown()" (click)="changeMemberStatus(item)">{{ item.status === 'active' ? '停用' : '恢復' }}</button></div></article> }</div> }
+          @else { <div class="admin-list" aria-label="會員列表">@for (item of data.list; track item.id) { <article class="admin-row"><div><h2><a [href]="'/angular/admin/members/' + item.id">{{ item.nickname }}</a></h2><p>{{ item.email }}</p></div><div><span class="admin-label">狀態</span><strong>{{ item.status === 'active' ? '啟用' : '已停用' }}</strong></div><div><span class="admin-label">加入日期</span><time>{{ item.created_at.slice(0, 10) }}</time></div><div class="inline-actions"><a [href]="'/angular/admin/members/' + item.id">查看詳情</a><button type="button" [disabled]="pending() || writePending() || writeUnknown()" (click)="changeMemberStatus(item)">{{ item.status === 'active' ? '停用' : '恢復' }}</button></div></article> }</div> }
           <nav class="pagination" aria-label="會員分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 位</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
       } @else if (route === 'member') {
         <a class="back-link" href="/angular/admin/members">← 回會員管理</a><div class="page-heading"><div><p class="eyebrow">MEMBER / 詳情</p><h1>會員詳情</h1></div><span class="heading-flower" aria-hidden="true">❀</span></div>
         @if (loading()) { <p class="notice" role="status">正在載入會員…</p> }
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }<button type="button" (click)="readContent()">重新讀取</button></div> }
-        @if (member(); as value) { <article class="member-card"><h2>{{ value.nickname }}</h2><dl><div><dt>會員編號</dt><dd>{{ value.id }}</dd></div><div><dt>Email</dt><dd>{{ value.email }}</dd></div><div><dt>狀態</dt><dd>{{ value.status === 'active' ? '啟用' : '已停用' }}</dd></div><div><dt>加入日期</dt><dd>{{ value.created_at }}</dd></div></dl><div class="inline-actions"><button type="button" [disabled]="writePending() || writeUnknown()" (click)="changeMemberStatus(value)">{{ value.status === 'active' ? '停用會員' : '恢復會員' }}</button></div></article> }
+        @if (member(); as value) { <article class="member-card"><h2>{{ value.nickname }}</h2><dl><div><dt>會員編號</dt><dd>{{ value.id }}</dd></div><div><dt>Email</dt><dd>{{ value.email }}</dd></div><div><dt>狀態</dt><dd>{{ value.status === 'active' ? '啟用' : '已停用' }}</dd></div><div><dt>加入日期</dt><dd>{{ value.created_at }}</dd></div></dl><div class="inline-actions"><button type="button" [disabled]="pending() || writePending() || writeUnknown()" (click)="changeMemberStatus(value)">{{ value.status === 'active' ? '停用會員' : '恢復會員' }}</button></div></article> }
       } @else if (route === 'managed-comments') {
         <div class="page-heading"><div><p class="eyebrow">NOTES / 管理</p><h1>留言管理</h1><p class="heading-subtitle">包含個別下架與所屬文章下架的留言。</p></div><span class="heading-flower" aria-hidden="true">❀</span></div>
         @if (loading()) { <p class="notice" role="status">正在載入留言…</p> }
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }<button type="button" (click)="readContent()">重新讀取</button></div> }
         <!-- 管理留言零筆超頁不代表整體沒有留言。 -->
         @if (managedComments(); as data) { @if (!data.list.length) { <p class="empty-state">{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無留言。' }} @if (data.pagination.page > 1) { <a [href]="pageHref(1)">回第一頁</a> }</p> }
-          @for (item of data.list; track item.id) { <article class="comment admin-comment"><div class="comment-meta"><strong>{{ item.author.nickname }}</strong><span>文章 #{{ item.article_id }}</span><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span><span>{{ item.visibility === 'visible' ? '公開' : '已下架' }}</span></div><p>{{ item.body }}</p><div class="inline-actions"><a [href]="'/angular/comments/' + item.id">留言詳情</a>@if (item.author.id === account()?.id) { <a [href]="'/angular/comments/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div></article> }
+          @for (item of data.list; track item.id) { <article class="comment admin-comment"><div class="comment-meta"><strong>{{ item.author.nickname }}</strong><span>文章 #{{ item.article_id }}</span><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span><span>{{ item.visibility === 'visible' ? '公開' : '已下架' }}</span></div><p>{{ item.body }}</p><div class="inline-actions"><a [href]="'/angular/comments/' + item.id">留言詳情</a>@if (item.author.id === account()?.id) { <a [href]="'/angular/comments/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div></article> }
           <nav class="pagination" aria-label="管理留言分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 則</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
       } @else if (route === 'lockout-settings') {
@@ -128,11 +182,11 @@
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }<button type="button" (click)="readContent()">重新讀取</button></div> }
         @if (settings(); as current) { <form class="content-form settings-form" (submit)="submitSettings($event)" novalidate><h2>會員登入失敗鎖定</h2><p>伺服器目前值：{{ current.enabled ? '啟用' : '停用' }}、{{ current.window_minutes }} 分鐘內 {{ current.failure_threshold }} 次、鎖定 {{ current.lock_seconds }} 秒。</p>
           @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of settingErrorEntries(); track entry[0]) { <a [href]="path + '#' + entry[0]">{{ entry[0] }}：{{ entry[1].join('；') }}</a> }@for (message of settingOtherErrors(); track message) { <span>{{ message }}</span> }</div> }
-          <label class="check-label" for="enabled"><input id="enabled" name="enabled" type="checkbox" [(ngModel)]="settingDraft.enabled" (ngModelChange)="settingChanged()" [disabled]="writePending()">啟用登入失敗鎖定</label>
-          <label for="window_minutes">計算視窗（分鐘）</label><input id="window_minutes" name="window_minutes" type="number" min="1" max="60" step="1" [(ngModel)]="settingDraft.window_minutes" (ngModelChange)="settingChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['window_minutes'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['window_minutes']?.join('；') }}</small>
-          <label for="failure_threshold">失敗次數</label><input id="failure_threshold" name="failure_threshold" type="number" min="1" max="100" step="1" [(ngModel)]="settingDraft.failure_threshold" (ngModelChange)="settingChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['failure_threshold'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['failure_threshold']?.join('；') }}</small>
-          <label for="lock_seconds">鎖定秒數</label><input id="lock_seconds" name="lock_seconds" type="number" min="1" max="86400" step="1" [(ngModel)]="settingDraft.lock_seconds" (ngModelChange)="settingChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['lock_seconds'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['lock_seconds']?.join('；') }}</small>
-          <button class="primary-button" type="submit" [disabled]="writePending() || writeUnknown()">{{ writePending() ? '儲存中…' : '儲存設定' }}</button><button type="button" class="text-button" [disabled]="writePending()" (click)="readContent()">重讀伺服器值</button>
+          <label class="check-label" for="enabled"><input id="enabled" name="enabled" type="checkbox" [(ngModel)]="settingDraft.enabled" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()">啟用登入失敗鎖定</label>
+          <label for="window_minutes">計算視窗（分鐘）</label><input id="window_minutes" name="window_minutes" type="number" min="1" max="60" step="1" [(ngModel)]="settingDraft.window_minutes" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['window_minutes'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['window_minutes']?.join('；') }}</small>
+          <label for="failure_threshold">失敗次數</label><input id="failure_threshold" name="failure_threshold" type="number" min="1" max="100" step="1" [(ngModel)]="settingDraft.failure_threshold" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['failure_threshold'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['failure_threshold']?.join('；') }}</small>
+          <label for="lock_seconds">鎖定秒數</label><input id="lock_seconds" name="lock_seconds" type="number" min="1" max="86400" step="1" [(ngModel)]="settingDraft.lock_seconds" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['lock_seconds'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['lock_seconds']?.join('；') }}</small>
+          <button class="primary-button" type="submit" [disabled]="pending() || writePending() || writeUnknown()">{{ writePending() ? '儲存中…' : '儲存設定' }}</button><button type="button" class="text-button" [disabled]="pending() || writePending()" (click)="readContent()">重讀伺服器值</button>
         </form> }
       } @else if (route === 'article-new' || route === 'article-edit') {
         <a class="back-link" [href]="route === 'article-new' ? '/angular/me/articles' : '/angular/articles/' + validEditArticleId">← 返回文章</a>
@@ -142,9 +196,9 @@
         @if (authState() === 'active' && (route === 'article-new' || article())) {
           <form class="content-form" (submit)="route === 'article-new' ? submitArticle($event) : submitEdit($event)" novalidate>
             @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of contentErrorEntries(); track entry[0]) { <a [href]="path + search + '#' + entry[0]">{{ entry[0] === 'title' ? '標題' : '內文' }}：{{ entry[1].join('；') }}</a> }@for (message of contentOtherErrors(); track message) { <span>{{ message }}</span> }</div> }
-            <label for="title">標題</label><input id="title" name="title" [(ngModel)]="titleDraft" (ngModelChange)="contentChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['title'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['title']?.join('；') }}</small>
-            <label for="body">純文字內文</label><textarea id="body" name="body" rows="14" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>
-            <button class="primary-button" type="submit" [disabled]="writePending() || !!conflictLatest() || writeUnknown() || writeProblem()?.code === 'E0201'">{{ writePending() ? '處理中…' : route === 'article-new' ? '發表文章' : '儲存修改' }}</button>
+            <label for="title">標題</label><input id="title" name="title" [(ngModel)]="titleDraft" (ngModelChange)="contentChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['title'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['title']?.join('；') }}</small>
+            <label for="body">純文字內文</label><textarea id="body" name="body" rows="14" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>
+            <button class="primary-button" type="submit" [disabled]="pending() || writePending() || !!conflictLatest() || writeUnknown() || writeProblem()?.code === 'E0201'">{{ writePending() ? '處理中…' : route === 'article-new' ? '發表文章' : '儲存修改' }}</button>
           </form>
           @if (route === 'article-edit') { <button type="button" class="text-button" [disabled]="conflictLoading() || writePending()" (click)="inspectLatest()">{{ conflictLoading() ? '讀取中…' : '重讀並比較最新內容' }}</button> }
           @if (conflictLatest(); as latest) { <div class="compare-panel"><h2>比較最新內容</h2><p>目前版本 {{ latest.version }}；你的草稿使用版本 {{ versionDraft }}。先閱讀下方最新內容，再決定整合或捨棄。</p>@if (isLatestArticle(latest)) { <h3>{{ latest.title }}</h3> }<pre>{{ latest.body }}</pre><div class="inline-actions"><button type="button" (click)="acceptLatest(false)">保留草稿並採用新版本</button><button type="button" (click)="acceptLatest(true)">捨棄草稿，使用最新內容</button></div></div> }
@@ -158,23 +212,23 @@
           @if (parentArticle(); as parent) { <p>所屬文章：<a [href]="'/angular/articles/' + parent.id">{{ parent.title }}</a></p> }
           @if (parentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p><button type="button" (click)="readParent(note.article_id)">重試讀取所屬文章</button></div> }
           @if (route === 'comment') { <div class="story-body">{{ note.body }}</div>@if (note.author.id === account()?.id && parentArticle()?.visibility === 'visible') { <a [href]="'/angular/comments/' + note.id + '/edit'">編修留言</a> } }
-          @if (route === 'comment-edit') { <form class="content-form" (submit)="submitEdit($event)" novalidate>@if (fieldErrors()['body']) { <div class="field-summary" role="alert"><a [href]="path + search + '#body'">留言：{{ fieldErrors()['body'].join('；') }}</a></div> }<label for="body">純文字留言</label><textarea id="body" name="body" rows="9" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>@for (message of contentOtherErrors(); track message) { <p class="field-error">{{ message }}</p> }<button class="primary-button" type="submit" [disabled]="writePending() || parentArticle()?.visibility !== 'visible' || !!conflictLatest() || writeUnknown() || writeProblem()?.code === 'E0201'">{{ writePending() ? '處理中…' : '儲存修改' }}</button></form><p class="read-only-note">只有確認所屬文章公開後，才能送出內文修改。</p><button type="button" class="text-button" [disabled]="conflictLoading() || writePending()" (click)="inspectLatest()">{{ conflictLoading() ? '讀取中…' : '重讀並比較最新內容' }}</button> }
-          @if (note.visibility === 'visible' && (note.author.id === account()?.id || account()?.role === 'admin') || note.visibility === 'hidden' && note.can_restore) { <div class="inline-actions"><button type="button" [disabled]="writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', note)">{{ note.visibility === 'visible' ? '下架留言' : '恢復留言' }}</button></div> }
+          @if (route === 'comment-edit') { <form class="content-form" (submit)="submitEdit($event)" novalidate>@if (fieldErrors()['body']) { <div class="field-summary" role="alert"><a [href]="path + search + '#body'">留言：{{ fieldErrors()['body'].join('；') }}</a></div> }<label for="body">純文字留言</label><textarea id="body" name="body" rows="9" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>@for (message of contentOtherErrors(); track message) { <p class="field-error">{{ message }}</p> }<button class="primary-button" type="submit" [disabled]="pending() || writePending() || parentArticle()?.visibility !== 'visible' || !!conflictLatest() || writeUnknown() || writeProblem()?.code === 'E0201'">{{ writePending() ? '處理中…' : '儲存修改' }}</button></form><p class="read-only-note">只有確認所屬文章公開後，才能送出內文修改。</p><button type="button" class="text-button" [disabled]="conflictLoading() || writePending()" (click)="inspectLatest()">{{ conflictLoading() ? '讀取中…' : '重讀並比較最新內容' }}</button> }
+          @if (note.visibility === 'visible' && (note.author.id === account()?.id || account()?.role === 'admin') || note.visibility === 'hidden' && note.can_restore) { <div class="inline-actions"><button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', note)">{{ note.visibility === 'visible' ? '下架留言' : '恢復留言' }}</button></div> }
           @if (conflictLatest(); as latest) { <div class="compare-panel"><h2>比較最新留言</h2><p>目前版本 {{ latest.version }}；你的草稿使用版本 {{ versionDraft }}。</p><pre>{{ latest.body }}</pre><div class="inline-actions"><button type="button" (click)="acceptLatest(false)">保留草稿並採用新版本</button><button type="button" (click)="acceptLatest(true)">捨棄草稿，使用最新內容</button></div></div> }
         </article> }
       } @else if (route === 'login' || route === 'register') {
-        <div class="form-layout"><div class="form-decoration" aria-hidden="true"><span>✿</span><p>在這裡，<br>開始下一段故事。</p></div><section class="account-card" aria-labelledby="account-title"><p class="eyebrow">{{ route === 'register' ? 'JOIN / 註冊' : 'WELCOME BACK / 登入' }}</p><h1 id="account-title">{{ route === 'register' ? '加入文章集' : '歡迎回來' }}</h1><p class="form-intro">{{ route === 'register' ? '留下你的名字，開始閱讀與分享。' : '登入後，繼續你的閱讀旅程。' }}</p>
-          <form (submit)="submitAccount($event)" novalidate>
-            @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of errorEntries(); track entry[0]) { <a [href]="path + search + '#' + entry[0]">{{ entry[0] === 'email' ? 'Email' : entry[0] === 'password' ? '密碼' : '暱稱' }}：{{ entry[1].join('；') }}</a> }@for (message of otherErrors(); track message) { <span>{{ message }}</span> }</div> }
-            <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" [(ngModel)]="email" (ngModelChange)="fieldChanged()" [disabled]="pending() || !!lockedTime()" [attr.aria-invalid]="fieldErrors()['email'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['email'] ? 'email-error' : null"><small id="email-error" class="field-error">{{ fieldErrors()['email']?.join('；') }}</small>
-            <label for="password">密碼</label><input id="password" name="password" type="password" [attr.autocomplete]="route === 'register' ? 'new-password' : 'current-password'" [(ngModel)]="password" (ngModelChange)="fieldChanged()" [disabled]="pending() || !!lockedTime()" [attr.aria-invalid]="fieldErrors()['password'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['password'] ? 'password-error' : null"><small id="password-error" class="field-error">{{ fieldErrors()['password']?.join('；') || '4–16 碼英文字母或數字' }}</small>
-            @if (route === 'register') { <label for="nickname">暱稱</label><input id="nickname" name="nickname" autocomplete="nickname" [(ngModel)]="nickname" (ngModelChange)="fieldChanged()" [disabled]="pending()" [attr.aria-invalid]="fieldErrors()['nickname'] ? 'true' : null" [attr.aria-describedby]="fieldErrors()['nickname'] ? 'nickname-error' : null"><small id="nickname-error" class="field-error">{{ fieldErrors()['nickname']?.join('；') }}</small> }
-            @if (lockedTime()) { <p class="lock-note">登入暫時鎖定，約剩 <strong>{{ lockedTime() }}</strong></p> }
-            @if (lockEnded()) { <p class="notice">可再次嘗試登入</p> }
-            <button class="primary-button" type="submit" [disabled]="pending() || !!lockedTime()">{{ pending() ? '處理中…' : route === 'register' ? '建立帳號' : '登入' }} <span aria-hidden="true">→</span></button>
-            <p class="form-foot">@if (route === 'register') { 已有帳號？ <a href="/angular/login">前往登入</a> } @else { 還沒有帳號？ <a href="/angular/register">註冊會員</a> }</p>
-          </form>
-        </section></div>
+        <div class="form-layout">
+          <div class="form-decoration" aria-hidden="true">
+            <span>✿</span><p>在這裡，<br>開始下一段故事。</p>
+          </div>
+          <section class="account-card" aria-labelledby="account-title">
+            <p class="eyebrow">{{ route === 'register' ? 'JOIN / 註冊' : 'WELCOME BACK / 登入' }}</p>
+            <h1 id="account-title">{{ route === 'register' ? '加入文章集' : '歡迎回來' }}</h1>
+            <p class="form-intro">{{ route === 'register' ? '留下你的名字，開始閱讀與分享。' : '登入後，繼續你的閱讀旅程。' }}</p>
+          <app-account-form [mode]="route === 'register' ? 'register' : 'login'" [blocked]="writePending()"
+            (dirtyChange)="accountDirtyChanged($event)" (completed)="accountCompleted($event)" />
+          </section>
+        </div>
       } @else {
         <div class="empty-state"><span aria-hidden="true">✿</span><h1>找不到頁面</h1><a href="/angular/">返回文章列表</a></div>
       }

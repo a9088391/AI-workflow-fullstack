@@ -1,17 +1,19 @@
 import { CommonModule } from '@angular/common';
-import { Component, HostListener, OnDestroy, OnInit, signal } from '@angular/core';
+import { Component, HostListener, OnDestroy, OnInit, computed, inject, signal, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import {
-  Account, apiRequest, Article, BACKENDS, BACKEND_KEY, clearSessionIfOwned, Comment, countdown,
-  FRONTENDS, frontendTarget, normalizeEmail, Page, positiveNumber, problem, Problem,
-  readBackend, readSession, retryAfterSeconds, saveSession, Session, SESSION_KEY, supportsSvelteRoute,
-  validReturn, validateAccount, validateContent,
+  apiRequest, Article, BACKENDS, Comment,
+  FRONTENDS, frontendTarget, Page, positiveNumber, problem, Problem,
+  Session, supportsSvelteRoute,
+  validReturn, validateContent,
 } from './contracts';
+import { AccountForm } from './account-form';
+import { AccountSession, ResumeActor } from './account-session';
 import { isLockoutSettings, isMember, LockoutSettings, Member, memberKeyword, settingErrors } from './admin';
 
 @Component({
   selector: 'app-root',
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, AccountForm],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
@@ -49,11 +51,19 @@ export class App implements OnInit, OnDestroy {
   readonly page = positiveNumber(this.query.get('page')) || 1;
   readonly returnTo = validReturn(this.query.get('return_to') || '') ? this.query.get('return_to')! : '/angular/';
 
-  readonly backend = signal<string>(BACKENDS.laravel[1]);
-  readonly credential = signal<Session | null>(null);
-  readonly account = signal<Account | null>(null);
-  readonly authState = signal<'checking' | 'guest' | 'active' | 'expired' | 'disabled' | 'error'>('checking');
-  readonly authError = signal<Problem | null>(null);
+  readonly session = inject(AccountSession);
+  readonly backend = this.session.backend;
+  readonly credential = this.session.credential;
+  readonly account = this.session.account;
+  readonly authState = this.session.state;
+  readonly authError = this.session.error;
+  readonly storageProblem = this.session.storageProblem;
+  readonly pending = computed(
+    // 外殼僅讀單一 session 的等待摘要，不另存一份認證狀態。
+    () => this.session.operation() !== null,
+  );
+  @ViewChild(AccountForm) private accountForm?: AccountForm;
+  private accountDirty = false;
   readonly notice = signal<Problem | null>(null);
   readonly loading = signal(false);
   readonly contentError = signal<Problem | null>(null);
@@ -78,42 +88,29 @@ export class App implements OnInit, OnDestroy {
   readonly conflictLatest = signal<Article | Comment | null>(null);
   readonly conflictLoading = signal(false);
   readonly unknownList = signal<Page<Article | Comment> | null>(null);
-  readonly pending = signal(false);
   readonly fieldErrors = signal<Record<string, string[]>>({});
-  readonly lockedTime = signal('');
-  readonly lockEnded = signal(false);
-  readonly storageProblem = signal(false);
-  email = '';
-  password = '';
-  nickname = '';
   keywordDraft = this.query.get('keyword') || '';
   settingDraft: LockoutSettings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
   titleDraft = '';
   bodyDraft = '';
   versionDraft = 0;
-  reauthEmail = '';
-  reauthPassword = '';
-  private resumeAccountId: number | null = null;
   private writeAttempt = 0;
+  private verificationAttempt = 0;
   private unknownNeedsComments = false;
   dirty = false;
-  private lockDeadline = 0;
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private authAbort: AbortController | null = null;
   private readAbort: AbortController | null = null;
-  private attempt = 0;
   private ignoreUnload = false;
 
   // 初次進頁先辨識共用後端與登入，再讀目前頁面，避免私有狀態短暫閃現。
   ngOnInit(): void { void this.initialize(); }
 
-  // 離開頁面時中止唯讀請求與倒數，舊結果不得改寫新頁面。
-  ngOnDestroy(): void { this.authAbort?.abort(); this.readAbort?.abort(); this.clearCountdown(); }
+  // 離開頁面時中止帳號等待、讀取與倒數，舊結果不得改寫新頁面。
+  ngOnDestroy(): void { this.cancelAuthentication(); }
 
   // 表單有未送出文字或請求時保留瀏覽器離開提醒；程式確認後不重複詢問。
   @HostListener('window:beforeunload', ['$event'])
   beforeUnload(event: BeforeUnloadEvent): void {
-    if (this.ignoreUnload || (!this.dirty && !this.pending() && !this.writePending())) return;
+    if (this.ignoreUnload || (!this.dirty && !this.accountDirty && !this.pending() && !this.writePending())) return;
     event.preventDefault();
     event.returnValue = '';
   }
@@ -122,84 +119,72 @@ export class App implements OnInit, OnDestroy {
   @HostListener('window:pageshow', ['$event'])
   restoreFromCache(event: PageTransitionEvent): void { if (event.persisted) window.location.reload(); }
 
-  // 儲存被禁用仍允許訪客閱讀，但不把憑證留在其他儲存位置。
-  private storage(): Storage | null {
-    try { return sessionStorage; }
-    catch { this.storageProblem.set(true); return null; }
+  // 離開文件時作廢舊結果；beforeunload 尚可能取消，因此不能在提醒時就撤掉請求。
+  @HostListener('window:pagehide')
+  pageHidden(): void { this.cancelAuthentication(); }
+
+  // 原生 details 以 Escape 關閉並回到觸發控制，窄螢幕與鍵盤使用者不會困在面板內。
+  @HostListener('document:keydown.escape', ['$event'])
+  closePanel(event: Event): void {
+    const target = event.target instanceof Element ? event.target.closest<HTMLDetailsElement>('details[open]') : null;
+    const panel = target || document.querySelector<HTMLDetailsElement>('.switch-panel[open], .mobile-nav[open]');
+    if (panel) { event.preventDefault(); panel.open = false; panel.querySelector('summary')?.focus(); }
   }
 
-  // 只用目前後端驗證原 JWT；暫時故障保留憑證供手動重試。
+  // 外殼只持有帳號表單的離頁摘要，輸入與欄位錯誤留在帳號元件。
+  accountDirtyChanged(dirty: boolean): void { this.accountDirty = dirty; }
+
+  // 初次或手動重驗先撤掉舊內容，完成目前 /me 後才決定讀取身分。
   async initialize(): Promise<void> {
-    this.authAbort?.abort();
-    const controller = new AbortController();
-    this.authAbort = controller;
-    const storage = this.storage();
-    const backend = storage ? readBackend(storage) : BACKENDS.laravel[1];
-    const credential = storage ? readSession(storage) : null;
-    this.backend.set(backend);
-    this.credential.set(credential);
-    this.account.set(null);
-    this.authError.set(null);
-    if (!credential) this.authState.set('guest');
-    else {
-      this.authState.set('checking');
-      try {
-        const { response, body } = await apiRequest(backend, '/api/me', { token: credential.accessToken, signal: controller.signal });
-        if (controller.signal.aborted || !this.owns(credential)) return;
-        if (response.ok && body.success === true && this.isAccount(body.data)) {
-          this.account.set(body.data); this.authState.set('active');
-        } else {
-          const failure = problem(response.status, body);
-          if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
-          else { this.authState.set('error'); this.authError.set(failure); }
-        }
-      } catch {
-        if (controller.signal.aborted) return;
-        this.authState.set('error');
-        this.authError.set({ message: '暫時無法驗證登入，請確認目前後端後重新驗證。' });
-      }
-    }
-    if (!controller.signal.aborted) await this.readContent();
+    if (this.writePending() || this.session.operation() && this.session.operation() !== 'verify') return;
+    this.clearProtectedContent();
+    if (await this.session.initialize()) await this.readContent();
   }
 
-  // 本人資料至少須有核准的識別、角色與啟用狀態，才顯示登入導覽。
-  private isAccount(value: any): value is Account {
-    return value && Number.isSafeInteger(value.id) && value.id > 0 && typeof value.email === 'string'
-      && typeof value.nickname === 'string' && (value.role === 'member' || value.role === 'admin')
-      && value.status === 'active' && typeof value.created_at === 'string';
-  }
+  // 內容回應使用同一 session 的原憑證比對，不建立自己的登入快照。
+  private owns(sent: Session): boolean { return this.session.owns(sent); }
 
-  // 結果只能影響送出時持有的同一後端與憑證。
-  private owns(sent: Session): boolean {
-    const current = this.credential();
-    return Boolean(current && current.backend === sent.backend && current.accessToken === sent.accessToken && current.expiresAt === sent.expiresAt);
-  }
+  // API 的失效／停用判定沿用單一 session 責任，5xx 不撤權。
+  private isAuthFailure(status: number, failure: Problem): boolean { return this.session.isAuthFailure(status, failure); }
 
-  // 已知失效與停用才清除 JWT；連線或 5xx 不等於登出。
-  private isAuthFailure(status: number, failure: Problem): boolean {
-    return status === 401 && failure.code === 'E0002' || status === 403 && failure.code === 'E0102';
-  }
-
-  // 只有原請求持有的登入會失效；即使瀏覽器拒絕刪除儲存，也不能保留受限內容。
+  // 確定失權後立即取消讀取、撤掉內容與操作；原帳號文字仍保留供手動重登。
   private invalidate(sent: Session, failure: Problem): void {
-    if (!this.owns(sent)) return;
-    this.resumeAccountId = this.account()?.id ?? null;
-    const storage = this.storage();
-    const cleared = Boolean(storage && clearSessionIfOwned(storage, sent));
-    this.credential.set(null);
-    this.account.set(null);
-    this.authState.set(failure.code === 'E0102' ? 'disabled' : 'expired');
-    this.authError.set(cleared ? failure : { ...failure, message: `${failure.message}；無法確認本機舊登入資料已清除，請關閉此分頁。` });
-    // 憑證失效時清掉可能僅作者可讀的內容，包含原請求已清空畫面的情況，再以訪客身分重讀。
-    this.article.set(null); this.comments.set(null); this.comment.set(null); this.myComments.set(null); this.parentArticle.set(null); this.unknownList.set(null);
-    this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
-    this.writeAttempt++;
-    this.writePending.set(false);
+    if (!this.session.invalidate(sent, failure)) return;
+    // 其他讀取的失權不能證明在途寫入失敗；保留未知結果，重登後仍須人工查證。
+    if (this.writePending()) {
+      this.writeUnknown.set(true); this.unknownVerified.set(false);
+      this.writeProblem.set({ message: '結果尚未確認；登入失效前送出的內容仍可能完成，請重新登入後手動查證。' });
+    }
+    this.clearProtectedContent();
     void this.readContent();
   }
 
-  // 用新 AbortController 讀列表或單篇；公開資料在登入驗證後才決定是否附 JWT。
-  async readContent(): Promise<void> {
+  // 同步撤掉各頁已失權資料及舊請求資格；不清草稿，也不宣稱取消寫入等於伺服器回滾。
+  private clearProtectedContent(): void {
+    this.readAbort?.abort(); this.readAbort = null;
+    this.loading.set(false); this.commentsLoading.set(false); this.parentLoading.set(false); this.conflictLoading.set(false);
+    this.articles.set(null); this.article.set(null); this.comments.set(null); this.comment.set(null);
+    this.myComments.set(null); this.parentArticle.set(null); this.clearVerification();
+    this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
+    this.writeAttempt++; this.writePending.set(false);
+  }
+
+  // 新讀取或認證恢復會撤銷舊查證；序號阻止較早回應重新授予人工確認資格。
+  private clearVerification(): number {
+    this.unknownVerified.set(false); this.unknownList.set(null); this.conflictLatest.set(null);
+    this.conflictLoading.set(false);
+    return ++this.verificationAttempt;
+  }
+
+  // 接受切換或真正離頁才終止認證／倒數，取消對話框仍保留目前頁面的狀態。
+  private cancelAuthentication(): void {
+    this.accountForm?.cancel(); this.session.cancel(); this.clearProtectedContent();
+  }
+
+  // 用新 AbortController 讀列表或單篇；只有明確的手動查證可解除目前登入下的未知結果。
+  async readContent(manualVerification = false): Promise<void> {
+    if (this.authState() === 'checking') return;
+    if (manualVerification && (this.authState() !== 'active' || this.pending() || this.writePending())) return;
     if (!['list', 'article', 'my-articles', 'my-comments', 'article-edit', 'comment', 'comment-edit',
       'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(this.route)) return;
     this.readAbort?.abort();
@@ -214,8 +199,9 @@ export class App implements OnInit, OnDestroy {
     this.comment.set(null);
     this.parentArticle.set(null);
     this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
-    // 只有結果不明之後啟動的讀取可作為查證，舊請求晚回來不能解除警告。
-    const verifyUnknown = this.writeUnknown();
+    // 一般載入與重登自動重讀只更新畫面；新查證須撤銷先前成功或仍在途的資格。
+    const verification = this.clearVerification();
+    const verifyUnknown = manualVerification && this.writeUnknown();
     const verifyAttempt = this.writeAttempt;
     let verified = false;
     const credential = this.authState() === 'active' ? this.credential() : null;
@@ -264,13 +250,15 @@ export class App implements OnInit, OnDestroy {
         // 我的留言包含個別下架資料，逐筆確認形狀後才顯示。
         (item: unknown) => this.isComment(item),
       )) { this.myComments.set(body.data); verified = true; }
-      else if (response.ok && body.success === true && ['article', 'article-edit'].includes(this.route) && this.isArticle(body.data)) {
+      else if (response.ok && body.success === true && ['article', 'article-edit'].includes(this.route) && this.isArticle(body.data)
+        && body.data.id === Number(this.validArticleId || this.validEditArticleId)) {
         if (this.route === 'article-edit' && body.data.author.id !== this.account()?.id) { this.contentError.set({ message: '沒有權限使用此功能', code: 'E0003' }); return; }
         this.article.set(body.data);
         verified = true;
         if (this.route === 'article') void this.readComments(controller);
         if (this.route === 'article-edit' && !this.dirty) this.loadArticleDraft(body.data);
-      } else if (response.ok && body.success === true && ['comment', 'comment-edit'].includes(this.route) && this.isComment(body.data)) {
+      } else if (response.ok && body.success === true && ['comment', 'comment-edit'].includes(this.route) && this.isComment(body.data)
+        && body.data.id === Number(this.validCommentId)) {
         if (this.route === 'comment-edit' && body.data.author.id !== this.account()?.id) { this.contentError.set({ message: '沒有權限使用此功能', code: 'E0003' }); return; }
         this.comment.set(body.data);
         verified = true;
@@ -285,9 +273,11 @@ export class App implements OnInit, OnDestroy {
       if (!controller.signal.aborted) this.contentError.set({ message: '讀取失敗，請確認目前後端後重試。' });
     } finally {
       if (!controller.signal.aborted) {
-        if (verified && verifyUnknown && verifyAttempt === this.writeAttempt && this.writeUnknown() && !this.unknownNeedsComments) this.unknownVerified.set(true);
+        if (verified && verifyUnknown && credential && this.owns(credential) && this.authState() === 'active' && !this.pending()
+          && verification === this.verificationAttempt && verifyAttempt === this.writeAttempt && this.writeUnknown()
+          && !this.unknownNeedsComments) this.unknownVerified.set(true);
         // 可見性衝突或管理寫入失敗須讀回目前資料，才能清除舊警告並讓使用者重新判斷。
-        if (verified && verifyAttempt === this.writeAttempt && !['article-edit', 'comment-edit'].includes(this.route)
+        if (verified && !this.writeUnknown() && verifyAttempt === this.writeAttempt && !['article-edit', 'comment-edit'].includes(this.route)
           && (this.writeProblem()?.code === 'E0201' || this.isAdminRoute() && this.writeProblem()?.code === 'E9999')) this.writeProblem.set(null);
         this.loading.set(false);
       }
@@ -319,14 +309,12 @@ export class App implements OnInit, OnDestroy {
       && (value.visibility === 'visible' || value.visibility === 'hidden') && typeof value.can_restore === 'boolean';
   }
 
-  // 留言與文章分開呈現載入／錯誤；留言失敗不抹去已讀到的文章。
+  // 留言與文章分開呈現載入／錯誤；閱讀頁分頁不授予查證資格，查證須由 inspectUnknown 讀第一頁。
   async readComments(parent = this.readAbort): Promise<void> {
     if (!this.validArticleId || !this.article() || !parent || parent.signal.aborted) return;
     this.commentsLoading.set(true);
     this.commentsError.set(null);
     this.comments.set(null);
-    const verifyUnknown = this.writeUnknown() && this.unknownNeedsComments;
-    const verifyAttempt = this.writeAttempt;
     const credential = this.authState() === 'active' ? this.credential() : null;
     try {
       const { response, body } = await apiRequest(this.backend(), `/api/articles/${this.validArticleId}/comments?page=${this.page}&per_page=20`, { token: credential?.accessToken, signal: parent.signal });
@@ -336,8 +324,6 @@ export class App implements OnInit, OnDestroy {
         (item: unknown) => this.isComment(item),
       )) {
         this.comments.set(body.data);
-        // 新留言結果不明時，必須真的讀回留言列表，不能只憑父文章就結束查證。
-        if (verifyUnknown && verifyAttempt === this.writeAttempt && this.writeUnknown()) this.unknownVerified.set(true);
       }
       else {
         const failure = problem(response.status, body);
@@ -387,9 +373,11 @@ export class App implements OnInit, OnDestroy {
   // 寫入失敗與驗證錯誤只作用於同一帳號／後端／請求，未知結果不自動重送。
   private async write(path: string, method: 'POST' | 'PUT', payload: object, onSuccess: () => void): Promise<void> {
     const credential = this.credential();
-    if (!credential || this.authState() !== 'active' || this.writePending() || this.writeUnknown()) return;
+    if (!credential || this.authState() !== 'active' || this.pending() || this.writePending() || this.writeUnknown()) return;
     const actor = this.account()?.id;
     const attempt = ++this.writeAttempt;
+    // 送出前記住新留言的查證入口，其他請求先撤權時也能保留原操作的上下文。
+    this.unknownNeedsComments = method === 'POST' && /\/comments$/.test(path);
     this.writePending.set(true); this.writeProblem.set(null); this.writeUnknown.set(false); this.unknownVerified.set(false); this.unknownList.set(null); this.conflictLatest.set(null);
     try {
       const { response, body } = await apiRequest(this.backend(), path, { method, body: payload, token: credential.accessToken });
@@ -398,12 +386,15 @@ export class App implements OnInit, OnDestroy {
       const failure = problem(response.status, body);
       this.writeProblem.set(failure); this.fieldErrors.set(failure.errors || {});
       if (failure.code === 'E0201') this.conflictLatest.set(null);
-      if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
+      if (this.isAuthFailure(response.status, failure)) {
+        // 本寫入已確定遭認證拒絕，先結束自己的等待，不能被撤權清理誤標為未知。
+        this.writePending.set(false);
+        this.invalidate(credential, failure);
+      }
     } catch {
       if (attempt === this.writeAttempt && this.owns(credential)) {
         this.writeUnknown.set(true);
         this.unknownVerified.set(false);
-        this.unknownNeedsComments = method === 'POST' && /\/comments$/.test(path);
         this.writeProblem.set({ message: '結果尚未確認；請先手動查證目前內容，再決定是否重新送出。' });
       }
     } finally { if (attempt === this.writeAttempt) this.writePending.set(false); }
@@ -445,29 +436,33 @@ export class App implements OnInit, OnDestroy {
   async inspectLatest(): Promise<void> {
     const resource = this.route === 'article-edit' ? this.article() : this.comment();
     const credential = this.credential();
-    if (!resource || !credential || this.conflictLoading() || this.writePending()) return;
-    this.conflictLoading.set(true); this.conflictLatest.set(null);
+    if (!resource || !credential || this.authState() !== 'active' || this.pending() || this.conflictLoading() || this.writePending()) return;
+    const verification = this.clearVerification();
+    this.conflictLoading.set(true);
     const article = this.route === 'article-edit';
     // 舊比較讀取不能在後續寫入結果不明時變成新的查證依據。
     const verifyAttempt = this.writeAttempt;
     try {
       const { response, body } = await apiRequest(this.backend(), `${article ? '/api/articles/' : '/api/comments/'}${resource.id}`, { token: credential.accessToken });
-      if (!this.owns(credential) || verifyAttempt !== this.writeAttempt) return;
+      if (!this.owns(credential) || this.authState() !== 'active' || this.pending()
+        || verifyAttempt !== this.writeAttempt || verification !== this.verificationAttempt) return;
       if (response.ok && body.success === true && (article ? this.isArticle(body.data) : this.isComment(body.data)) && body.data.id === resource.id) {
         this.conflictLatest.set(body.data);
+        this.unknownVerified.set(this.writeUnknown());
       } else {
         const failure = problem(response.status, body);
-        this.writeProblem.set(failure);
+        this.writeProblem.set(this.writeUnknown() ? { ...failure, message: `結果尚未確認；${failure.message}` } : failure);
         if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
       }
-    } catch { if (this.owns(credential) && verifyAttempt === this.writeAttempt) this.writeProblem.set({ message: '查證失敗，結果仍未確認；請稍後重試。' }); }
-    finally { this.conflictLoading.set(false); }
+    } catch { if (this.owns(credential) && verifyAttempt === this.writeAttempt && verification === this.verificationAttempt) this.writeProblem.set({ message: '查證失敗，結果仍未確認；請稍後重試。' }); }
+    finally { if (verification === this.verificationAttempt) this.conflictLoading.set(false); }
   }
 
   // 使用者看過兩版後才採用最新版本；可保留草稿整合或明確捨棄。
   acceptLatest(discard: boolean): void {
     const latest = this.conflictLatest();
-    if (!latest) return;
+    if (!latest || this.authState() !== 'active' || !this.credential() || this.pending() || this.writePending()
+      || this.writeUnknown() && !this.canAcknowledgeUnknown()) return;
     this.versionDraft = latest.version;
     if (discard) {
       this.bodyDraft = latest.body;
@@ -475,35 +470,43 @@ export class App implements OnInit, OnDestroy {
       this.dirty = false;
     }
     this.conflictLatest.set(null); this.writeProblem.set(null);
-    this.writeUnknown.set(false);
+    this.writeUnknown.set(false); this.unknownVerified.set(false);
   }
 
   // 新建結果不明時只列出伺服器目前資料供人工辨識，不能把最新一筆當成自己的提交。
   async inspectUnknown(): Promise<void> {
     const credential = this.credential();
-    if (!credential || this.conflictLoading()) return;
+    if (!credential || this.authState() !== 'active' || this.pending() || this.writePending() || !this.writeUnknown() || this.conflictLoading()) return;
     const isArticle = this.route === 'article-new';
     const path = isArticle ? '/api/me/articles?page=1&per_page=20'
       : this.route === 'article' && this.unknownNeedsComments ? `/api/articles/${this.validArticleId}/comments?page=1&per_page=20` : '';
     if (!path) return;
-    this.conflictLoading.set(true); this.unknownList.set(null);
+    const verification = this.clearVerification();
+    this.conflictLoading.set(true);
     const verifyAttempt = this.writeAttempt;
     try {
       const { response, body } = await apiRequest(this.backend(), path, { token: credential.accessToken });
-      if (!this.owns(credential) || verifyAttempt !== this.writeAttempt || !this.writeUnknown()) return;
+      if (!this.owns(credential) || this.authState() !== 'active' || this.pending() || verifyAttempt !== this.writeAttempt
+        || verification !== this.verificationAttempt || !this.writeUnknown()) return;
       if (response.ok && body.success === true && this.isPage<Article | Comment>(body.data, 1) && body.data.list.every(
         // 逐筆確認可比較的內容，避免格式錯誤被誤認為查無資料。
         (item: unknown) => isArticle ? this.isArticle(item) : this.isComment(item),
-      )) this.unknownList.set(body.data);
-      else this.writeProblem.set(problem(response.status, body));
-    } catch { if (this.owns(credential) && verifyAttempt === this.writeAttempt && this.writeUnknown()) this.writeProblem.set({ message: '查證失敗，結果仍未確認；請稍後重試。' }); }
-    finally { this.conflictLoading.set(false); }
+      )) { this.unknownList.set(body.data); this.unknownVerified.set(true); }
+      else {
+        const failure = problem(response.status, body);
+        this.writeProblem.set({ ...failure, message: `結果尚未確認；${failure.message}` });
+        // 查證同樣可能失權；保留未知結果與草稿，讓原頁提供重新登入。
+        if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
+      }
+    } catch { if (this.owns(credential) && verifyAttempt === this.writeAttempt && verification === this.verificationAttempt && this.writeUnknown()) this.writeProblem.set({ message: '查證失敗，結果仍未確認；請稍後重試。' }); }
+    finally { if (verification === this.verificationAttempt) this.conflictLoading.set(false); }
   }
 
   // 人工比較後才能解除未知狀態；這不表示先前提交失敗，仍由使用者決定是否再送。
-  // 只有相關伺服器資料已讀回，畫面才讓使用者結束結果不明狀態。
+  // 查證必須屬於目前有效登入且已結束等待，不能沿用訪客或重登前的資料。
   canAcknowledgeUnknown(): boolean {
-    return Boolean(this.unknownList() || this.conflictLatest() || this.unknownVerified());
+    return this.writeUnknown() && this.unknownVerified() && this.authState() === 'active' && Boolean(this.credential())
+      && !this.pending() && !this.writePending() && !this.loading() && !this.conflictLoading();
   }
 
   // 使用者完成查證後自行決定下一步，清除阻止盲目重送的狀態。
@@ -541,40 +544,31 @@ export class App implements OnInit, OnDestroy {
       });
   }
 
-  // 原頁重登只恢復原帳號的草稿，若登入為他人就清除文字與衝突狀態。
-  async reauthenticate(event: Event): Promise<void> {
-    event.preventDefault();
-    if (this.pending() || this.lockedTime() || this.resumeAccountId === null) return;
-    const checked = validateAccount(this.reauthEmail, this.reauthPassword);
-    this.fieldErrors.set(checked.errors);
-    if (Object.keys(checked.errors).length) return;
-    this.pending.set(true);
-    const backend = this.backend();
-    const attempt = ++this.attempt;
-    try {
-      const { response, body, retryAfter } = await apiRequest(backend, '/api/auth/login', { method: 'POST', body: { email: checked.email, password: this.reauthPassword } });
-      if (attempt !== this.attempt || backend !== this.backend() || this.authState() !== 'expired') return;
-      if (response.ok && body.success === true && this.isLogin(body.data)) {
-        const storage = this.storage();
-        if (!storage || !saveSession(storage, { backend, accessToken: body.data.access_token, expiresAt: body.data.expires_at })) throw new Error('storage');
-        if (body.data.user.id !== this.resumeAccountId) {
-          this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false;
-          this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
-          this.conflictLatest.set(null); this.writeUnknown.set(false);
-          this.notice.set({ message: '已登入其他帳號，原帳號的未儲存文字已清除。' });
-        } else this.notice.set({ message: '已重新登入原帳號；請確認內容後手動送出。' });
-        this.credential.set({ backend, accessToken: body.data.access_token, expiresAt: body.data.expires_at });
-        this.account.set(body.data.user); this.authState.set('active'); this.authError.set(null); this.resumeAccountId = null;
-        // 已知 401 在重登後不再有效；結果不明的寫入警告仍須保留供人工查證。
-        if (!this.writeUnknown()) this.writeProblem.set(null);
-        this.reauthPassword = ''; void this.readContent();
-      } else {
-        const failure = problem(response.status, body);
-        this.notice.set(failure); this.fieldErrors.set(failure.errors || {});
-        if (response.status === 429 && failure.code === 'E0105' && retryAfterSeconds(retryAfter)) this.startCountdown(retryAfter);
-      }
-    } catch { if (attempt === this.attempt) this.notice.set({ message: '重新登入結果尚未確認，請查證目前狀態後手動重試。' }); }
-    finally { if (attempt === this.attempt) this.pending.set(false); }
+  // 註冊只轉登入；原頁同帳重登保留文字與版本，異帳／角色或後端改變須清除舊草稿。
+  accountCompleted(result: { register: boolean; previous: ResumeActor | null }): void {
+    this.accountDirty = false;
+    if (result.register || this.route === 'login') {
+      this.dirty = false; this.ignoreUnload = true;
+      window.location.assign(result.register ? '/angular/login' : this.returnTo);
+      return;
+    }
+    const current = this.account();
+    // 同帳重登保留草稿與未知結果，但認證前的讀取及查證資格一律失效。
+    this.clearProtectedContent();
+    const same = current && result.previous?.id === current.id && result.previous.role === current.role
+      && result.previous.backend === this.backend();
+    if (!same) {
+      this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false;
+      this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
+      this.fieldErrors.set({}); this.conflictLatest.set(null); this.writeUnknown.set(false);
+      this.unknownVerified.set(false); this.unknownList.set(null); this.writeProblem.set(null);
+      this.notice.set({ message: '已登入其他帳號或權限已變更，原帳號的未儲存文字已清除。' });
+    } else {
+      this.notice.set({ message: '已重新登入原帳號；請確認內容後手動送出。' });
+      // 重登只恢復身分，不能確認先前寫入結果；僅移除已知失效錯誤，未知警告繼續保留。
+      if (!this.writeUnknown()) this.writeProblem.set(null);
+    }
+    void this.readContent();
   }
 
   // 目前後端文字從固定清單找出，不顯示未驗證的儲存值。
@@ -588,12 +582,6 @@ export class App implements OnInit, OnDestroy {
     // 建立來源未知時維持中性標籤，避免誤認為已知後端。
     (entry) => entry.id === id,
   )?.name || '未知來源'; }
-
-  // 欄位摘要合併前端驗證與 API errors，讓鍵盤使用者可直接跳到輸入欄位。
-  errorEntries(): [string, string[]][] { return Object.entries(this.fieldErrors()).filter(
-    // 僅把有對應輸入框的錯誤轉成欄位錨點。
-    ([key]) => ['email', 'password', 'nickname'].includes(key),
-  ); }
 
   // 作者表單只連結實際存在的標題與內文欄位，其他 API 錯誤仍另行顯示。
   contentErrorEntries(): [string, string[]][] { return Object.entries(this.fieldErrors()).filter(
@@ -614,25 +602,13 @@ export class App implements OnInit, OnDestroy {
   ); }
 
   // 原頁重登只在已知原帳號時提供，以免無法判定草稿能否保留。
-  hasResumeAccount(): boolean { return this.resumeAccountId !== null; }
+  hasResumeAccount(): boolean { return this.session.resumeActor !== null; }
 
   // 新留言須查留言列表；文章可見性結果不明時改讀文章本體與版本。
   unknownNeedsCommentList(): boolean { return this.unknownNeedsComments; }
 
   // 比較區只在最新資源確為文章時顯示標題。
   isLatestArticle(value: Article | Comment): value is Article { return 'title' in value; }
-
-  // API 若回未繪製欄位錯誤，摘要仍保留文字供查閱。
-  otherErrors(): string[] { return Object.entries(this.fieldErrors()).filter(
-    // 不認識的欄位仍須在摘要呈現，不能靜默遺失後端驗證訊息。
-    ([key]) => !['email', 'password', 'nickname'].includes(key),
-  ).flatMap(
-    // 一個欄位可能有多則錯誤，展平成可閱讀的文字。
-    ([key, errors]) => errors.map(
-      // 保留原欄位名，方便對照後端回應。
-      (message) => `${key}：${message}`,
-    ),
-  ); }
 
   // SvelteKit 的登入返回仍須落在已完成頁；Nuxt 已支援全部十二個後端。
   canSwitchFrontend(id: string): boolean {
@@ -641,176 +617,66 @@ export class App implements OnInit, OnDestroy {
     return Object.hasOwn(FRONTENDS, id);
   }
 
-  // 切換前端只改 URL，不複製 JWT、後端、列表頁碼或表單文字。
+  // 切換前端只搬合法語意路徑；接受捨棄後先作廢回應，保留共用 JWT 與原期限。
   switchFrontend(event: Event): void {
     const select = event.target as HTMLSelectElement;
     const id = select.value as keyof typeof FRONTENDS;
-    if (!(id in FRONTENDS) || !this.canSwitchFrontend(id) || this.account() && this.pending()) { select.value = 'angular'; return; }
+    if (id === 'angular') return;
+    if (!(id in FRONTENDS) || !this.canSwitchFrontend(id) || this.session.operation() === 'logout') { select.value = 'angular'; return; }
     if (!this.confirmDiscard('前端')) { select.value = 'angular'; return; }
-    this.ignoreUnload = true;
-    this.attempt++;
-    this.writeAttempt++;
+    this.ignoreUnload = true; this.cancelAuthentication();
     window.location.assign(frontendTarget(this.path, id, this.returnTo));
   }
 
-  // 切換後端先清 JWT 再導向登入，保留合法目的地供新後端重驗。
+  // 後端變更先撤憑證再導向安全登入目標，取消或儲存失敗保留原選單值及必要警告。
   switchBackend(event: Event): void {
     const select = event.target as HTMLSelectElement;
     const next = select.value;
+    if (next === this.backend()) return;
     if (!this.backends.some(
-      // 只允許固定清單內的 API 基底成為下個後端。
+      // 選單值仍須在固定 API 清單內，不能把任意網址當成 JWT 接收端。
       (entry) => entry.base === next,
-    ) || this.account() && this.pending() || !this.confirmDiscard('後端')) { select.value = this.backend(); return; }
-    const storage = this.storage();
-    if (!storage) { select.value = this.backend(); this.notice.set({ message: '無法儲存後端選擇，請檢查瀏覽器設定。' }); return; }
-    let removed = false;
-    try { storage.removeItem(SESSION_KEY); removed = true; storage.setItem(BACKEND_KEY, next); }
-    catch {
+    ) || this.session.operation() === 'logout' || !this.confirmDiscard('後端')) { select.value = this.backend(); return; }
+    const uncertain = this.pending() || this.writePending();
+    const result = this.session.changeBackend(next);
+    if (!result.success) {
       select.value = this.backend();
-      // 已送出的帳號請求會被作廢回應；寫入可能仍在後端完成，須留下結果不明提示供手動查證。
-      const uncertain = removed && (this.pending() || this.writePending());
-      this.notice.set({ message: uncertain
-        ? `結果尚未確認；無法儲存後端選擇。請先查證${this.route === 'register' ? '帳號狀態' : '目前內容或登入狀態'}，再手動重試。`
+      if (result.removed) { this.cancelAuthentication(); void this.readContent(); }
+      this.notice.set({ message: result.removed && uncertain
+        ? '結果尚未確認；無法儲存後端選擇。請先查證帳號或內容狀態，再手動重試。'
         : '無法儲存後端選擇，請檢查瀏覽器設定。' });
-      // JWT 已刪除卻寫不入後端時，作廢舊請求並結束等待，撤除本頁權限後重讀公開內容。
-      if (removed) {
-        this.attempt++;
-        this.pending.set(false);
-        this.writeAttempt++; this.writePending.set(false);
-        this.credential.set(null); this.account.set(null); this.authState.set('guest'); this.authError.set(null);
-        this.article.set(null); this.comments.set(null);
-        void this.readContent();
-      }
       return;
     }
-    this.ignoreUnload = true;
-    this.attempt++;
-    this.writeAttempt++;
+    this.ignoreUnload = true; this.cancelAuthentication();
     const target = this.route === 'login' ? this.returnTo : validReturn(this.path) && this.route !== 'register' ? this.path : '/angular/';
     window.location.assign(`/angular/login?return_to=${encodeURIComponent(target)}`);
   }
 
-  // 未儲存或已送出的帳號表單須讓使用者決定取消或捨棄。
+  // 帳號及內容的離頁摘要一起判斷，已送出請求須明示伺服器仍可能完成。
   private confirmDiscard(destination: string): boolean {
-    if (!this.dirty && !this.pending() && !this.writePending()) return true;
+    if (!this.dirty && !this.accountDirty && !this.pending() && !this.writePending()) return true;
     const warning = this.writePending() ? '內容請求已送出，切換後伺服器仍可能完成處理，結果尚未確認。'
-      : this.pending() ? `${this.route === 'register' ? '註冊' : '登入'}請求已送出，切換後伺服器仍可能完成處理。` : '目前表單有未儲存文字。';
+      : this.pending() ? '帳號請求已送出，切換後伺服器仍可能完成處理。' : '目前表單有未儲存文字。';
     return window.confirm(`${warning}要捨棄目前表單並切換${destination}嗎？`);
   }
 
-  // 帳號欄位變更使先前嘗試作廢；原頁重登欄位不代表文章草稿已修改。
-  fieldChanged(markDirty = true): void {
-    this.attempt++;
-    if (markDirty) this.dirty = true;
-    this.fieldErrors.set({});
-    this.notice.set(null);
-    if (!this.lockedTime()) this.lockEnded.set(false);
-  }
-
-  // 只用目前帳號、後端與最新嘗試的回應更新表單，防止舊鎖定搶回畫面。
-  async submitAccount(event: Event): Promise<void> {
-    event.preventDefault();
-    if (this.pending() || this.lockedTime()) return;
-    const register = this.route === 'register';
-    const checked = validateAccount(this.email, this.password, register ? this.nickname : undefined);
-    this.fieldErrors.set(checked.errors);
-    if (Object.keys(checked.errors).length) { this.notice.set({ message: '請修正標示欄位後再送出。' }); return; }
-    const sentBackend = this.backend();
-    const sentEmail = checked.email;
-    const attempt = ++this.attempt;
-    this.pending.set(true);
-    this.notice.set(null);
-    try {
-      const { response, body, retryAfter } = await apiRequest(sentBackend, register ? '/api/auth/register' : '/api/auth/login', {
-        method: 'POST', body: register ? { email: sentEmail, password: this.password, nickname: this.nickname } : { email: sentEmail, password: this.password },
-      });
-      if (attempt !== this.attempt || sentBackend !== this.backend() || sentEmail !== normalizeEmail(this.email)) return;
-      if (register && response.status === 201 && body.success === true) {
-        this.dirty = false; this.ignoreUnload = true; window.location.assign('/angular/login'); return;
-      }
-      if (!register && response.ok && body.success === true && this.isLogin(body.data)) {
-        const storage = this.storage();
-        if (!storage || !saveSession(storage, { backend: sentBackend, accessToken: body.data.access_token, expiresAt: body.data.expires_at })) {
-          this.notice.set({ message: '無法保存登入狀態，請檢查瀏覽器設定後重試。' }); return;
-        }
-        this.clearCountdown();
-        this.dirty = false; this.ignoreUnload = true;
-        window.location.assign(this.returnTo); return;
-      }
-      const failure = problem(response.status, body);
-      this.fieldErrors.set(failure.errors || {});
-      this.notice.set(failure);
-      if (!register && response.status === 429 && failure.code === 'E0105') {
-        if (retryAfterSeconds(retryAfter) === null) this.notice.set({ ...failure, message: `${failure.message}；回應缺少有效 Retry-After，無法顯示倒數。` });
-        else this.startCountdown(retryAfter);
-      }
-      else if (failure.code === 'E0102') this.clearCountdown();
-    } catch {
-      if (attempt === this.attempt) this.notice.set({ message: register ? '註冊結果尚未確認；請先確認帳號狀態，避免重複送出。' : '登入結果尚未確認，請確認目前後端後再試。' });
-    } finally { if (attempt === this.attempt) this.pending.set(false); }
-  }
-
-  // 登入成功資料須含 JWT、Bearer 與原到期時間，才可寫入跨版共用狀態。
-  private isLogin(value: any): value is { access_token: string; token_type: 'Bearer'; expires_at: string; user: Account } {
-    return value && typeof value.access_token === 'string' && value.access_token.length > 0
-      && value.token_type === 'Bearer' && typeof value.expires_at === 'string' && this.isAccount(value.user);
-  }
-
-  // 429 僅在 Retry-After 是有效整數時倒數；缺標頭只顯示伺服器鎖定錯誤。
-  private startCountdown(value: string | null): void {
-    this.clearCountdown();
-    const seconds = retryAfterSeconds(value);
-    if (!seconds) return;
-    this.lockDeadline = Date.now() + seconds * 1000;
-    this.tickCountdown();
-    this.timer = setInterval(
-      // 定時從絕對截止時間重算，背景分頁節流也不會延長鎖定顯示。
-      () => this.tickCountdown(), 250,
-    );
-  }
-
-  // 倒數依絕對時間重算；歸零恢復欄位但不自行送出帳密。
-  private tickCountdown(): void {
-    const remaining = countdown(this.lockDeadline);
-    this.lockedTime.set(remaining);
-    if (!remaining) { this.clearCountdown(); this.notice.set(null); this.lockEnded.set(true); }
-  }
-
-  // 清除目前表單計時器，不影響伺服器既有鎖定或其他前端。
-  private clearCountdown(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    this.lockDeadline = 0;
-    this.lockedTime.set('');
-  }
-
-  // 等伺服器確認撤銷才清憑證；未知結果保留可手動重試的狀態。
+  // 登出確認及草稿清理由外殼協調，真正撤銷與憑證狀態由 session 單一責任判定。
   async logout(): Promise<void> {
-    const credential = this.credential();
-    if (!credential || this.pending() || this.writePending()) return;
-    if (!this.confirmDiscard('帳號')) return;
-    this.pending.set(true);
+    if (!this.credential() || this.pending() || this.writePending() || !this.confirmDiscard('帳號')) return;
     this.notice.set(null);
-    try {
-      const { response, body } = await apiRequest(credential.backend, '/api/auth/logout', { method: 'POST', token: credential.accessToken });
-      if (!this.owns(credential)) return;
-      if (response.ok && body.success === true) {
-        const storage = this.storage();
-        const cleared = Boolean(storage && clearSessionIfOwned(storage, credential));
-        this.credential.set(null); this.account.set(null); this.authState.set('guest');
-        this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false;
-        this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
-        this.writeAttempt++; this.writePending.set(false); this.conflictLatest.set(null);
-        this.notice.set({ message: cleared ? '已登出。' : '已登出，但無法確認本機舊登入資料已清除；請關閉此分頁。' });
-        // 登出後立刻抹去可能只有原帳號可讀的文章，再讀公開資料。
-        void this.readContent();
-      } else {
-        const failure = problem(response.status, body);
-        if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
-        this.notice.set({ ...failure, message: `登出未完成：${failure.message}` });
-      }
-    } catch { this.notice.set({ message: '登出結果尚未確認；請先確認登入狀態，再手動重試。' }); }
-    finally { this.pending.set(false); }
+    const result = await this.session.logout();
+    if (!result) return;
+    if (result.success) {
+      this.clearProtectedContent();
+      this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false; this.accountDirty = false;
+      this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
+      this.fieldErrors.set({}); this.writeUnknown.set(false); this.unknownVerified.set(false); this.writeProblem.set(null);
+      this.notice.set({ message: result.cleared ? '已登出。' : '已登出，但無法確認本機舊登入資料已清除；請關閉此分頁。' });
+      void this.readContent();
+    } else {
+      if (!this.credential()) { this.clearProtectedContent(); void this.readContent(); }
+      this.notice.set({ ...result.problem, message: `${result.unknown ? '登出結果尚未確認，請查證登入狀態後手動重試' : '登出未完成'}：${result.problem.message}` });
+    }
   }
 
   // 五個管理語意路由共用角色防護；真正授權仍由每個 API 判定。

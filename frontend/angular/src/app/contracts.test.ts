@@ -1,6 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, supportsSvelteRoute, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
+import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, isAccount, isAuthProblem, isAuthSuccess, isLogin, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, supportsSvelteRoute, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
+
+// 認證成功必須含完整 envelope 及符合操作的 HTTP status，防止不完整回應誤導覽。
+test('帳號完整成功 envelope', function authEnvelope() {
+  const body = { success: true, message: 'OK', data: {} };
+  assert.equal(isAuthSuccess(201, body, 201), true);
+  for (const broken of [{ success: true }, { ...body, message: 'wrong' }, { ...body, data: null }, { ...body, data: [] }]) {
+    assert.equal(isAuthSuccess(201, broken, 201), false);
+  }
+  assert.equal(isAuthSuccess(200, body, 201), false);
+});
+
+// 新憑證須有原期限與完整啟用本人，破損或停用資料不能開放會員操作。
+test('登入與本人資料契約', function authIdentity() {
+  const user = { id: 1, email: 'member@example.test', nickname: '小草', role: 'member', status: 'active', created_at: '2026-10-30 09:00:00' };
+  const login = { access_token: 'fixture', token_type: 'Bearer', expires_at: '2026-10-30 17:00:00', user };
+  assert.equal(isAccount(user), true);
+  assert.equal(isLogin(login), true);
+  for (const broken of [{ ...login, expires_at: 'later' }, { ...login, access_token: '' }, { ...login, token_type: 'Other' },
+    { ...login, user: { ...user, status: 'disabled' } }, { ...login, user: { ...user, id: 0 } }, { ...login, user: { ...user, created_at: '' } }]) {
+    assert.equal(Boolean(isLogin(broken)), false);
+  }
+});
+
+// 明細必須可逐欄顯示，否則不得把破損錯誤當成確定撤權或丟掉未知欄位。
+test('帳號錯誤 envelope', function authFailure() {
+  const body = { success: false, message: '欄位資料不正確，請確認後再送出', error_code: 'E0001', log_id: 'fixture', errors: { email: ['此 Email 已註冊'], other: ['另一欄'] } };
+  assert.equal(isAuthProblem(body), true);
+  for (const broken of [{ ...body, errors: null }, { ...body, errors: [] }, { ...body, errors: { email: 'bad' } },
+    { ...body, errors: { email: [null] } }, { ...body, log_id: undefined }, { success: true }]) {
+    assert.equal(isAuthProblem(broken), false);
+  }
+});
 
 // 模擬同一分頁儲存，核對跨版登入不改寫原到期時間與舊回應隔離。
 function storage(): Storage {
