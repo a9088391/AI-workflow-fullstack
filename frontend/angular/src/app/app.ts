@@ -9,11 +9,14 @@ import {
 } from './contracts';
 import { AccountForm } from './account-form';
 import { AccountSession, ResumeActor } from './account-session';
+import { ReadingContent } from './reading-content';
+import { ReadingPage } from './reading-page';
 import { isLockoutSettings, isMember, LockoutSettings, Member, memberKeyword, settingErrors } from './admin';
 
 @Component({
   selector: 'app-root',
-  imports: [CommonModule, FormsModule, AccountForm],
+  imports: [CommonModule, FormsModule, AccountForm, ReadingPage],
+  providers: [ReadingContent],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
@@ -28,9 +31,10 @@ export class App implements OnInit, OnDestroy {
     // 選單使用既有清單的識別碼及名稱。
     ([id, name]) => ({ id, name }),
   );
-  readonly path = window.location.pathname === '/angular' ? '/angular/' : window.location.pathname;
+  readonly reading = inject(ReadingContent);
+  readonly path = this.reading.path;
   readonly search = window.location.search;
-  readonly query = new URLSearchParams(window.location.search);
+  readonly query = this.reading.query;
   readonly encodeURIComponent = encodeURIComponent;
   readonly Object = Object;
   readonly articleId = this.path.match(/^\/angular\/articles\/([0-9]+)$/)?.[1] || null;
@@ -48,7 +52,7 @@ export class App implements OnInit, OnDestroy {
     : this.path === '/angular/admin/settings/login-lockout' ? 'lockout-settings' : this.validMemberId ? 'member'
     : this.validEditArticleId ? 'article-edit'
     : this.validArticleId ? 'article' : this.validCommentId ? this.path.endsWith('/edit') ? 'comment-edit' : 'comment' : 'unknown';
-  readonly page = positiveNumber(this.query.get('page')) || 1;
+  readonly page = this.reading.page;
   readonly returnTo = validReturn(this.query.get('return_to') || '') ? this.query.get('return_to')! : '/angular/';
 
   readonly session = inject(AccountSession);
@@ -65,18 +69,25 @@ export class App implements OnInit, OnDestroy {
   @ViewChild(AccountForm) private accountForm?: AccountForm;
   private accountDirty = false;
   readonly notice = signal<Problem | null>(null);
-  readonly loading = signal(false);
-  readonly contentError = signal<Problem | null>(null);
-  readonly articles = signal<Page<Article> | null>(null);
-  readonly article = signal<Article | null>(null);
-  readonly comments = signal<Page<Comment> | null>(null);
-  readonly commentsError = signal<Problem | null>(null);
-  readonly commentsLoading = signal(false);
-  readonly myComments = signal<Page<Comment> | null>(null);
-  readonly comment = signal<Comment | null>(null);
-  readonly parentArticle = signal<Article | null>(null);
-  readonly parentError = signal<Problem | null>(null);
-  readonly parentLoading = signal(false);
+  private readonly adminLoading = signal(false);
+  private readonly adminError = signal<Problem | null>(null);
+  private readonly managedArticles = signal<Page<Article> | null>(null);
+  readonly loading = computed(
+    // 外殼僅讀取頁面等待摘要，管理頁在後續整理前維持自己的狀態。
+    () => this.reading.route ? this.reading.loading() : this.adminLoading(),
+  );
+  readonly contentError = computed(
+    // 作者編輯沿用讀取 owner 的錯誤；管理資料仍由原管理流程判定。
+    () => this.reading.route ? this.reading.error() : this.adminError(),
+  );
+  readonly articles = this.managedArticles.asReadonly();
+  readonly article = this.reading.article;
+  readonly comment = this.reading.comment;
+  readonly parentArticle = this.reading.parentArticle;
+  readonly parentError = this.reading.parentError;
+  readonly parentLoading = this.reading.parentLoading;
+  // 閱讀 owner 與其元件只回報明確失權，外殼負責保留交界中的在途寫入結果。
+  readonly invalidateReading = (sent: Session, failure: Problem): void => this.invalidate(sent, failure);
   readonly members = signal<Page<Member> | null>(null);
   readonly member = signal<Member | null>(null);
   readonly managedComments = signal<Page<Comment> | null>(null);
@@ -162,9 +173,9 @@ export class App implements OnInit, OnDestroy {
   // 同步撤掉各頁已失權資料及舊請求資格；不清草稿，也不宣稱取消寫入等於伺服器回滾。
   private clearProtectedContent(): void {
     this.readAbort?.abort(); this.readAbort = null;
-    this.loading.set(false); this.commentsLoading.set(false); this.parentLoading.set(false); this.conflictLoading.set(false);
-    this.articles.set(null); this.article.set(null); this.comments.set(null); this.comment.set(null);
-    this.myComments.set(null); this.parentArticle.set(null); this.clearVerification();
+    this.reading.clear();
+    this.adminLoading.set(false); this.conflictLoading.set(false);
+    this.managedArticles.set(null); this.clearVerification();
     this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
     this.writeAttempt++; this.writePending.set(false);
   }
@@ -181,107 +192,87 @@ export class App implements OnInit, OnDestroy {
     this.accountForm?.cancel(); this.session.cancel(); this.clearProtectedContent();
   }
 
-  // 用新 AbortController 讀列表或單篇；只有明確的手動查證可解除目前登入下的未知結果。
+  // 閱讀由頁面 owner 執行；外殼只保留作者草稿、管理頁及未知寫入的人工查證接縫。
   async readContent(manualVerification = false): Promise<void> {
     if (this.authState() === 'checking') return;
     if (manualVerification && (this.authState() !== 'active' || this.pending() || this.writePending())) return;
-    if (!['list', 'article', 'my-articles', 'my-comments', 'article-edit', 'comment', 'comment-edit',
-      'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(this.route)) return;
-    this.readAbort?.abort();
-    const controller = new AbortController();
-    this.readAbort = controller;
-    this.loading.set(true);
-    this.contentError.set(null);
-    this.articles.set(null);
-    this.article.set(null);
-    this.comments.set(null);
-    this.myComments.set(null);
-    this.comment.set(null);
-    this.parentArticle.set(null);
-    this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
-    // 一般載入與重登自動重讀只更新畫面；新查證須撤銷先前成功或仍在途的資格。
+    if (!this.reading.route && !this.isAdminRoute()) return;
+    // 新讀取撤銷先前查證，晚到摘要不得重新授予目前寫入的確認資格。
     const verification = this.clearVerification();
     const verifyUnknown = manualVerification && this.writeUnknown();
     const verifyAttempt = this.writeAttempt;
-    let verified = false;
     const credential = this.authState() === 'active' ? this.credential() : null;
-    if (this.route !== 'list' && this.route !== 'article' && !credential) { this.loading.set(false); return; }
-    // 管理頁先依目前 /api/me 角色阻擋顯示；後端仍逐次驗證真正權限。
-    if (this.isAdminRoute() && this.account()?.role !== 'admin') {
-      this.contentError.set({ message: '沒有權限使用此功能', code: 'E0003' });
-      this.loading.set(false); return;
+    let verified = false;
+    if (this.reading.route) {
+      verified = await this.reading.read(this.invalidateReading);
+      // 乾淨草稿才初始化；原帳號重登保留已輸入文字與原版本，父文章不參與草稿初始化。
+      if (verified && !this.dirty) {
+        const article = this.article();
+        const comment = this.comment();
+        if (this.route === 'article-edit' && article) this.loadArticleDraft(article);
+        if (this.route === 'comment-edit' && comment) this.loadCommentDraft(comment);
+      }
+    } else verified = await this.readManagement();
+    if (verified && verifyUnknown && credential && this.owns(credential) && this.authState() === 'active' && !this.pending()
+      && verification === this.verificationAttempt && verifyAttempt === this.writeAttempt && this.writeUnknown()
+      && !this.unknownNeedsComments) this.unknownVerified.set(true);
+    // 成功讀回目前狀態後才能解除可見性／管理錯誤；未知寫入警告必須另行人工確認。
+    if (verified && !this.writeUnknown() && verifyAttempt === this.writeAttempt && !['article-edit', 'comment-edit'].includes(this.route)
+      && (this.writeProblem()?.code === 'E0201' || this.isAdminRoute() && this.writeProblem()?.code === 'E9999')) this.writeProblem.set(null);
+  }
+
+  // 管理資料暫留原責任與角色防護，避免本票提前接管管理頁或改寫其寫入契約。
+  private async readManagement(): Promise<boolean> {
+    this.readAbort?.abort();
+    const controller = new AbortController();
+    this.readAbort = controller;
+    this.adminLoading.set(true); this.adminError.set(null); this.managedArticles.set(null);
+    this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
+    const credential = this.authState() === 'active' ? this.credential() : null;
+    // 先用目前 /me 結果阻擋管理顯示；後端仍逐次驗證真正權限。
+    if (!credential) { this.adminLoading.set(false); return false; }
+    if (this.account()?.role !== 'admin') {
+      this.adminError.set({ message: '沒有權限使用此功能', code: 'E0003' });
+      this.adminLoading.set(false); return false;
     }
     const keyword = memberKeyword(this.query.get('keyword') || '');
     if (this.route === 'members' && [...keyword].length > 254) {
-      this.contentError.set({ message: '搜尋文字最多 254 個字。' }); this.loading.set(false); return;
+      this.adminError.set({ message: '搜尋文字最多 254 個字。' }); this.adminLoading.set(false); return false;
     }
-    const path = this.route === 'list' ? `/api/articles?page=${this.page}&per_page=20`
-      : this.route === 'my-articles' ? `/api/me/articles?page=${this.page}&per_page=20`
-      : this.route === 'my-comments' ? `/api/me/comments?page=${this.page}&per_page=20`
-      : this.route === 'members' ? `/api/members?page=${this.page}&per_page=20${keyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(keyword)}` : ''}`
+    const path = this.route === 'members' ? `/api/members?page=${this.page}&per_page=20${keyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(keyword)}` : ''}`
       : this.route === 'member' ? `/api/members/${this.validMemberId}`
       : this.route === 'managed-articles' ? `/api/articles?page=${this.page}&per_page=20&filters%5Bscope%5D=management`
-      : this.route === 'managed-comments' ? `/api/comments?page=${this.page}&per_page=20`
-      : this.route === 'lockout-settings' ? '/api/settings/login-lockout'
-      : this.route === 'comment' || this.route === 'comment-edit' ? `/api/comments/${this.validCommentId}`
-      : `/api/articles/${this.validArticleId || this.validEditArticleId}`;
+      : this.route === 'managed-comments' ? `/api/comments?page=${this.page}&per_page=20` : '/api/settings/login-lockout';
     try {
-      const { response, body } = await apiRequest(this.backend(), path, { token: credential?.accessToken, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      if (response.ok && body.success === true && ['list', 'my-articles', 'managed-articles'].includes(this.route) && this.isPage<Article>(body.data) && body.data.list.every(
-        // 列表只在每篇文章都具備閱讀欄位時顯示。
+      const { response, body } = await apiRequest(this.backend(), path, { token: credential.accessToken, signal: controller.signal });
+      if (controller.signal.aborted) return false;
+      if (response.ok && body.success === true && this.route === 'managed-articles' && this.isPage<Article>(body.data) && body.data.list.every(
+        // 管理清單仍沿用原欄位檢查，閱讀 owner 不持有管理範圍資料。
         (item: unknown) => this.isArticle(item),
-      )) { this.articles.set(body.data); verified = true; }
+      )) this.managedArticles.set(body.data);
       else if (response.ok && body.success === true && this.route === 'members' && this.isPage<Member>(body.data) && body.data.list.every(
         // 會員清單只顯示一般會員完整資料，不能把管理員或破損資料當可操作目標。
         (item: unknown) => isMember(item),
-      )) { this.members.set(body.data); verified = true; }
-      else if (response.ok && body.success === true && this.route === 'member' && isMember(body.data) && body.data.id === Number(this.validMemberId)) {
-        this.member.set(body.data); verified = true;
-      } else if (response.ok && body.success === true && this.route === 'managed-comments' && this.isPage<Comment>(body.data) && body.data.list.every(
+      )) this.members.set(body.data);
+      else if (response.ok && body.success === true && this.route === 'member' && isMember(body.data) && body.data.id === Number(this.validMemberId)) this.member.set(body.data);
+      else if (response.ok && body.success === true && this.route === 'managed-comments' && this.isPage<Comment>(body.data) && body.data.list.every(
         // 管理清單包含下架與父文章下架留言，需逐筆驗證基本欄位。
         (item: unknown) => this.isComment(item),
-      )) { this.managedComments.set(body.data); verified = true; }
+      )) this.managedComments.set(body.data);
       else if (response.ok && body.success === true && this.route === 'lockout-settings' && isLockoutSettings(body.data)) {
-        this.settings.set(body.data); verified = true;
+        this.settings.set(body.data);
         if (!this.dirty) this.settingDraft = { ...body.data };
-      }
-      else if (response.ok && body.success === true && this.route === 'my-comments' && this.isPage<Comment>(body.data) && body.data.list.every(
-        // 我的留言包含個別下架資料，逐筆確認形狀後才顯示。
-        (item: unknown) => this.isComment(item),
-      )) { this.myComments.set(body.data); verified = true; }
-      else if (response.ok && body.success === true && ['article', 'article-edit'].includes(this.route) && this.isArticle(body.data)
-        && body.data.id === Number(this.validArticleId || this.validEditArticleId)) {
-        if (this.route === 'article-edit' && body.data.author.id !== this.account()?.id) { this.contentError.set({ message: '沒有權限使用此功能', code: 'E0003' }); return; }
-        this.article.set(body.data);
-        verified = true;
-        if (this.route === 'article') void this.readComments(controller);
-        if (this.route === 'article-edit' && !this.dirty) this.loadArticleDraft(body.data);
-      } else if (response.ok && body.success === true && ['comment', 'comment-edit'].includes(this.route) && this.isComment(body.data)
-        && body.data.id === Number(this.validCommentId)) {
-        if (this.route === 'comment-edit' && body.data.author.id !== this.account()?.id) { this.contentError.set({ message: '沒有權限使用此功能', code: 'E0003' }); return; }
-        this.comment.set(body.data);
-        verified = true;
-        if (this.route === 'comment-edit' && !this.dirty) this.loadCommentDraft(body.data);
-        void this.readParent(body.data.article_id, controller);
       } else {
         const failure = problem(response.status, body);
-        this.contentError.set(response.ok && body.success === true ? { message: '回應資料格式不正確，請確認目前後端。' } : failure);
-        if (credential && this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
+        this.adminError.set(response.ok && body.success === true ? { message: '回應資料格式不正確，請確認目前後端。' } : failure);
+        if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
+        return false;
       }
+      return true;
     } catch {
-      if (!controller.signal.aborted) this.contentError.set({ message: '讀取失敗，請確認目前後端後重試。' });
-    } finally {
-      if (!controller.signal.aborted) {
-        if (verified && verifyUnknown && credential && this.owns(credential) && this.authState() === 'active' && !this.pending()
-          && verification === this.verificationAttempt && verifyAttempt === this.writeAttempt && this.writeUnknown()
-          && !this.unknownNeedsComments) this.unknownVerified.set(true);
-        // 可見性衝突或管理寫入失敗須讀回目前資料，才能清除舊警告並讓使用者重新判斷。
-        if (verified && !this.writeUnknown() && verifyAttempt === this.writeAttempt && !['article-edit', 'comment-edit'].includes(this.route)
-          && (this.writeProblem()?.code === 'E0201' || this.isAdminRoute() && this.writeProblem()?.code === 'E9999')) this.writeProblem.set(null);
-        this.loading.set(false);
-      }
-    }
+      if (!controller.signal.aborted) this.adminError.set({ message: '讀取失敗，請確認目前後端後重試。' });
+      return false;
+    } finally { if (!controller.signal.aborted) this.adminLoading.set(false); }
   }
 
   // 只接受該次請求的頁碼與精確總頁數；結果不明查證固定讀第一頁，不能沿用畫面頁碼。
@@ -309,50 +300,8 @@ export class App implements OnInit, OnDestroy {
       && (value.visibility === 'visible' || value.visibility === 'hidden') && typeof value.can_restore === 'boolean';
   }
 
-  // 留言與文章分開呈現載入／錯誤；閱讀頁分頁不授予查證資格，查證須由 inspectUnknown 讀第一頁。
-  async readComments(parent = this.readAbort): Promise<void> {
-    if (!this.validArticleId || !this.article() || !parent || parent.signal.aborted) return;
-    this.commentsLoading.set(true);
-    this.commentsError.set(null);
-    this.comments.set(null);
-    const credential = this.authState() === 'active' ? this.credential() : null;
-    try {
-      const { response, body } = await apiRequest(this.backend(), `/api/articles/${this.validArticleId}/comments?page=${this.page}&per_page=20`, { token: credential?.accessToken, signal: parent.signal });
-      if (parent.signal.aborted) return;
-      if (response.ok && body.success === true && this.isPage<Comment>(body.data) && body.data.list.every(
-        // 任一留言形狀錯誤時顯示錯誤，不把部分資料冒充完整列表。
-        (item: unknown) => this.isComment(item),
-      )) {
-        this.comments.set(body.data);
-      }
-      else {
-        const failure = problem(response.status, body);
-        this.commentsError.set(response.ok && body.success === true ? { message: '留言回應格式不正確，請確認目前後端。' } : failure);
-        if (credential && this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
-      }
-    } catch {
-      if (!parent.signal.aborted) this.commentsError.set({ message: '留言讀取失敗，請手動重試。' });
-    } finally { if (!parent.signal.aborted) this.commentsLoading.set(false); }
-  }
-
-  // 留言的父文章必須另行授權讀取；失敗時不隱藏已獲准看的留言。
-  async readParent(articleId: number, controller = this.readAbort): Promise<void> {
-    if (!controller || controller.signal.aborted || this.authState() !== 'active') return;
-    this.parentLoading.set(true); this.parentError.set(null); this.parentArticle.set(null);
-    const credential = this.credential();
-    try {
-      const { response, body } = await apiRequest(this.backend(), `/api/articles/${articleId}`, { token: credential?.accessToken, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      if (response.ok && body.success === true && this.isArticle(body.data)) this.parentArticle.set(body.data);
-      else {
-        const failure = problem(response.status, body);
-        this.parentError.set(response.ok && body.success === true ? { message: '所屬文章回應格式不正確，請重試。' }
-          : response.status === 404 ? { message: '所屬文章目前無法讀取。', code: 'E0004' } : failure);
-        if (credential && this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
-      }
-    } catch { if (!controller.signal.aborted) this.parentError.set({ message: '所屬文章讀取失敗，請單獨重試。' }); }
-    finally { if (!controller.signal.aborted) this.parentLoading.set(false); }
-  }
+  // 編輯留言的父文重試仍由同一閱讀 owner 判定，外殼不自行保存第二份授權資料。
+  readParent(): Promise<void> { return this.reading.readParent(this.invalidateReading); }
 
   // 後端重讀成功後才更新乾淨的文章草稿與版本，避免覆蓋使用者輸入。
   private loadArticleDraft(value: Article): void {

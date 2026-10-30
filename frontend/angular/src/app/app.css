@@ -42,7 +42,7 @@ h1 { margin: 0; font-size: clamp(30px, 3.6vw, 47px); line-height: 1.35; overflow
 .article-row { padding: 24px 22px; background: #fffdf5; border-top: 1px solid #d5dec8; }
 .article-row:nth-child(odd) { background: #fafbf0; }
 .article-row h2 { margin: 0 0 7px; font-size: clamp(19px, 2vw, 26px); line-height: 1.5; }
-.article-row h2 a { text-decoration: none; text-underline-offset: 4px; }
+.article-row h2 a { text-decoration: none; text-underline-offset: 4px; overflow-wrap: anywhere; }
 .article-row h2 a:hover { text-decoration: underline; }
 .excerpt { display: -webkit-box; margin: 0; overflow: hidden; color: #4d5f5d; line-height: 1.6; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .byline { margin: 12px 0 0; color: #5c6d62; font-size: 14px; }
@@ -63,13 +63,10 @@ h1 { margin: 0; font-size: clamp(30px, 3.6vw, 47px); line-height: 1.35; overflow
 .pagination a { display: grid; place-items: center; min-height: 44px; padding: 8px 14px; border: 1px solid #9aae90; border-radius: 6px; text-decoration: none; }
 .back-link { display: inline-block; margin-bottom: 34px; color: #416751; text-underline-offset: 4px; }
 .reading { max-width: 850px; margin: 0 auto; }
+.reading a { overflow-wrap: anywhere; }
 .reading h1 { max-width: 760px; margin-bottom: 19px; }
 .story-meta { display: flex; flex-wrap: wrap; gap: 8px 22px; padding-bottom: 20px; border-bottom: 1px solid #bfd0b2; color: #5a6d60; font-size: 14px; }
 .story-body { margin: 31px 0 65px; color: #2d413d; font-size: clamp(17px, 1.5vw, 19px); line-height: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
-.comments { max-width: 850px; margin: 0 auto; }
-.section-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #a5bd94; }
-.section-heading h2 { margin: 0 0 12px; font-size: 26px; }
-.section-heading span { color: #97af7f; font-size: 27px; }
 .comment { padding: 21px 5px; border-bottom: 1px solid #d5dfc8; }
 .comment-meta { display: flex; flex-wrap: wrap; gap: 7px 18px; color: #68786b; font-size: 13px; }
 .comment-meta strong { color: #315746; font-size: 15px; }

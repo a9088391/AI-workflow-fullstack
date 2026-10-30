@@ -217,3 +217,51 @@ export async function apiRequest(backend: string, path: string, options: { metho
   if (!body || typeof body !== 'object' || typeof body.success !== 'boolean') throw new Error('Invalid API response');
   return { response, body, retryAfter: response.headers.get('Retry-After') };
 }
+
+// API 識別碼與版本須是可精確表示的正整數，避免不同資源被誤認為同一筆。
+function isId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+// 閱讀前確認會呈現或參與操作的共同欄位，不把殘缺資料當成可操作資源。
+function isContent(value: any): boolean {
+  return Boolean(value && isId(value.id) && typeof value.body === 'string'
+    && value.author && isId(value.author.id) && typeof value.author.nickname === 'string'
+    && isId(value.version) && typeof value.created_at === 'string'
+    && timestamp.test(value.created_at)
+    && typeof value.updated_at === 'string'
+    && timestamp.test(value.updated_at)
+    && typeof value.created_backend === 'string' && Object.hasOwn(BACKENDS, value.created_backend)
+    && (value.visibility === 'visible' || value.visibility === 'hidden') && typeof value.can_restore === 'boolean');
+}
+
+// 單篇與父文章共用同形契約；有指定目標時必須與原請求 ID 一致。
+export function isReadingArticle(value: any, expectedId?: number): value is Article {
+  return isContent(value) && typeof value.title === 'string' && (expectedId === undefined || value.id === expectedId);
+}
+
+// 留言須保留父文章識別，詳情不能用其他留言冒充原請求。
+export function isReadingComment(value: any, expectedId?: number): value is Comment {
+  return isContent(value) && isId(value.article_id) && (expectedId === undefined || value.id === expectedId);
+}
+
+// 分頁保留原請求與超頁語意；拒絕錯頁、重複 ID 或不可能的筆數，錯誤不能冒充空資料。
+export function isReadingPage<T extends Article | Comment>(value: any, expectedPage: number,
+  accepts: (item: unknown) => item is T): value is Page<T> {
+  if (!value || !Array.isArray(value.list) || !value.pagination) return false;
+  const pagination = value.pagination;
+  return Number.isSafeInteger(pagination.page) && pagination.page > 0
+    && pagination.page === expectedPage && pagination.per_page === 20
+    && Number.isSafeInteger(pagination.total) && pagination.total >= 0
+    && pagination.total_pages === Math.ceil(pagination.total / 20)
+    && value.list.length <= 20 && value.list.length <= pagination.total
+    && (expectedPage <= pagination.total_pages || value.list.length === 0)
+    && value.list.every(
+      // 只傳資源本身，避免 Array.every 的索引被 guard 誤認為可選的 requested ID。
+      (item: unknown) => accepts(item),
+    )
+    && new Set(value.list.map(
+      // 同頁重複 ID 無法作為可靠的列表或 Angular track 依據。
+      (item: T) => item.id,
+    )).size === value.list.length;
+}
