@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { setImmediate } from 'node:timers/promises'
-import { compileScript, parse } from '@vue/compiler-sfc'
+import { parse } from '@vue/compiler-sfc'
 import { compile } from '@vue/compiler-dom'
 import { renderToString } from '@vue/server-renderer'
 import * as vue from 'vue'
@@ -12,6 +12,7 @@ import * as registration from './registration.js'
 import * as articles from './articles.js'
 import * as comments from './comments.js'
 import * as admin from './admin.js'
+import { appBindings, appScript, navigationBindings } from './flow-harness.js'
 
 const member = { id: 2, email: 'reader@example.test', nickname: '讀者', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
 const comment = { id: 9, body: '<script>原文字</script>\r\n😀', article_id: 7, author: { id: 2, nickname: '讀者' }, version: 1, created_backend: 'gin', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'hidden', can_restore: true }
@@ -60,7 +61,7 @@ function app(path, token = 'saved-token', search = '', selectedBackend = auth.AP
   if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
+    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
     AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage, document: {},
     window: {
       // 記錄使用者確認；預設取消，避免測試意外捨棄既有草稿。
@@ -86,10 +87,10 @@ function app(path, token = 'saved-token', search = '', selectedBackend = auth.AP
     fetch(url, options) { const response = Promise.withResolvers(); requests.push({ url, ...options, ...response }); return response.promise },
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const script = appScript(descriptor)
   const scope = vue.effectScope()
   // 使用 compiler 的正式 binding 清單取出整份狀態，讓模板測試執行真實條件與控制。
-  const bindings = Object.keys(compileScript(descriptor, { id: 'comment-test' }).bindings)
+  const bindings = appBindings(descriptor)
   // 在原 effect scope 執行實際 script，沒有另寫一份狀態或顯示判斷。
   const page = scope.run(() => runInNewContext(`${script}\n;({ ${bindings.join(', ')} })`, context))
   lifecycle.mount()
@@ -531,6 +532,7 @@ async function renderedPage(state) {
   const code = compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true }).code
   const render = runInNewContext(`(function () { ${code} })()`, { Vue: vue })
   return renderToString(vue.createSSRApp({
+    components: { AccountForm: navigationBindings.AccountForm },
     // 交給 Vue 解包正式 refs，保留模板與正式元件相同的顯示語意。
     setup() { return state },
     render,

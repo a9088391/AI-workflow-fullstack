@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { setImmediate } from 'node:timers/promises'
-import { compileScript, parse } from '@vue/compiler-sfc'
+import { parse } from '@vue/compiler-sfc'
 import { compile } from '@vue/compiler-dom'
 import { renderToString } from '@vue/server-renderer'
 import * as vue from 'vue'
@@ -12,6 +12,7 @@ import * as registration from './registration.js'
 import * as articles from './articles.js'
 import * as comments from './comments.js'
 import * as admin from './admin.js'
+import { appBindings, appScript, navigationBindings } from './flow-harness.js'
 
 const administrator = { id: 1, email: 'admin@example.test', nickname: '管理員', role: 'admin', status: 'active', created_at: '2026-09-24 09:00:00' }
 const member = { id: 2, email: 'member@example.test', nickname: '阿明', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
@@ -40,7 +41,7 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
   if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
+    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
     AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage,
     document: {
       // 摘要點選需聚焦實際欄位 ID；用可觀察焦點替代真實 DOM。
@@ -66,8 +67,8 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
     fetch(url, options) { const response = Promise.withResolvers(); requests.push({ url, ...options, ...response }); return response.promise },
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  const bindings = Object.keys(compileScript(descriptor, { id: 'admin-test' }).bindings)
-  const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const bindings = appBindings(descriptor)
+  const script = appScript(descriptor)
   const scope = vue.effectScope()
   // 在獨立 effect scope 執行正式 script，測試完成後可以整批清理 reactive watcher。
   const page = scope.run(() => runInNewContext(`${script}\n;({ ${bindings.join(', ')} })`, context))
@@ -715,6 +716,7 @@ async function rendered(state) {
   const code = compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true }).code
   const render = runInNewContext(`(function () { ${code} })()`, { Vue: vue })
   return renderToString(vue.createSSRApp({
+    components: { AccountForm: navigationBindings.AccountForm },
     // 交由 Vue 解包正式 refs，保持實際模板顯示條件。
     setup() { return state }, render,
   }))

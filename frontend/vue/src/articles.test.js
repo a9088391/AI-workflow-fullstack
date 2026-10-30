@@ -11,6 +11,7 @@ import * as registration from './registration.js'
 import * as articles from './articles.js'
 import * as comments from './comments.js'
 import * as admin from './admin.js'
+import { appBindings, appScript, navigationBindings } from './flow-harness.js'
 
 const sample = { id: 7, title: '標題', body: '第一行\r\n第二行', author: { id: 2, nickname: '作者' }, version: 1, created_backend: 'laravel', created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
 const member = { id: 2, email: 'writer@example.test', nickname: '作者', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
@@ -44,6 +45,9 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   const values = new Map()
   const lifecycle = {}
   const listeners = {}
+  let clock = 0
+  const intervals = new Map()
+  let nextInterval = 0
   const sessionStorage = {
     // 維持 Storage 缺值語意，讓正式 session 函式運作。
     getItem(key) { return values.get(key) ?? null },
@@ -55,8 +59,16 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
   if (selectedBackend !== auth.API_BASE) auth.selectBackend(sessionStorage, selectedBackend)
   if (savedToken) auth.saveSession(sessionStorage, savedToken, '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
-    AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage,
+    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
+    AbortController, URLSearchParams, console, setTimeout, clearTimeout, sessionStorage,
+    performance: {
+      // 可控單調時間可模擬背景分頁節流，不依賴內部 lockDeadline。
+      now() { return clock },
+    },
+    // 保存真實倒數 callback，由測試推進實際經過時間。
+    setInterval(callback) { const id = ++nextInterval; intervals.set(id, callback); return id },
+    // 正式離頁與歸零清理都必須移除計時器。
+    clearInterval(id) { intervals.delete(id) },
     document: {},
     window: {
       sessionStorage,
@@ -89,14 +101,16 @@ function articleApp(path, savedToken = 'old-token', search = '', confirmResult =
     fetch(url, options) { const result = Promise.withResolvers(); requests.push({ url, ...options, ...result }); return result.promise },
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const script = appScript(descriptor)
   const scope = vue.effectScope()
   // 在既有 Vue effect scope 中執行元件 script，供案例讀取實際後端標籤與事件。
   // 收集頂層綁定，讓渲染檢查與事件測試都使用實際 script setup 狀態。
-  const bindings = [...script.matchAll(/^(?:const|let|function|async function) ([A-Za-z_$][\w$]*)/gm)].map(function bindingName(match) { return match[1] })
+  const bindings = appBindings(descriptor)
   const page = scope.run(() => runInNewContext(`${script}\n;({ ${bindings.join(', ')} })`, context))
   lifecycle.mount()
   return { page, requests, redirects, confirmations, sessionStorage,
+    // 時間只跳一次仍須按完整經過時間歸零，不能靠觸發次數扣秒。
+    advanceClock(milliseconds) { clock += milliseconds; for (const callback of intervals.values()) callback() },
     // 停止正式生命週期與 Vue watcher，避免測試殘留計時器。
     close() { lifecycle.unmount(); scope.stop() },
   }
@@ -107,8 +121,8 @@ async function renderArticleApp(app) {
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
   const render = vue.compile(descriptor.template.content)
   // 模板使用 script setup 與既有匯入的純函式；測試提供相同的公開綁定。
-  function renderBindings() { return { ...auth, ...registration, ...articles, ...comments, ...admin, ...app.page } }
-  return renderToString(vue.h({ setup: renderBindings, render }))
+  function renderBindings() { return { ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings, ...app.page } }
+  return renderToString(vue.h({ components: { AccountForm: navigationBindings.AccountForm }, setup: renderBindings, render }))
 }
 
 // 等待回應及 Vue 微任務；可指定 Retry-After 等標頭檢查登入互動。
@@ -783,8 +797,7 @@ test('Django login lockout blocks Enter-style submit until countdown ends', asyn
   assert.match(app.page.lockText.value, /登入暫時鎖定，約剩 01:00/)
   await app.page.submitLogin()
   assert.equal(app.requests.length, 1)
-  app.page.lockDeadline.value = performance.now() - 1
-  app.page.tickLock()
+  app.advanceClock(60000)
   assert.equal(app.page.locked.value, false)
   assert.equal(app.requests.length, 1)
   const retry = app.page.submitLogin()
@@ -1142,8 +1155,7 @@ test('Express lockout disables login until Retry-After expires', async (t) => {
   assert.match(lockedHtml, /登入暫時鎖定，約剩 01:00/)
   await app.page.submitLogin()
   assert.equal(app.requests.length, 1)
-  app.page.lockDeadline.value = performance.now() - 1
-  app.page.tickLock()
+  app.advanceClock(60000)
   assert.equal(app.page.locked.value, false)
   assert.equal(app.requests.length, 1)
 })
@@ -1278,8 +1290,7 @@ test('Flask registration and locked login keep approved transitions', async (t) 
   assert.match(login.page.lockText.value, /登入暫時鎖定，約剩 01:00/)
   await login.page.submitLogin()
   assert.equal(login.requests.length, 1, 'Enter and button submission use the same locked guard')
-  login.page.lockDeadline.value = performance.now() - 1
-  login.page.tickLock()
+  login.advanceClock(60000)
   assert.equal(login.page.locked.value, false)
   assert.equal(login.requests.length, 1, 'countdown end never submits automatically')
   const second = login.page.submitLogin()
@@ -1421,8 +1432,7 @@ test('FastAPI registration, lockout, reading and logout use approved endpoints',
   assert.equal(login.page.locked.value, true)
   await login.page.submitLogin()
   assert.equal(login.requests.length, 1)
-  login.page.lockDeadline.value = performance.now() - 1
-  login.page.tickLock()
+  login.advanceClock(60000)
   const second = login.page.submitLogin()
   await respond(login.requests[1], 200, { success: true, message: 'OK', data: { access_token: 'fastapi-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
   await second
@@ -1494,8 +1504,7 @@ test('Gin uses its own session and ordered public auth and reading requests', as
   assert.match(await renderArticleApp(login), /登入暫時鎖定，約剩 0[01]:[0-5][0-9]/)
   await login.page.submitLogin()
   assert.equal(login.requests.length, 1)
-  login.page.lockDeadline.value = performance.now() - 1
-  login.page.tickLock()
+  login.advanceClock(60000)
   const second = login.page.submitLogin()
   await respond(login.requests[1], 200, { success: true, message: 'OK', data: { access_token: 'gin-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
   await second
@@ -1972,8 +1981,7 @@ test('FastAPI author routes verify identity before protected reads', async (t) =
   await respond(login.requests[0], 200, { success: true, message: 'OK', data: { access_token: 'fastapi-jwt', token_type: 'Bearer', expires_at: '2026-09-24 18:00:00', user: member } })
   await submit
   assert.deepEqual(login.redirects, ['/vue/me/articles'])
-  const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  assert.match(descriptor.template.content, /<template v-if="account"><a href="\/vue\/articles\/new"/)
+  assert.match(await renderArticleApp(login), /href="\/vue\/articles\/new"/)
 })
 
 // 各作者後端發文使用 201 空 data 與現有導向，不猜新 ID；管理員也能在作者頁發文。
@@ -2261,8 +2269,262 @@ test('NestJS registration and lockout use the existing account flow', async (t) 
   assert.match(await renderArticleApp(login), /登入暫時鎖定，約剩 0[01]:[0-5][0-9]/)
   await login.page.submitLogin()
   assert.equal(login.requests.length, 1)
-  login.page.lockDeadline.value = performance.now() - 1
-  login.page.tickLock()
+  login.advanceClock(60000)
   assert.equal(login.page.locked.value, false)
   assert.equal(login.requests.length, 1)
+})
+
+// 未知深連結及重新掛載都應保留 URL，讓各後端一致顯示找不到頁面與列表入口。
+test('unknown routes remain visible for NestJS and Laravel on direct entry and refresh', async (t) => {
+  for (const backend of [auth.BACKENDS.nestjs, auth.BACKENDS.laravel]) {
+    for (const entry of ['direct', 'refresh']) {
+      const instance = articleApp('/vue/unknown/path', null, '', false, backend)
+      t.after(instance.close)
+      assert.deepEqual(instance.redirects, [], `${backend} ${entry} must preserve the unknown URL`)
+      assert.equal(instance.requests.length, 0)
+      const html = await renderArticleApp(instance)
+      assert.match(html, /找不到頁面/)
+      assert.match(html, /href="\/vue\/"[^>]*>返回文章入口/)
+    }
+  }
+})
+
+// 儲存失敗不得宣稱後端已切換；目前輸入及 API 選擇都留給使用者修正後重試。
+test('backend storage failure leaves current selection and inputs without redirect', async (t) => {
+  const app = articleApp('/vue/login', null, '', true)
+  t.after(app.close)
+  app.page.email.value = member.email
+  app.page.password.value = 'abcd'
+  await vue.nextTick()
+  // 只讓本次保存失敗，不更動正式 parser 或選擇函式。
+  app.sessionStorage.setItem = function denyStorage() { throw new Error('Storage denied') }
+  const event = { target: { value: auth.BACKENDS.nestjs } }
+  await app.page.chooseBackend(event)
+  assert.equal(event.target.value, auth.API_BASE)
+  assert.equal(app.page.backend.value, auth.API_BASE)
+  assert.equal(app.page.email.value, member.email)
+  assert.equal(app.page.password.value, 'abcd')
+  assert.deepEqual(app.redirects, [])
+  assert.match(app.page.summary.value, /無法保存後端選擇/)
+})
+
+// 按實際經過時間驗證倒數兩側與歸零邊界，並確認離頁已清掉 timer 而非只隱藏文字。
+test('lockout timer reaches equality without submitting and is disposed on leave', async (t) => {
+  const app = articleApp('/vue/login', null)
+  t.after(app.close)
+  app.page.email.value = member.email
+  app.page.password.value = 'abcd'
+  await vue.nextTick()
+  const login = app.page.submitLogin()
+  await respond(app.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '2' })
+  await login
+  app.advanceClock(1999)
+  assert.equal(app.page.locked.value, true)
+  assert.match(app.page.lockText.value, /00:01/)
+  app.advanceClock(1)
+  assert.equal(app.page.locked.value, false)
+  assert.equal(app.page.lockText.value, '可再次嘗試登入')
+  assert.equal(app.requests.length, 1)
+  const retry = app.page.submitLogin()
+  await respond(app.requests[1], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '2' })
+  await retry
+  app.page.onPageHide()
+  app.advanceClock(2000)
+  assert.equal(app.page.locked.value, true, 'a disposed timer cannot update the frozen page')
+  assert.equal(app.requests.length, 2)
+})
+
+// 延遲舊鎖定不得套用到更改後的帳號；無有效 Retry-After 只能提示而不能猜倒數。
+test('stale login cannot restore a prior lock and missing Retry-After does not invent time', async (t) => {
+  const app = articleApp('/vue/login', null)
+  t.after(app.close)
+  app.page.email.value = member.email
+  app.page.password.value = 'abcd'
+  await vue.nextTick()
+  const oldLogin = app.page.submitLogin()
+  app.page.email.value = 'next@example.test'
+  await vue.nextTick()
+  const nextLogin = app.page.submitLogin()
+  await respond(app.requests[0], 429, { success: false, error_code: 'E0105' }, { 'Retry-After': '60' })
+  await oldLogin
+  assert.equal(app.page.pending.value, true)
+  assert.equal(app.page.locked.value, false)
+  await respond(app.requests[1], 429, { success: false, error_code: 'E0105' })
+  await nextLogin
+  assert.equal(app.page.locked.value, false)
+  assert.match(app.page.lockText.value, /請稍後手動重試/)
+  assert.equal(app.requests.length, 2)
+})
+
+// 註冊錯誤保留三欄並可回到錯誤欄位；不完整 201 不能宣稱成功或自動登入。
+test('registration validation and incomplete success keep inputs and focus recovery', async (t) => {
+  const app = articleApp('/vue/register', null)
+  t.after(app.close)
+  let focused = 0
+  app.page.errorSummary.value = {
+    // 只觀察正式摘要聚焦時機，不假裝已執行 DOM 焦點驗收。
+    focus() { focused += 1 },
+  }
+  app.page.email.value = 'invalid'
+  app.page.password.value = 'abcd'
+  app.page.nickname.value = '暱稱'
+  await app.page.submitRegistration()
+  assert.equal(app.requests.length, 0)
+  assert.equal(focused, 1)
+  assert.equal(app.page.nickname.value, '暱稱')
+  app.page.email.value = member.email
+  const submit = app.page.submitRegistration()
+  await respond(app.requests[0], 201, { success: true, message: 'OK', data: { id: 7 } })
+  await submit
+  assert.deepEqual(app.redirects, [])
+  assert.equal(app.page.email.value, member.email)
+  assert.equal(app.page.password.value, 'abcd')
+  assert.equal(app.page.nickname.value, '暱稱')
+  assert.match(app.page.summary.value, /無法確認註冊結果/)
+})
+
+// RC01：驗權期間阻擋註冊，驗權失敗後須解開控制並允許手動註冊／重驗到成功。
+test('RC01 me pending blocks registration and restores manual recovery after failure', async (t) => {
+  const app = articleApp('/vue/register', 'saved-token', '', true)
+  t.after(app.close)
+  app.page.email.value = 'new@example.test'
+  app.page.password.value = 'abcd'
+  app.page.nickname.value = '新會員'
+  await vue.nextTick()
+  const verification = app.requests[0]
+  const blocked = app.page.submitRegistration()
+  assert.equal(app.requests.length, 1, 'registration must not replace pending me')
+  assert.equal(verification.signal.aborted, false)
+  await blocked
+  const waiting = await renderArticleApp(app)
+  for (const id of ['email', 'password', 'nickname']) assert.match(waiting, new RegExp(`id="${id}"[^>]*disabled`))
+  assert.match(waiting, /type="submit"[^>]*disabled/)
+  assert.match(waiting, /正在確認登入狀態/)
+  assert.doesNotMatch(waiting, /註冊處理中|正在送出，請稍候/)
+
+  // /me 的暫時失敗不能清掉憑證，也不能讓表單永久等待。
+  await respond(verification, 500, { success: false, error_code: 'E9999' })
+  assert.equal(app.page.authChecking.value, false)
+  assert.equal(app.page.pending.value, false)
+  assert.equal(app.page.credential.value.accessToken, 'saved-token')
+  const recovered = await renderArticleApp(app)
+  assert.doesNotMatch(recovered, /type="submit"[^>]*disabled/)
+  assert.match(recovered, /系統暫時無法處理/)
+  const retry = app.page.submitRegistration()
+  assert.equal(app.requests[1].url, `${auth.API_BASE}/api/auth/register`)
+  await respond(app.requests[1], 422, { success: false, error_code: 'E0001', errors: { email: ['此 Email 已註冊'] } })
+  await retry
+  assert.equal(app.page.pending.value, false)
+  assert.match(await renderArticleApp(app), /此 Email 已註冊/)
+  assert.equal(app.requests.length, 2, 'no automatic retry after either failure')
+  const reverify = app.page.verifyAccount()
+  await respond(app.requests[2], 200, success(member))
+  await reverify
+  assert.equal(app.page.authChecking.value, false)
+  assert.equal(app.page.account.value.id, member.id)
+  const completed = app.page.submitRegistration()
+  await respond(app.requests[3], 201, success({}))
+  await completed
+  assert.deepEqual(app.redirects, ['/vue/login?registered=1'])
+})
+
+// RC01：註冊等待時不准登出取代同一通道；422／500 後都可手動再送且不自動重試。
+test('RC01 registration pending blocks logout and preserves retry after rejection or unknown result', async (t) => {
+  for (const status of [422, 500]) {
+    const app = articleApp('/vue/register', 'saved-token', '', true)
+    t.after(app.close)
+    await respond(app.requests[0], 200, success(member))
+    app.page.email.value = 'new@example.test'
+    app.page.password.value = 'abcd'
+    app.page.nickname.value = '新會員'
+    await vue.nextTick()
+    const registration = app.page.submitRegistration()
+    const request = app.requests[1]
+    const blocked = app.page.submitLogout()
+    assert.equal(app.requests.length, 2, 'logout must not replace registration')
+    assert.equal(request.signal.aborted, false)
+    await blocked
+    const waiting = await renderArticleApp(app)
+    assert.match(waiting, /class="nav-action"[^>]*disabled/)
+    assert.match(waiting, /註冊處理中/)
+    assert.equal(app.page.logoutPending.value, false)
+    await respond(request, status, { success: false, error_code: status === 422 ? 'E0001' : 'E9999', errors: { email: ['此 Email 已註冊'] } })
+    await registration
+    assert.equal(app.page.pending.value, false)
+    assert.equal(app.page.account.value.id, member.id)
+    assert.equal(app.requests.length, 2, 'registration failure never retries automatically')
+    const recovered = await renderArticleApp(app)
+    assert.doesNotMatch(recovered, /type="submit"[^>]*disabled/)
+    assert.match(recovered, status === 500 ? /無法確認註冊結果/ : /此 Email 已註冊/)
+    const retry = app.page.submitRegistration()
+    await respond(app.requests[2], 201, success({}))
+    await retry
+    assert.equal(app.page.pending.value, false)
+    assert.deepEqual(app.redirects, ['/vue/login?registered=1'])
+  }
+})
+
+// RC01：登出等待須保留原請求，失敗後表單、手動登出與前端切換都能恢復。
+test('RC01 logout pending blocks registration and restores form logout and frontend switching', async (t) => {
+  const app = articleApp('/vue/register', 'saved-token', '', true)
+  t.after(app.close)
+  await respond(app.requests[0], 200, success(member))
+  app.page.email.value = 'new@example.test'
+  app.page.password.value = 'abcd'
+  app.page.nickname.value = '新會員'
+  await vue.nextTick()
+  const logout = app.page.submitLogout()
+  const request = app.requests[1]
+  const blocked = app.page.submitRegistration()
+  assert.equal(app.requests.length, 2, 'registration must not replace logout')
+  assert.equal(request.signal.aborted, false)
+  await blocked
+  const waiting = await renderArticleApp(app)
+  for (const id of ['email', 'password', 'nickname']) assert.match(waiting, new RegExp(`id="${id}"[^>]*disabled`))
+  assert.match(waiting, /type="submit"[^>]*disabled/)
+  assert.match(waiting, /登出處理中/)
+  assert.doesNotMatch(waiting, /註冊處理中|正在送出，請稍候/)
+  const selection = { target: { value: 'nuxt' } }
+  app.page.chooseFrontend(selection)
+  assert.equal(selection.target.value, 'vue')
+  assert.deepEqual(app.redirects, [])
+
+  await respond(request, 500, { success: false, error_code: 'E9999' })
+  await logout
+  assert.equal(app.page.logoutPending.value, false)
+  assert.equal(app.page.pending.value, false)
+  assert.equal(app.page.account.value.id, member.id)
+  assert.equal(app.requests.length, 2, 'logout failure does not send registration or retry logout')
+  const recovered = await renderArticleApp(app)
+  assert.match(recovered, /登出未完成/)
+  assert.doesNotMatch(recovered, /type="submit"[^>]*disabled/)
+  assert.doesNotMatch(recovered, /class="nav-action"[^>]*disabled/)
+  // 表單恢復可手動送出，但422不影響仍有效的原帳號登入。
+  const registration = app.page.submitRegistration()
+  await respond(app.requests[2], 422, { success: false, error_code: 'E0001', errors: { email: ['此 Email 已註冊'] } })
+  await registration
+  assert.equal(app.page.pending.value, false)
+  const retryLogout = app.page.submitLogout()
+  await respond(app.requests[3], 500, { success: false, error_code: 'E9999' })
+  await retryLogout
+  assert.equal(app.page.logoutPending.value, false)
+  app.page.chooseFrontend({ target: { value: 'nuxt' } })
+  assert.deepEqual(app.redirects, ['/nuxt/register'])
+  assert.equal(auth.readSession(app.sessionStorage).accessToken, 'saved-token')
+
+  // 成功登出會離頁；以獨立同狀態頁面驗證手動重試的成功終點，不和切換分支混用。
+  const retryApp = articleApp('/vue/register', 'saved-token', '', true)
+  t.after(retryApp.close)
+  await respond(retryApp.requests[0], 200, success(member))
+  const firstLogout = retryApp.page.submitLogout()
+  await respond(retryApp.requests[1], 500, { success: false, error_code: 'E9999' })
+  await firstLogout
+  assert.equal(retryApp.requests.length, 2)
+  const confirmedLogout = retryApp.page.submitLogout()
+  await respond(retryApp.requests[2], 200, success({}))
+  await confirmedLogout
+  assert.equal(retryApp.page.logoutPending.value, false)
+  assert.equal(retryApp.page.credential.value, null)
+  assert.equal(auth.readSession(retryApp.sessionStorage), null)
+  assert.deepEqual(retryApp.redirects, ['/vue/login'])
 })

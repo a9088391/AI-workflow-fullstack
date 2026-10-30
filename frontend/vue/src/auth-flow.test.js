@@ -10,6 +10,7 @@ import * as registration from './registration.js'
 import * as articles from './articles.js'
 import * as comments from './comments.js'
 import * as admin from './admin.js'
+import { appScript, navigationBindings } from './flow-harness.js'
 
 // 執行實際 App script 與 Vue reactivity，只替換瀏覽器及 HTTP 邊界以控制回應順序。
 function loginPage() {
@@ -27,7 +28,7 @@ function loginPage() {
   }
   auth.saveSession(sessionStorage, 'retained-token', '2026-09-24 18:00:00')
   const context = {
-    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin,
+    ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
     AbortController, URLSearchParams, performance, console,
     setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage,
     document: {},
@@ -55,7 +56,7 @@ function loginPage() {
     },
   }
   const { descriptor } = parse(readFileSync(new URL('./App.vue', import.meta.url), 'utf8'))
-  const script = descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const script = appScript(descriptor)
   const scope = vue.effectScope()
   // 僅在測試環境取出模板使用的事件與狀態，不修改正式元件的公開介面。
   const page = scope.run(() => runInNewContext(`${script}\n;({ email, password, pending, authChecking, logoutPending, credential, account, summary, submitLogin, verifyAccount, submitLogout })`, context))
