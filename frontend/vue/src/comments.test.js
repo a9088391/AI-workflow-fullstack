@@ -719,7 +719,7 @@ async function renderedPage(state) {
   const code = compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true }).code
   const render = runInNewContext(`(function () { ${code} })()`, { Vue: vue })
   return renderToString(vue.createSSRApp({
-    components: { AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm },
+    components: { AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm, LockoutSettingsForm: navigationBindings.LockoutSettingsForm },
     // 交給 Vue 解包正式 refs，保留模板與正式元件相同的顯示語意。
     setup() { return state },
     render,

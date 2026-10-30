@@ -140,7 +140,7 @@ async function renderArticleApp(app) {
   const render = vue.compile(descriptor.template.content)
   // 模板使用 script setup 與既有匯入的純函式；測試提供相同的公開綁定。
   function renderBindings() { return { ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings, ...app.page } }
-  return renderToString(vue.h({ components: { AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm }, setup: renderBindings, render }))
+  return renderToString(vue.h({ components: { AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm, LockoutSettingsForm: navigationBindings.LockoutSettingsForm }, setup: renderBindings, render }))
 }
 
 // 等待回應及 Vue 微任務；可指定 Retry-After 等標頭檢查登入互動。

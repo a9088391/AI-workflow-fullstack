@@ -35,14 +35,17 @@ function compileForm(filename) {
 
 export const AccountForm = compileForm('./AccountForm.vue')
 export const AuthorContentForm = compileForm('./AuthorContentForm.vue')
-export const navigationBindings = { ...navigation, AccountForm, AuthorContentForm }
+export const LockoutSettingsForm = compileForm('./LockoutSettingsForm.vue')
+export const navigationBindings = { ...navigation, AccountForm, AuthorContentForm, LockoutSettingsForm }
 
-// session、閱讀 owner 與 App 共用同一個受控 HTTP／Storage／時鐘環境；這是輔助 harness，並非瀏覽器。
+// session、各頁 owner 與 App 共用同一個受控 HTTP／Storage／時鐘環境；這是輔助 harness，並非瀏覽器。
 export function appScript(descriptor) {
   const session = readFileSync(new URL('./useAccountSession.js', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./useContentReading.js', import.meta.url), 'utf8')
   const writing = readFileSync(new URL('./useAuthorWriting.js', import.meta.url), 'utf8')
-  return `${executableModule(session)}\n${executableModule(reading)}\n${executableModule(writing)}\n${executableModule(descriptor.scriptSetup.content)}`
+  const management = readFileSync(new URL('./useManagement.js', import.meta.url), 'utf8')
+  const settings = readFileSync(new URL('./useLockoutSettings.js', import.meta.url), 'utf8')
+  return `${executableModule(management)}\n${executableModule(settings)}\n${executableModule(session)}\n${executableModule(reading)}\n${executableModule(writing)}\n${executableModule(descriptor.scriptSetup.content)}`
 }
 
 // 由編譯器辨識解構與多行宣告，不再依頂層名稱的文字排列猜測可觀察狀態。

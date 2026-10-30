@@ -23,11 +23,12 @@ const success = (data) => ({ success: true, message: 'OK', data })
 const list = (items, page = 1, total = items.length) => success({ list: items, pagination: { page, per_page: 20, total, total_pages: Math.ceil(total / 20) } })
 
 // 測試真實 App script 與模板，只替換 HTTP、Storage 和導覽來控制交錯回應。
-function app(path, search = '', token = 'saved-token', selectedBackend = auth.API_BASE) {
+function app(path, search = '', token = 'saved-token', selectedBackend = auth.API_BASE, clock = {}) {
   const requests = []
   const redirects = []
   const focuses = []
   const lifecycle = {}
+  let confirmed = true
   const storage = new Map()
   const sessionStorage = {
     // 保留缺值語意，讓正式 session parser 決定是否有憑證。
@@ -42,7 +43,7 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
   if (token) auth.saveSession(sessionStorage, token, '2026-09-24 18:00:00')
   const context = {
     ...vue, ...auth, ...registration, ...articles, ...comments, ...admin, ...navigationBindings,
-    AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage,
+    AbortController, URLSearchParams, performance, console, setTimeout, clearTimeout, setInterval, clearInterval, sessionStorage, ...clock,
     document: {
       // 摘要點選需聚焦實際欄位 ID；用可觀察焦點替代真實 DOM。
       getElementById(id) { return {
@@ -54,6 +55,8 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
       // 記錄安全本機返回與搜尋導覽，不切離測試。
       assign(value) { redirects.push(value) },
     },
+      // 控制既有原生捨棄確認，讓測試可驗取消與接受的兩個終點。
+      confirm() { return confirmed },
       // 測試直接呼叫掛載，不需瀏覽器事件監聽。
       addEventListener() {},
       // 正式 cleanup 仍可執行，測試環境沒有已註冊事件。
@@ -74,6 +77,8 @@ function app(path, search = '', token = 'saved-token', selectedBackend = auth.AP
   const page = scope.run(() => runInNewContext(`${script}\n;({ ${bindings.join(', ')} })`, context))
   lifecycle.mount()
   return { page, requests, redirects, focuses,
+    // 只控制此頁面的原生確認結果，不改正式 handler 或全域瀏覽器狀態。
+    setConfirmation(value) { confirmed = value },
     // 先執行元件卸載，再停止 effect scope，避免測試間殘留請求與計時器。
     close() { lifecycle.unmount(); scope.stop() },
   }
@@ -716,7 +721,10 @@ async function rendered(state) {
   const code = compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true }).code
   const render = runInNewContext(`(function () { ${code} })()`, { Vue: vue })
   return renderToString(vue.createSSRApp({
-    components: { AccountForm: navigationBindings.AccountForm },
+    components: {
+      AccountForm: navigationBindings.AccountForm, AuthorContentForm: navigationBindings.AuthorContentForm,
+      LockoutSettingsForm: navigationBindings.LockoutSettingsForm,
+    },
     // 交由 Vue 解包正式 refs，保持實際模板顯示條件。
     setup() { return state }, render,
   }))
@@ -1193,4 +1201,560 @@ test('logout and member status cannot overlap in either order', async (t) => {
   await respond(statusFirst.requests[3], 200, success({ ...member, status: 'disabled' }))
   await write
   assert.equal(statusFirst.page.memberData.value.status, 'disabled')
+})
+
+// 管理員失去角色後再恢復也不能取得先前草稿，避免同 ID 被誤認為相同授權。
+test('CQ04 role downgrade clears the old settings draft before later admin recovery', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.window_minutes = 9
+  const verify = instance.page.verifyAccount()
+  await respond(instance.requests[2], 200, success({ ...administrator, role: 'member' }))
+  await verify
+  assert.equal(instance.page.lockoutDraft.value, null)
+  assert.doesNotMatch(await rendered(instance.page), /儲存完整設定/)
+  const restore = instance.page.verifyAccount()
+  await respond(instance.requests[3], 200, success(administrator))
+  await restore
+  await respond(instance.requests[4], 200, success(lockout))
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 5)
+})
+
+// 已確認 PUT 但 GET 失敗時撤下舊伺服器值，原輸入仍受到離頁保護。
+test('CQ04 failed settings readback preserves the draft and leave protection', async (t) => {
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.window_minutes = 9
+  const save = instance.page.submitLockoutSettings()
+  await respond(instance.requests[2], 200, success({}))
+  await respond(instance.requests[3], 500, { success: false, error_code: 'E9999' })
+  await save
+  assert.equal(instance.page.lockoutData.value, null)
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+  assert.equal(instance.page.hasDraft.value, true)
+  assert.match(await rendered(instance.page), /更新已送達，但尚未讀到伺服器設定/)
+})
+
+// 受控逾時故意讓 fetch 不理 abort，必須立即結束等待並拒絕之後的成功回應。
+test('CQ04 settings timeout ends pending even when transport ignores abort', async (t) => {
+  const { clock, timers } = controlledClock()
+  const instance = app('/vue/admin/settings/login-lockout', '', 'saved-token', auth.API_BASE, clock)
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.window_minutes = 9
+  const save = instance.page.submitLockoutSettings()
+  const expire = [...timers.values()][0]
+  expire()
+  await setImmediate()
+  assert.equal(instance.page.lockoutPending.value, false)
+  assert.equal(instance.page.lockoutUnknown.value, true)
+  assert.equal(instance.page.lockoutNeedsReadback.value, true)
+  assert.equal(instance.requests[2].signal.aborted, true)
+  assert.equal(timers.size, 0)
+  await respond(instance.requests[2], 200, success({}))
+  await save
+  assert.equal(instance.requests.length, 3)
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+})
+
+// 受控時鐘只替換 timeout，登入 countdown 仍用原有 interval；不安裝另一個測試框架。
+function controlledClock() {
+  const timers = new Map()
+  let serial = 0
+  return { timers, clock: {
+    // 收集正式 owner 的期限，讓測試可直接推進而不等待二十秒。
+    setTimeout(callback) { timers.set(++serial, callback); return serial },
+    // 真正清掉 timer 紀錄，成功、取消與逾時都可觀察其終點。
+    clearTimeout(id) { timers.delete(id) },
+  } }
+}
+
+// 管理 GET 逾時也要結束 loading；故意晚回應不能覆蓋之後手動重試取得的值。
+test('CQ04 management read timeouts release controls and ignore stale data', async (t) => {
+  for (const settings of [false, true]) {
+    // 兩個實際 owner 各自跑相同終點，避免只驗設定卻遺漏會員讀取。
+    await t.test(settings ? 'settings' : 'member', async (t) => {
+      const { clock, timers } = controlledClock()
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      const stale = instance.requests[1]
+      const expire = [...timers.values()][0]
+      expire()
+      await setImmediate()
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(instance.page.contentReady.value, false)
+      assert.equal(stale.signal.aborted, true)
+      assert.equal(timers.size, 0)
+      assert.match(await rendered(instance.page), /讀取失敗或伺服器回應不完整/)
+      const retry = instance.page.loadContent()
+      expire()
+      assert.equal(instance.requests[2].signal.aborted, false, '已排入 queue 的舊 timer 不可取消新的 GET')
+      assert.equal(timers.size, 1)
+      const fresh = settings ? { ...lockout, failure_threshold: 8 } : { ...member, nickname: '新讀回' }
+      await respond(stale, 200, success(settings ? lockout : member))
+      assert.equal(instance.page.contentReady.value, false)
+      await respond(instance.requests[2], 200, success(fresh))
+      await retry
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(instance.page.contentReady.value, true)
+      assert.deepEqual(settings ? instance.page.lockoutData.value : instance.page.memberData.value, fresh)
+      assert.equal(timers.size, 0)
+    })
+  }
+})
+
+// 已確認寫入後讀回逾時，不得永遠顯示「正在讀取」；人工重讀完成後才恢復操作。
+test('CQ04 confirmed writes settle timed out readback and allow manual recovery', async (t) => {
+  for (const settings of [false, true]) {
+    // 分別驗證兩種成功續段，不以其中一個 owner 代替另一個。
+    await t.test(settings ? 'settings' : 'member', async (t) => {
+      const { clock, timers } = controlledClock()
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      await respond(instance.requests[2], 200, success({}))
+      const stale = instance.requests[3]
+      const expire = [...timers.values()][0]
+      expire()
+      await setImmediate()
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(instance.page.contentReady.value, false)
+      assert.equal(timers.size, 0)
+      assert.equal(settings ? instance.page.lockoutPending.value : instance.page.statusPending.value, false)
+      assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, false, '完整 PUT 已確認，不因 GET 失敗改成未知')
+      assert.match(await rendered(instance.page), settings ? /尚未讀到伺服器設定/ : /尚未讀到最新會員狀態/)
+      if (settings) {
+        assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+        assert.equal(instance.page.hasDraft.value, true)
+      }
+      const retry = instance.page.loadContent()
+      await respond(stale, 200, success(settings ? { ...lockout, window_minutes: 9 } : { ...member, status: 'disabled' }))
+      await save
+      assert.equal(instance.page.contentReady.value, false)
+      await respond(instance.requests[4], 200, success(settings ? lockout : member))
+      await retry
+      assert.equal(instance.page.contentReady.value, true)
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(timers.size, 0)
+      assert.match(await rendered(instance.page), settings ? /已重新讀取並顯示目前伺服器設定/ : /已重讀會員，目前狀態為啟用/)
+      if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, 9, '人工 GET 不套用已過期讀回的草稿旗標')
+    })
+  }
+})
+
+// 會員 PUT 的逾時與設定各自獨立；晚到 200 不得導致自動 GET 或解除未知結果。
+test('CQ04 member status timeout keeps uncertainty until manual same-ID readback', async (t) => {
+  const { clock, timers } = controlledClock()
+  const instance = app('/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(member))
+  const save = instance.page.submitMemberStatus()
+  const expire = [...timers.values()][0]
+  expire()
+  await setImmediate()
+  assert.equal(instance.page.statusPending.value, false)
+  assert.equal(instance.page.statusUnknown.value, true)
+  assert.equal(instance.page.statusNeedsReadback.value, true)
+  assert.equal(timers.size, 0)
+  await respond(instance.requests[2], 200, success({}))
+  await save
+  assert.equal(instance.requests.length, 3)
+  await instance.page.submitMemberStatus()
+  assert.equal(instance.requests.length, 3)
+  const retry = instance.page.loadContent()
+  assert.match(instance.requests[3].url, /\/api\/members\/2$/)
+  await respond(instance.requests[3], 200, success({ ...member, status: 'disabled' }))
+  await retry
+  assert.equal(instance.page.statusNeedsReadback.value, false)
+  assert.equal(instance.page.statusUnknown.value, true)
+  assert.match(await rendered(instance.page), /目前狀態已重讀；再次操作仍需手動確認/)
+})
+
+// 先取消再接受切換，兩種管理寫入各驗成功／拒絕／未知晚回應，不把 cancel 當成後端回滾。
+test('CQ04 pending management switches isolate late success rejection and unknown', async (t) => {
+  for (const [settings, status] of [[true, 200], [true, 401], [true, 500], [false, 200], [false, 401], [false, 500]]) {
+    // 每例有獨立頁面、session及clock，結果只能屬於原actor/backend/resource。
+    await t.test(`${settings ? 'settings backend' : 'member frontend'} late ${status}`, async (t) => {
+      const { clock, timers } = controlledClock()
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      const operation = instance.requests[2]
+      const originalSummary = instance.page.summary.value
+      if (settings) {
+        // 既有 session 憑證保留同分頁選擇；後端切換以 handler 的 confirm 結果控制。
+        instance.setConfirmation(false)
+        const canceled = { target: { value: auth.BACKENDS.nestjs } }
+        await instance.page.chooseBackend(canceled)
+        assert.equal(canceled.target.value, auth.API_BASE)
+        assert.equal(operation.signal.aborted, false)
+        assert.equal(instance.page.lockoutPending.value, true)
+        instance.setConfirmation(true)
+        await instance.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
+        assert.equal(instance.page.backend.value, auth.BACKENDS.nestjs)
+        assert.equal(instance.page.credential.value, null)
+      } else {
+        instance.page.chooseFrontend({ target: { value: 'react' } })
+        assert.equal(instance.redirects.at(-1), '/react/admin/members/2')
+      }
+      assert.equal(operation.signal.aborted, true)
+      assert.equal(instance.page.contentReady.value, false)
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(settings ? instance.page.lockoutPending.value : instance.page.statusPending.value, false)
+      assert.equal(timers.size, 0)
+      await respond(operation, status, status === 200 ? success({}) : { success: false, error_code: status === 401 ? 'E0002' : 'E9999' })
+      await save
+      assert.equal(instance.requests.length, 3)
+      assert.equal(instance.page.summary.value, originalSummary)
+      assert.equal(settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value, '')
+      assert.equal(instance.page.reLogin.value, false)
+      assert.equal(instance.page.contentReady.value, false)
+    })
+  }
+})
+
+// 關閉仍驗證三個整數範圍；合法 false payload 不得漏欄或改寫既有數值。
+test('CQ04 disabled settings retain all three validated numeric values', async (t) => {
+  for (const [name, maximum] of Object.entries({ window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 })) {
+    for (const value of [1, maximum]) assert.deepEqual(admin.validateLockoutSettings({ ...lockout, enabled: false, [name]: value }), {})
+    for (const value of [0, maximum + 1, 1.5, '', '1', true, null]) {
+      assert.ok(admin.validateLockoutSettings({ ...lockout, enabled: false, [name]: value })[name])
+    }
+  }
+  const instance = app('/vue/admin/settings/login-lockout')
+  t.after(instance.close)
+  await respond(instance.requests[0], 200, success(administrator))
+  await respond(instance.requests[1], 200, success(lockout))
+  instance.page.lockoutDraft.value.enabled = false
+  const save = instance.page.submitLockoutSettings()
+  assert.deepEqual(JSON.parse(instance.requests[2].body), { ...lockout, enabled: false })
+  await respond(instance.requests[2], 200, success({}))
+  await respond(instance.requests[3], 200, success({ ...lockout, enabled: false }))
+  await save
+  assert.equal(instance.page.lockoutDraft.value.enabled, false)
+  assert.deepEqual({ ...instance.page.lockoutDraft.value }, { ...lockout, enabled: false })
+  assert.match(await rendered(instance.page), /關閉：會員登入失敗不會觸發暫時鎖定/)
+})
+
+// 連線失敗或不完整 200 都不能當成功；兩種 PUT 保留原值、未知警示與人工讀回入口。
+test('CQ04 management transport and incomplete success preserve unknown recovery', async (t) => {
+  for (const [settings, network] of [[false, false], [false, true], [true, false], [true, true]]) {
+    // 用真實送出 handler 區分 HTTP envelope 與傳輸 rejection，不直接改未知旗標。
+    await t.test(`${settings ? 'settings' : 'member'} ${network ? 'network' : 'incomplete 200'}`, async (t) => {
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2')
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.failure_threshold = 8
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      if (network) instance.requests[2].reject(new TypeError('fixture network failure'))
+      else await respond(instance.requests[2], 200, success({ saved: true }))
+      await save
+      assert.equal(settings ? instance.page.lockoutPending.value : instance.page.statusPending.value, false)
+      assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, true)
+      assert.equal(settings ? instance.page.lockoutNeedsReadback.value : instance.page.statusNeedsReadback.value, true)
+      assert.match(await rendered(instance.page), /結果尚未確認|是否完成仍無法判定/)
+      assert.equal(instance.requests.length, 3, '未知結果不自動重送或讀回')
+      const retry = instance.page.loadContent()
+      await respond(instance.requests[3], 200, success(settings ? lockout : member))
+      await retry
+      assert.equal(settings ? instance.page.lockoutNeedsReadback.value : instance.page.statusNeedsReadback.value, false)
+      assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, true)
+      if (settings) assert.equal(instance.page.lockoutDraft.value.failure_threshold, 8)
+    })
+  }
+})
+
+// 讀回期間仍遵守離頁確認；接受切換後舊 GET 不得套用草稿或送出完成提示。
+test('CQ04 readback switches prevent stale continuation from updating the new page', async (t) => {
+  for (const settings of [false, true]) {
+    // 設定驗前端切換、會員驗後端切換，覆蓋兩個 owner 的成功後 await 續段。
+    await t.test(settings ? 'settings frontend' : 'member backend', async (t) => {
+      const { clock, timers } = controlledClock()
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      await respond(instance.requests[2], 200, success({}))
+      const readback = instance.requests[3]
+      assert.equal(instance.page.contentLoading.value, true)
+      if (settings) {
+        instance.setConfirmation(false)
+        const canceled = { target: { value: 'react' } }
+        instance.page.chooseFrontend(canceled)
+        assert.equal(canceled.target.value, 'vue')
+        assert.equal(readback.signal.aborted, false)
+        assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+        instance.setConfirmation(true)
+        instance.page.chooseFrontend({ target: { value: 'react' } })
+        assert.equal(instance.redirects.at(-1), '/react/admin/settings/login-lockout')
+      } else {
+        await instance.page.chooseBackend({ target: { value: auth.BACKENDS.nestjs } })
+        assert.equal(instance.page.backend.value, auth.BACKENDS.nestjs)
+        assert.equal(instance.page.credential.value, null)
+      }
+      assert.equal(readback.signal.aborted, true)
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(instance.page.contentReady.value, false)
+      assert.equal(timers.size, 0)
+      const notice = settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value
+      await respond(readback, 200, success(settings ? { ...lockout, window_minutes: 12 } : { ...member, status: 'disabled' }))
+      await save
+      assert.equal(instance.page.contentReady.value, false)
+      assert.equal(settings ? instance.page.lockoutData.value : instance.page.memberData.value, null)
+      assert.equal(settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value, notice)
+      if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+      assert.equal(instance.requests.length, 4)
+    })
+  }
+})
+
+// 明確認證拒絕要先結束 PUT，再由 session 撤權；不能因 cleanup 誤標成尚未確認。
+test('CQ04 auth rejections finish management writes without inventing unknown outcomes', async (t) => {
+  for (const [settings, status] of [[false, 401], [false, 403], [true, 401], [true, 403]]) {
+    // 401與停用都有明確契約拒絕，後續顯示仍需保留正確重登／停用分支。
+    await t.test(`${settings ? 'settings' : 'member'} ${status}`, async (t) => {
+      const { clock, timers } = controlledClock()
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      await respond(instance.requests[2], status, { success: false, error_code: status === 401 ? 'E0002' : 'E0102' })
+      await save
+      assert.equal(settings ? instance.page.lockoutPending.value : instance.page.statusPending.value, false)
+      assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, false)
+      assert.equal(settings ? instance.page.lockoutData.value : instance.page.memberData.value, null)
+      assert.equal(instance.page.credential.value, null)
+      assert.equal(instance.page.disabledAccount.value, status === 403)
+      assert.equal(instance.page.reLogin.value, status === 401)
+      assert.equal(timers.size, 0)
+      const html = await rendered(instance.page)
+      assert.doesNotMatch(html, /儲存完整設定|停用會員|恢復會員/)
+      assert.match(html, status === 401 ? /請重新登入後讀取原管理頁/ : /此帳號已停用/)
+      if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+    })
+  }
+})
+
+// 未確認的會員操作只屬於原管理員；同帳恢復可查證，異帳或同 ID 降權都須清除舊控制。
+test('CQ04 member uncertainty follows the verified actor and role', async (t) => {
+  for (const nextAccount of [administrator, { ...administrator, id: 9 }, { ...administrator, role: 'member' }]) {
+    // 使用真實未知 PUT 再重驗，不直接塞旗標，確保 owner 是從原操作建立。
+    await t.test(`${nextAccount.id}/${nextAccount.role}`, async (t) => {
+      const instance = app('/vue/admin/members/2')
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(member))
+      const save = instance.page.submitMemberStatus()
+      await respond(instance.requests[2], 500, { success: false, error_code: 'E9999' })
+      await save
+      const verify = instance.page.verifyAccount()
+      assert.equal(instance.page.memberData.value, null)
+      assert.equal(instance.page.contentReady.value, false)
+      await respond(instance.requests[3], 200, success(nextAccount))
+      await verify
+      const sameAdmin = nextAccount.id === administrator.id && nextAccount.role === 'admin'
+      assert.equal(instance.page.statusUnknown.value, sameAdmin)
+      if (nextAccount.role === 'admin') {
+        await respond(instance.requests[4], 200, success(member))
+        assert.equal(instance.page.statusNeedsReadback.value, false)
+        const html = await rendered(instance.page)
+        if (sameAdmin) assert.match(html, /先前送出的操作是否完成仍無法判定/)
+        else assert.doesNotMatch(html, /先前送出的操作是否完成仍無法判定/)
+      } else {
+        assert.equal(instance.requests.length, 4)
+        assert.doesNotMatch(await rendered(instance.page), /停用會員|恢復會員/)
+      }
+    })
+  }
+})
+
+// confirmed PUT 的讀回先失敗再人工成功時，提示須走到已讀回終點，初讀則不能虛構寫入成功。
+test('CQ04 confirmed readback failures recover success feedback after manual GET', async (t) => {
+  for (const settings of [false, true]) {
+    // 兩個 owner 各驗原資源 GET 與最終回饋，設定的人工 GET 仍不得覆蓋原草稿。
+    await t.test(settings ? 'settings' : 'member', async (t) => {
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2')
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      assert.equal(settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value, '')
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      await respond(instance.requests[2], 200, success({}))
+      await respond(instance.requests[3], 500, { success: false, error_code: 'E9999' })
+      await save
+      assert.match(await rendered(instance.page), settings ? /尚未讀到伺服器設定/ : /尚未讀到最新會員狀態/)
+      const retry = instance.page.loadContent()
+      await respond(instance.requests[4], 200, success(settings ? { ...lockout, window_minutes: 11 } : { ...member, status: 'disabled' }))
+      await retry
+      const html = await rendered(instance.page)
+      assert.match(html, settings ? /已重新讀取並顯示目前伺服器設定/ : /已重讀會員，目前狀態為停用/)
+      assert.doesNotMatch(html, /尚未讀到伺服器設定|尚未讀到最新會員狀態/)
+      assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, false)
+      if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+    })
+  }
+})
+
+// confirmed 事件經暫時驗權失敗仍屬原管理員；新身分或角色不能取得該成功回饋。
+test('CQ04 confirmed recovery feedback stays with its original administrator', async (t) => {
+  for (const [settings, nextAccount] of [
+    [false, administrator], [false, { ...administrator, id: 9 }], [false, { ...administrator, role: 'member' }],
+    [true, administrator], [true, { ...administrator, id: 9 }], [true, { ...administrator, role: 'member' }],
+  ]) {
+    // 原事件、暫時 not-ready 與確認身分的三個階段都由正式 handlers 產生。
+    await t.test(`${settings ? 'settings' : 'member'} ${nextAccount.id}/${nextAccount.role}`, async (t) => {
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2')
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      await respond(instance.requests[2], 200, success({}))
+      await respond(instance.requests[3], 500, { success: false, error_code: 'E9999' })
+      await save
+      const failedVerification = instance.page.verifyAccount()
+      await respond(instance.requests[4], 500, { success: false, error_code: 'E9999' })
+      await failedVerification
+      assert.equal(instance.page.account.value, null)
+      assert.ok(instance.page.credential.value)
+      if (settings) assert.equal(instance.page.hasDraft.value, true)
+      const verification = instance.page.verifyAccount()
+      await respond(instance.requests[5], 200, success(nextAccount))
+      await verification
+      const sameAdmin = nextAccount.id === administrator.id && nextAccount.role === 'admin'
+      if (nextAccount.role === 'admin') {
+        await respond(instance.requests[6], 200, success(settings ? lockout : member))
+        const notice = settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value
+        if (sameAdmin) assert.match(notice, settings ? /已重新讀取並顯示目前伺服器設定/ : /已重讀會員，目前狀態為啟用/)
+        else assert.equal(notice, '')
+        if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, sameAdmin ? 9 : 5)
+      } else {
+        assert.equal(instance.requests.length, 6)
+        assert.equal(settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value, '')
+        if (settings) assert.equal(instance.page.lockoutDraft.value, null)
+      }
+    })
+  }
+})
+
+// 權限拒絕會撤下資料並改變 epoch，notice 仍須同步結束，不能等已失效的 submit 續段清理。
+test('AGY-001 readback permission rejection clears in-progress notices', async (t) => {
+  for (const settings of [false, true]) {
+    // 兩個實際 owner 都經 PUT→GET403，再以同 actor 手動重試確認事件與草稿仍可恢復。
+    await t.test(settings ? 'settings' : 'member', async (t) => {
+      const { clock, timers } = controlledClock()
+      const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+      t.after(instance.close)
+      await respond(instance.requests[0], 200, success(administrator))
+      await respond(instance.requests[1], 200, success(settings ? lockout : member))
+      if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+      const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+      await respond(instance.requests[2], 200, success({}))
+      await respond(instance.requests[3], 403, { success: false, error_code: 'E0003' })
+      await save
+      assert.equal(instance.page.contentLoading.value, false)
+      assert.equal(instance.page.contentReady.value, false)
+      assert.equal(settings ? instance.page.lockoutData.value : instance.page.memberData.value, null)
+      assert.equal(settings ? instance.page.lockoutPending.value : instance.page.statusPending.value, false)
+      assert.equal(settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value, '')
+      assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, false)
+      assert.equal(timers.size, 0)
+      assert.match(await rendered(instance.page), /沒有權限使用此功能/)
+      if (settings) {
+        assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+        assert.equal(instance.page.hasDraft.value, true)
+      }
+      const retry = instance.page.loadContent()
+      await respond(instance.requests[4], 200, success(settings ? lockout : member))
+      await retry
+      assert.match(await rendered(instance.page), settings ? /已重新讀取並顯示目前伺服器設定/ : /已重讀會員，目前狀態為啟用/)
+      assert.equal(instance.requests.length, 5)
+      assert.equal(timers.size, 0)
+      if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+    })
+  }
+})
+
+// 人工重讀有「confirmed事件待讀回」與「事件已消耗」兩種起點；失敗不能沿用舊的成功文案。
+test('AGY-001 manual read failures settle notice at the current lifecycle state', async (t) => {
+  for (const settings of [false, true]) {
+    for (const waitingForReadback of [false, true]) {
+      for (const kind of ['500', 'incomplete', 'network', 'timeout']) {
+        // 只驗直接相依的四種失敗出口與成功重試，沒有新增產品或測試層。
+        await t.test(`${settings ? 'settings' : 'member'} ${waitingForReadback ? 'awaiting' : 'consumed'} ${kind}`, async (t) => {
+          const { clock, timers } = controlledClock()
+          const instance = app(settings ? '/vue/admin/settings/login-lockout' : '/vue/admin/members/2', '', 'saved-token', auth.API_BASE, clock)
+          t.after(instance.close)
+          await respond(instance.requests[0], 200, success(administrator))
+          await respond(instance.requests[1], 200, success(settings ? lockout : member))
+          assert.equal(settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value, '', '初讀沒有已確認寫入事件')
+          if (settings) instance.page.lockoutDraft.value.window_minutes = 9
+          const save = settings ? instance.page.submitLockoutSettings() : instance.page.submitMemberStatus()
+          await respond(instance.requests[2], 200, success({}))
+          if (waitingForReadback) await respond(instance.requests[3], 500, { success: false, error_code: 'E9999' })
+          else await respond(instance.requests[3], 200, success(settings ? { ...lockout, window_minutes: 9 } : member))
+          await save
+          if (settings) instance.page.lockoutDraft.value.window_minutes = 13
+          const reread = instance.page.loadContent()
+          const failedRead = instance.requests[4]
+          // timeout 故意模擬不理 abort 的傳輸，終點之後再送來成功也不能恢復舊 notice。
+          if (kind === 'timeout') {
+            const expire = [...timers.values()][0]
+            expire()
+            await setImmediate()
+            assert.equal(failedRead.signal.aborted, true)
+            assert.equal(instance.page.contentLoading.value, false)
+            await respond(failedRead, 200, success(settings ? lockout : member))
+          } else if (kind === 'network') failedRead.reject(new TypeError('AGY-001 controlled network failure'))
+          else await respond(failedRead, kind === '500' ? 500 : 200, kind === '500' ? { success: false, error_code: 'E9999' } : success({}))
+          await reread
+          assert.equal(instance.page.contentLoading.value, false)
+          assert.equal(instance.page.contentReady.value, false)
+          assert.equal(settings ? instance.page.lockoutData.value : instance.page.memberData.value, null)
+          assert.equal(settings ? instance.page.lockoutUnknown.value : instance.page.statusUnknown.value, false)
+          assert.equal(timers.size, 0)
+          const notice = settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value
+          if (waitingForReadback) assert.match(notice, settings ? /尚未讀到伺服器設定/ : /尚未讀到最新會員狀態/)
+          else assert.equal(notice, '')
+          const html = await rendered(instance.page)
+          assert.doesNotMatch(html, /已重新讀取並顯示目前伺服器設定|已重讀會員，目前狀態為|正在重新讀取伺服器設定|正在重新讀取會員狀態/)
+          assert.match(html, /重新讀取/)
+          if (settings) {
+            assert.equal(instance.page.lockoutDraft.value.window_minutes, 13)
+            assert.equal(instance.page.hasDraft.value, true)
+          }
+          const retry = instance.page.loadContent()
+          await respond(instance.requests[5], 200, success(settings ? lockout : member))
+          await retry
+          assert.equal(instance.page.contentLoading.value, false)
+          assert.equal(instance.page.contentReady.value, true)
+          const finalNotice = settings ? instance.page.lockoutNotice.value : instance.page.statusNotice.value
+          if (waitingForReadback) assert.match(finalNotice, settings ? /已重新讀取並顯示目前伺服器設定/ : /已重讀會員，目前狀態為啟用/)
+          else assert.equal(finalNotice, '', '已消耗事件不可被普通 GET 重建成成功')
+          assert.equal(instance.requests.length, 6)
+          assert.equal(timers.size, 0)
+          if (settings) assert.equal(instance.page.lockoutDraft.value.window_minutes, 13)
+        })
+      }
+    }
+  }
 })
