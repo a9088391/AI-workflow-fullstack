@@ -22,6 +22,30 @@ export function isAuthSuccess(status: number, body: any, expected: number): bool
     && body.data !== null && typeof body.data === 'object' && !Array.isArray(body.data);
 }
 
+export type WriteResult = { kind: 'success' } | { kind: 'rejected' | 'unknown'; problem: Problem };
+
+// 一般寫入只有完整空 data 成功才可清稿；5xx 或契約不符仍可能已提交，必須人工查證。
+export function classifyWrite(status: number, body: any, method: 'POST' | 'PUT'): WriteResult {
+  if (isAuthSuccess(status, body, method === 'POST' ? 201 : 200) && Object.keys(body.data).length === 0) {
+    return { kind: 'success' };
+  }
+  // 僅核准的 HTTP／錯誤碼配對可證明拒絕；驗證明細須能安全呈現在欄位及摘要。
+  const code = body?.error_code;
+  const known = status === 422 && code === 'E0001' || status === 401 && code === 'E0002'
+    || status === 403 && (code === 'E0003' || code === 'E0102') || status === 404 && code === 'E0004'
+    || method === 'PUT' && status === 409 && code === 'E0201' || status >= 400 && status < 500 && code === 'E0005';
+  const expectedMessage = code === 'E0005' ? '系統暫時無法處理，請稍後再試' : messages[code];
+  if (known && isAuthProblem(body) && body.log_id.length > 0 && body.message === expectedMessage
+    && (code === 'E0001' ? body.errors !== undefined && Object.keys(body.errors).length > 0 : body.errors === undefined)) {
+    return { kind: 'rejected', problem: problem(status, body) };
+  }
+  // 未知結果不沿用可觸發撤權／衝突流程的錯誤碼，只保留安全追查編號。
+  return { kind: 'unknown', problem: {
+    message: '結果尚未確認；請先手動查證目前內容，再決定是否重新送出。',
+    logId: typeof body?.log_id === 'string' ? body.log_id : undefined,
+  } };
+}
+
 // 本人資料須有有效識別、角色與啟用狀態，才可開放會員導覽及受保護操作。
 export function isAccount(value: any): value is Account {
   return value && Number.isSafeInteger(value.id) && value.id > 0 && typeof value.email === 'string'

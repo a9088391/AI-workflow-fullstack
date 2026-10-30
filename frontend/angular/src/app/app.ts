@@ -1,22 +1,24 @@
-import { CommonModule } from '@angular/common';
 import { Component, HostListener, OnDestroy, OnInit, computed, inject, signal, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import {
   apiRequest, Article, BACKENDS, Comment,
   FRONTENDS, frontendTarget, Page, positiveNumber, problem, Problem,
   Session, supportsSvelteRoute,
-  validReturn, validateContent,
+  validReturn,
 } from './contracts';
 import { AccountForm } from './account-form';
 import { AccountSession, ResumeActor } from './account-session';
 import { ReadingContent } from './reading-content';
 import { ReadingPage } from './reading-page';
+import { AuthorEditor } from './author-editor';
+import { AuthorForm } from './author-form';
+import { OrdinaryWrites, WriteOperation } from './ordinary-writes';
 import { isLockoutSettings, isMember, LockoutSettings, Member, memberKeyword, settingErrors } from './admin';
 
 @Component({
   selector: 'app-root',
-  imports: [CommonModule, FormsModule, AccountForm, ReadingPage],
-  providers: [ReadingContent],
+  imports: [FormsModule, AccountForm, ReadingPage, AuthorForm],
+  providers: [ReadingContent, OrdinaryWrites, AuthorEditor],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
@@ -32,6 +34,15 @@ export class App implements OnInit, OnDestroy {
     ([id, name]) => ({ id, name }),
   );
   readonly reading = inject(ReadingContent);
+  readonly writes = inject(OrdinaryWrites);
+  readonly author = inject(AuthorEditor);
+  readonly writePending = this.writes.pending;
+  // 作者成功後只要求原讀取 owner 更新畫面，外殼不複製其內容資料。
+  readonly authorRefresh = (): Promise<void> => this.readContent();
+  // 成功導覽仍由外殼設定離頁狀態，避免對已儲存作者內容重複提醒。
+  readonly authorCompleted = (url: string): void => { this.ignoreUnload = true; window.location.assign(url); };
+  // 閱讀元件逐筆詢問可見性資格，不讓另一操作的未知結果封鎖整頁。
+  readonly visibilityBlocked = (kind: 'article' | 'comment', id: number): boolean => this.writes.blocked(`${kind}-visibility:${id}`);
   readonly path = this.reading.path;
   readonly search = window.location.search;
   readonly query = this.reading.query;
@@ -81,39 +92,36 @@ export class App implements OnInit, OnDestroy {
     () => this.reading.route ? this.reading.error() : this.adminError(),
   );
   readonly articles = this.managedArticles.asReadonly();
-  readonly article = this.reading.article;
-  readonly comment = this.reading.comment;
-  readonly parentArticle = this.reading.parentArticle;
-  readonly parentError = this.reading.parentError;
-  readonly parentLoading = this.reading.parentLoading;
   // 閱讀 owner 與其元件只回報明確失權，外殼負責保留交界中的在途寫入結果。
   readonly invalidateReading = (sent: Session, failure: Problem): void => this.invalidate(sent, failure);
   readonly members = signal<Page<Member> | null>(null);
   readonly member = signal<Member | null>(null);
   readonly managedComments = signal<Page<Comment> | null>(null);
   readonly settings = signal<LockoutSettings | null>(null);
-  readonly writePending = signal(false);
-  readonly writeProblem = signal<Problem | null>(null);
-  readonly writeUnknown = signal(false);
-  readonly unknownVerified = signal(false);
-  readonly conflictLatest = signal<Article | Comment | null>(null);
-  readonly conflictLoading = signal(false);
-  readonly unknownList = signal<Page<Article | Comment> | null>(null);
   readonly fieldErrors = signal<Record<string, string[]>>({});
   keywordDraft = this.query.get('keyword') || '';
   settingDraft: LockoutSettings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
-  titleDraft = '';
-  bodyDraft = '';
-  versionDraft = 0;
-  private writeAttempt = 0;
-  private verificationAttempt = 0;
-  private unknownNeedsComments = false;
-  dirty = false;
+  private settingsDirty = false;
+  private settingsWrite: WriteOperation | null = null;
+
+  // 外殼只讀離頁所需摘要；作者文字與欄位錯誤由作者 owner 持有。
+  get dirty(): boolean { return this.author.dirty || this.settingsDirty; }
+
   private readAbort: AbortController | null = null;
   private ignoreUnload = false;
 
   // 初次進頁先辨識共用後端與登入，再讀目前頁面，避免私有狀態短暫閃現。
-  ngOnInit(): void { void this.initialize(); }
+  ngOnInit(): void {
+    // 操作只在實際作者／設定路由建立，且須早於模板的純讀取，避免 render 寫入 signals。
+    this.author.initializeOperation();
+    if (this.route === 'lockout-settings') {
+      this.settingsWrite = this.writes.operation('settings', '登入鎖定設定', '/api/settings/login-lockout', 'PUT', { kind: 'settings' });
+    }
+    this.writes.invalidated = this.invalidateReading;
+    this.author.completed = this.authorCompleted;
+    this.author.refresh = this.authorRefresh;
+    void this.initialize();
+  }
 
   // 離開頁面時中止帳號等待、讀取與倒數，舊結果不得改寫新頁面。
   ngOnDestroy(): void { this.cancelAuthentication(); }
@@ -121,7 +129,7 @@ export class App implements OnInit, OnDestroy {
   // 表單有未送出文字或請求時保留瀏覽器離開提醒；程式確認後不重複詢問。
   @HostListener('window:beforeunload', ['$event'])
   beforeUnload(event: BeforeUnloadEvent): void {
-    if (this.ignoreUnload || (!this.dirty && !this.accountDirty && !this.pending() && !this.writePending())) return;
+    if (this.ignoreUnload || (!this.dirty && !this.accountDirty && !this.pending() && !this.writePending() && !this.writes.unknown())) return;
     event.preventDefault();
     event.returnValue = '';
   }
@@ -148,12 +156,15 @@ export class App implements OnInit, OnDestroy {
   // 初次或手動重驗先撤掉舊內容，完成目前 /me 後才決定讀取身分。
   async initialize(): Promise<void> {
     if (this.writePending() || this.session.operation() && this.session.operation() !== 'verify') return;
+    const actor = this.account();
+    const previous = actor ? { id: actor.id, role: actor.role, backend: this.backend() } : this.session.resumeActor;
     this.clearProtectedContent();
-    if (await this.session.initialize()) await this.readContent();
+    if (await this.session.initialize()) {
+      // 手動重驗也可能讀到變更的角色，原稿不能因此繞過異身分清理。
+      if (previous && this.account() && !this.sameActor(previous)) this.clearDrafts();
+      await this.readContent();
+    }
   }
-
-  // 內容回應使用同一 session 的原憑證比對，不建立自己的登入快照。
-  private owns(sent: Session): boolean { return this.session.owns(sent); }
 
   // API 的失效／停用判定沿用單一 session 責任，5xx 不撤權。
   private isAuthFailure(status: number, failure: Problem): boolean { return this.session.isAuthFailure(status, failure); }
@@ -161,11 +172,6 @@ export class App implements OnInit, OnDestroy {
   // 確定失權後立即取消讀取、撤掉內容與操作；原帳號文字仍保留供手動重登。
   private invalidate(sent: Session, failure: Problem): void {
     if (!this.session.invalidate(sent, failure)) return;
-    // 其他讀取的失權不能證明在途寫入失敗；保留未知結果，重登後仍須人工查證。
-    if (this.writePending()) {
-      this.writeUnknown.set(true); this.unknownVerified.set(false);
-      this.writeProblem.set({ message: '結果尚未確認；登入失效前送出的內容仍可能完成，請重新登入後手動查證。' });
-    }
     this.clearProtectedContent();
     void this.readContent();
   }
@@ -174,17 +180,10 @@ export class App implements OnInit, OnDestroy {
   private clearProtectedContent(): void {
     this.readAbort?.abort(); this.readAbort = null;
     this.reading.clear();
-    this.adminLoading.set(false); this.conflictLoading.set(false);
-    this.managedArticles.set(null); this.clearVerification();
+    this.adminLoading.set(false);
+    this.managedArticles.set(null);
     this.members.set(null); this.member.set(null); this.managedComments.set(null); this.settings.set(null);
-    this.writeAttempt++; this.writePending.set(false);
-  }
-
-  // 新讀取或認證恢復會撤銷舊查證；序號阻止較早回應重新授予人工確認資格。
-  private clearVerification(): number {
-    this.unknownVerified.set(false); this.unknownList.set(null); this.conflictLatest.set(null);
-    this.conflictLoading.set(false);
-    return ++this.verificationAttempt;
+    this.writes.suspend();
   }
 
   // 接受切換或真正離頁才終止認證／倒數，取消對話框仍保留目前頁面的狀態。
@@ -192,33 +191,12 @@ export class App implements OnInit, OnDestroy {
     this.accountForm?.cancel(); this.session.cancel(); this.clearProtectedContent();
   }
 
-  // 閱讀由頁面 owner 執行；外殼只保留作者草稿、管理頁及未知寫入的人工查證接縫。
-  async readContent(manualVerification = false): Promise<void> {
-    if (this.authState() === 'checking') return;
-    if (manualVerification && (this.authState() !== 'active' || this.pending() || this.writePending())) return;
-    if (!this.reading.route && !this.isAdminRoute()) return;
-    // 新讀取撤銷先前查證，晚到摘要不得重新授予目前寫入的確認資格。
-    const verification = this.clearVerification();
-    const verifyUnknown = manualVerification && this.writeUnknown();
-    const verifyAttempt = this.writeAttempt;
-    const credential = this.authState() === 'active' ? this.credential() : null;
-    let verified = false;
+  // 閱讀 owner 維持唯一資料；一般重讀不替任何未知寫入授予人工查證資格。
+  async readContent(): Promise<void> {
+    if (this.authState() === 'checking' || !this.reading.route && !this.isAdminRoute()) return;
     if (this.reading.route) {
-      verified = await this.reading.read(this.invalidateReading);
-      // 乾淨草稿才初始化；原帳號重登保留已輸入文字與原版本，父文章不參與草稿初始化。
-      if (verified && !this.dirty) {
-        const article = this.article();
-        const comment = this.comment();
-        if (this.route === 'article-edit' && article) this.loadArticleDraft(article);
-        if (this.route === 'comment-edit' && comment) this.loadCommentDraft(comment);
-      }
-    } else verified = await this.readManagement();
-    if (verified && verifyUnknown && credential && this.owns(credential) && this.authState() === 'active' && !this.pending()
-      && verification === this.verificationAttempt && verifyAttempt === this.writeAttempt && this.writeUnknown()
-      && !this.unknownNeedsComments) this.unknownVerified.set(true);
-    // 成功讀回目前狀態後才能解除可見性／管理錯誤；未知寫入警告必須另行人工確認。
-    if (verified && !this.writeUnknown() && verifyAttempt === this.writeAttempt && !['article-edit', 'comment-edit'].includes(this.route)
-      && (this.writeProblem()?.code === 'E0201' || this.isAdminRoute() && this.writeProblem()?.code === 'E9999')) this.writeProblem.set(null);
+      if (await this.reading.read(this.invalidateReading)) this.author.initializeDraft();
+    } else await this.readManagement();
   }
 
   // 管理資料暫留原責任與角色防護，避免本票提前接管管理頁或改寫其寫入契約。
@@ -261,7 +239,7 @@ export class App implements OnInit, OnDestroy {
       )) this.managedComments.set(body.data);
       else if (response.ok && body.success === true && this.route === 'lockout-settings' && isLockoutSettings(body.data)) {
         this.settings.set(body.data);
-        if (!this.dirty) this.settingDraft = { ...body.data };
+        if (!this.settingsDirty) this.settingDraft = { ...body.data };
       } else {
         const failure = problem(response.status, body);
         this.adminError.set(response.ok && body.success === true ? { message: '回應資料格式不正確，請確認目前後端。' } : failure);
@@ -275,7 +253,7 @@ export class App implements OnInit, OnDestroy {
     } finally { if (!controller.signal.aborted) this.adminLoading.set(false); }
   }
 
-  // 只接受該次請求的頁碼與精確總頁數；結果不明查證固定讀第一頁，不能沿用畫面頁碼。
+  // 管理列表保留原請求頁碼與精確總頁數；人工查證另由操作 owner 驗證目標。
   private isPage<T>(value: any, expectedPage = this.page): value is Page<T> {
     return value && Array.isArray(value.list) && value.pagination && Number.isSafeInteger(value.pagination.page)
       && value.pagination.page === expectedPage && value.pagination.per_page === 20
@@ -300,222 +278,65 @@ export class App implements OnInit, OnDestroy {
       && (value.visibility === 'visible' || value.visibility === 'hidden') && typeof value.can_restore === 'boolean';
   }
 
-  // 編輯留言的父文重試仍由同一閱讀 owner 判定，外殼不自行保存第二份授權資料。
-  readParent(): Promise<void> { return this.reading.readParent(this.invalidateReading); }
-
-  // 後端重讀成功後才更新乾淨的文章草稿與版本，避免覆蓋使用者輸入。
-  private loadArticleDraft(value: Article): void {
-    this.titleDraft = value.title; this.bodyDraft = value.body; this.versionDraft = value.version;
-  }
-
-  // 留言草稿只取同一筆內容，父文章資訊不參與文字初始化。
-  private loadCommentDraft(value: Comment): void {
-    this.bodyDraft = value.body; this.versionDraft = value.version;
-  }
-
-  // 編輯欄位改動後保留文字並清掉舊欄位錯誤；衝突仍須人工處理。
-  contentChanged(): void {
-    this.dirty = true; this.fieldErrors.set({});
-    if (!this.writeUnknown() && this.writeProblem()?.code !== 'E0201') this.writeProblem.set(null);
-  }
-
-  // 寫入失敗與驗證錯誤只作用於同一帳號／後端／請求，未知結果不自動重送。
-  private async write(path: string, method: 'POST' | 'PUT', payload: object, onSuccess: () => void): Promise<void> {
-    const credential = this.credential();
-    if (!credential || this.authState() !== 'active' || this.pending() || this.writePending() || this.writeUnknown()) return;
-    const actor = this.account()?.id;
-    const attempt = ++this.writeAttempt;
-    // 送出前記住新留言的查證入口，其他請求先撤權時也能保留原操作的上下文。
-    this.unknownNeedsComments = method === 'POST' && /\/comments$/.test(path);
-    this.writePending.set(true); this.writeProblem.set(null); this.writeUnknown.set(false); this.unknownVerified.set(false); this.unknownList.set(null); this.conflictLatest.set(null);
-    try {
-      const { response, body } = await apiRequest(this.backend(), path, { method, body: payload, token: credential.accessToken });
-      if (attempt !== this.writeAttempt || !this.owns(credential) || actor !== this.account()?.id) return;
-      if (response.status === (method === 'POST' ? 201 : 200) && body.success === true) { onSuccess(); return; }
-      const failure = problem(response.status, body);
-      this.writeProblem.set(failure); this.fieldErrors.set(failure.errors || {});
-      if (failure.code === 'E0201') this.conflictLatest.set(null);
-      if (this.isAuthFailure(response.status, failure)) {
-        // 本寫入已確定遭認證拒絕，先結束自己的等待，不能被撤權清理誤標為未知。
-        this.writePending.set(false);
-        this.invalidate(credential, failure);
-      }
-    } catch {
-      if (attempt === this.writeAttempt && this.owns(credential)) {
-        this.writeUnknown.set(true);
-        this.unknownVerified.set(false);
-        this.writeProblem.set({ message: '結果尚未確認；請先手動查證目前內容，再決定是否重新送出。' });
-      }
-    } finally { if (attempt === this.writeAttempt) this.writePending.set(false); }
-  }
-
-  // 發文只提交純文字；201 不含 ID，成功後到我的文章第一頁找自己的資料。
-  submitArticle(event: Event): void {
-    event.preventDefault();
-    const errors = validateContent(this.bodyDraft, this.titleDraft);
-    this.fieldErrors.set(errors);
-    if (Object.keys(errors).length) return;
-    void this.write('/api/articles', 'POST', { title: this.titleDraft, body: this.bodyDraft },
-      // 寫入回應沒有新 ID，轉往作者列表由伺服器重新辨識。
-      () => {
-      this.dirty = false; this.ignoreUnload = true; window.location.assign('/angular/me/articles?created=1');
-      });
-  }
-
-  // 編修使用讀取時版本；409 時不覆寫草稿或自動套用新版本。
-  submitEdit(event: Event): void {
-    event.preventDefault();
-    const article = this.route === 'article-edit';
-    const resource = article ? this.article() : this.comment();
-    if (!resource || resource.author.id !== this.account()?.id || !this.versionDraft || this.writeUnknown()
-      || this.writeProblem()?.code === 'E0201' || !article && this.parentArticle()?.visibility !== 'visible') return;
-    const errors = validateContent(this.bodyDraft, article ? this.titleDraft : undefined);
-    this.fieldErrors.set(errors);
-    if (Object.keys(errors).length) return;
-    const path = article ? `/api/articles/${resource.id}` : `/api/comments/${resource.id}`;
-    void this.write(path, 'PUT', article ? { title: this.titleDraft, body: this.bodyDraft, version: this.versionDraft }
-      : { body: this.bodyDraft, version: this.versionDraft },
-      // 既有 ID 可在寫入成功後重讀；不採用送出前物件當作最新資料。
-      () => {
-        this.dirty = false; this.ignoreUnload = true; window.location.assign(article ? `/angular/articles/${resource.id}` : `/angular/comments/${resource.id}`);
-      });
-  }
-
-  // 衝突或結果不明時按已知 ID 讀最新版本，維持原輸入供人工比較。
-  async inspectLatest(): Promise<void> {
-    const resource = this.route === 'article-edit' ? this.article() : this.comment();
-    const credential = this.credential();
-    if (!resource || !credential || this.authState() !== 'active' || this.pending() || this.conflictLoading() || this.writePending()) return;
-    const verification = this.clearVerification();
-    this.conflictLoading.set(true);
-    const article = this.route === 'article-edit';
-    // 舊比較讀取不能在後續寫入結果不明時變成新的查證依據。
-    const verifyAttempt = this.writeAttempt;
-    try {
-      const { response, body } = await apiRequest(this.backend(), `${article ? '/api/articles/' : '/api/comments/'}${resource.id}`, { token: credential.accessToken });
-      if (!this.owns(credential) || this.authState() !== 'active' || this.pending()
-        || verifyAttempt !== this.writeAttempt || verification !== this.verificationAttempt) return;
-      if (response.ok && body.success === true && (article ? this.isArticle(body.data) : this.isComment(body.data)) && body.data.id === resource.id) {
-        this.conflictLatest.set(body.data);
-        this.unknownVerified.set(this.writeUnknown());
-      } else {
-        const failure = problem(response.status, body);
-        this.writeProblem.set(this.writeUnknown() ? { ...failure, message: `結果尚未確認；${failure.message}` } : failure);
-        if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
-      }
-    } catch { if (this.owns(credential) && verifyAttempt === this.writeAttempt && verification === this.verificationAttempt) this.writeProblem.set({ message: '查證失敗，結果仍未確認；請稍後重試。' }); }
-    finally { if (verification === this.verificationAttempt) this.conflictLoading.set(false); }
-  }
-
-  // 使用者看過兩版後才採用最新版本；可保留草稿整合或明確捨棄。
-  acceptLatest(discard: boolean): void {
-    const latest = this.conflictLatest();
-    if (!latest || this.authState() !== 'active' || !this.credential() || this.pending() || this.writePending()
-      || this.writeUnknown() && !this.canAcknowledgeUnknown()) return;
-    this.versionDraft = latest.version;
-    if (discard) {
-      this.bodyDraft = latest.body;
-      if ('title' in latest) this.titleDraft = latest.title;
-      this.dirty = false;
-    }
-    this.conflictLatest.set(null); this.writeProblem.set(null);
-    this.writeUnknown.set(false); this.unknownVerified.set(false);
-  }
-
-  // 新建結果不明時只列出伺服器目前資料供人工辨識，不能把最新一筆當成自己的提交。
-  async inspectUnknown(): Promise<void> {
-    const credential = this.credential();
-    if (!credential || this.authState() !== 'active' || this.pending() || this.writePending() || !this.writeUnknown() || this.conflictLoading()) return;
-    const isArticle = this.route === 'article-new';
-    const path = isArticle ? '/api/me/articles?page=1&per_page=20'
-      : this.route === 'article' && this.unknownNeedsComments ? `/api/articles/${this.validArticleId}/comments?page=1&per_page=20` : '';
-    if (!path) return;
-    const verification = this.clearVerification();
-    this.conflictLoading.set(true);
-    const verifyAttempt = this.writeAttempt;
-    try {
-      const { response, body } = await apiRequest(this.backend(), path, { token: credential.accessToken });
-      if (!this.owns(credential) || this.authState() !== 'active' || this.pending() || verifyAttempt !== this.writeAttempt
-        || verification !== this.verificationAttempt || !this.writeUnknown()) return;
-      if (response.ok && body.success === true && this.isPage<Article | Comment>(body.data, 1) && body.data.list.every(
-        // 逐筆確認可比較的內容，避免格式錯誤被誤認為查無資料。
-        (item: unknown) => isArticle ? this.isArticle(item) : this.isComment(item),
-      )) { this.unknownList.set(body.data); this.unknownVerified.set(true); }
-      else {
-        const failure = problem(response.status, body);
-        this.writeProblem.set({ ...failure, message: `結果尚未確認；${failure.message}` });
-        // 查證同樣可能失權；保留未知結果與草稿，讓原頁提供重新登入。
-        if (this.isAuthFailure(response.status, failure)) this.invalidate(credential, failure);
-      }
-    } catch { if (this.owns(credential) && verifyAttempt === this.writeAttempt && verification === this.verificationAttempt && this.writeUnknown()) this.writeProblem.set({ message: '查證失敗，結果仍未確認；請稍後重試。' }); }
-    finally { if (verification === this.verificationAttempt) this.conflictLoading.set(false); }
-  }
-
-  // 人工比較後才能解除未知狀態；這不表示先前提交失敗，仍由使用者決定是否再送。
-  // 查證必須屬於目前有效登入且已結束等待，不能沿用訪客或重登前的資料。
-  canAcknowledgeUnknown(): boolean {
-    return this.writeUnknown() && this.unknownVerified() && this.authState() === 'active' && Boolean(this.credential())
-      && !this.pending() && !this.writePending() && !this.loading() && !this.conflictLoading();
-  }
-
-  // 使用者完成查證後自行決定下一步，清除阻止盲目重送的狀態。
-  acknowledgeUnknown(): void {
-    if (this.canAcknowledgeUnknown()) { this.writeUnknown.set(false); this.unknownVerified.set(false); this.writeProblem.set(null); }
-  }
-
-  // 新留言成功不猜 ID，回原文章留言第一頁重新讀取。
-  submitComment(event: Event): void {
-    event.preventDefault();
-    const article = this.article();
-    if (!article || article.visibility !== 'visible' || this.writeUnknown()) return;
-    const errors = validateContent(this.bodyDraft);
-    this.fieldErrors.set(errors);
-    if (Object.keys(errors).length) return;
-    void this.write(`/api/articles/${article.id}/comments`, 'POST', { body: this.bodyDraft },
-      // 留言建立回應沒有 ID，回父文章第一頁重讀留言。
-      () => {
-      this.bodyDraft = ''; this.dirty = false; this.fieldErrors.set({}); this.ignoreUnload = true;
-      window.location.assign(`/angular/articles/${article.id}?commented=1`);
-      });
-  }
-
-  // 可見性操作與內文編修分開，確認後交由後端再驗權限與版本。
+  // 每個可見性動作保留自己的資源及查證目標，其他操作結果不會解鎖它。
   changeVisibility(kind: 'article' | 'comment', resource: Article | Comment): void {
-    if (this.writePending() || this.writeUnknown() || this.writeProblem()?.code === 'E0201'
-      || resource.visibility === 'hidden' && !resource.can_restore) return;
+    const key = `${kind}-visibility:${resource.id}`;
+    if (this.writes.blocked(key) || resource.visibility === 'hidden' && !resource.can_restore) return;
     const next = resource.visibility === 'visible' ? 'hidden' : 'visible';
     if (!window.confirm(`確定要${next === 'hidden' ? '下架' : '恢復'}這${kind === 'article' ? '篇文章' : '則留言'}嗎？`)) return;
-    void this.write(`/api/${kind === 'article' ? 'articles' : 'comments'}/${resource.id}/visibility`, 'PUT', { visibility: next, version: resource.version },
-      // 可見性變更後重新取得伺服器版本與恢復資格。
-      () => {
-      this.notice.set({ message: '狀態已更新，正在重新讀取。' });
+    const operation = this.writes.operation(key, `${kind === 'article' ? '文章' : '留言'} #${resource.id} 可見性`,
+      `/api/${kind === 'article' ? 'articles' : 'comments'}/${resource.id}/visibility`, 'PUT', { kind, id: resource.id });
+    void this.writes.run(operation, { visibility: next, version: resource.version },
+      // 完整成功後重讀伺服器版本；只在本操作留下成功訊息。
+      () => { operation.problem.set({ message: '狀態已更新，正在重新讀取。' }); void this.readContent(); },
+    );
+  }
+
+  // 使用者明確要求才讀本操作目標；確定可見性衝突讀回後重新取得可操作版本。
+  async inspectWrite(operation: WriteOperation): Promise<void> {
+    if (await this.writes.inspect(operation) && operation.conflict() && !operation.unknown() && !this.author.owns(operation)) {
+      operation.conflict.set(false); operation.problem.set(null);
       void this.readContent();
-      });
+    }
+  }
+
+  // 人工確認只解鎖對應操作；重讀畫面供後續手動操作使用伺服器目前版本。
+  acknowledgeWrite(operation: WriteOperation): void {
+    if (this.writes.acknowledge(operation)) void this.readContent();
+  }
+
+  // 身分比較只取已驗證本人及後端，重登與手動重驗採相同草稿隔離規則。
+  private sameActor(previous: ResumeActor | null): boolean {
+    const current = this.account();
+    return Boolean(current && previous && previous.id === current.id && previous.role === current.role
+      && previous.backend === this.backend());
+  }
+
+  // 異身分或成功登出才清頁面記憶體，不新增持久草稿或伺服器補償操作。
+  private clearDrafts(): void {
+    this.author.clear(); this.settingsDirty = false;
+    this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
+    this.fieldErrors.set({}); this.writes.clear();
   }
 
   // 註冊只轉登入；原頁同帳重登保留文字與版本，異帳／角色或後端改變須清除舊草稿。
   accountCompleted(result: { register: boolean; previous: ResumeActor | null }): void {
     this.accountDirty = false;
     if (result.register || this.route === 'login') {
-      this.dirty = false; this.ignoreUnload = true;
+      this.settingsDirty = false; this.ignoreUnload = true;
       window.location.assign(result.register ? '/angular/login' : this.returnTo);
       return;
     }
-    const current = this.account();
     // 同帳重登保留草稿與未知結果，但認證前的讀取及查證資格一律失效。
     this.clearProtectedContent();
-    const same = current && result.previous?.id === current.id && result.previous.role === current.role
-      && result.previous.backend === this.backend();
+    const same = this.sameActor(result.previous);
     if (!same) {
-      this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false;
-      this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
-      this.fieldErrors.set({}); this.conflictLatest.set(null); this.writeUnknown.set(false);
-      this.unknownVerified.set(false); this.unknownList.set(null); this.writeProblem.set(null);
+      this.clearDrafts();
       this.notice.set({ message: '已登入其他帳號或權限已變更，原帳號的未儲存文字已清除。' });
     } else {
       this.notice.set({ message: '已重新登入原帳號；請確認內容後手動送出。' });
       // 重登只恢復身分，不能確認先前寫入結果；僅移除已知失效錯誤，未知警告繼續保留。
-      if (!this.writeUnknown()) this.writeProblem.set(null);
+      this.writes.resumed();
     }
     void this.readContent();
   }
@@ -532,32 +353,8 @@ export class App implements OnInit, OnDestroy {
     (entry) => entry.id === id,
   )?.name || '未知來源'; }
 
-  // 作者表單只連結實際存在的標題與內文欄位，其他 API 錯誤仍另行顯示。
-  contentErrorEntries(): [string, string[]][] { return Object.entries(this.fieldErrors()).filter(
-    // 僅輸入框存在的欄位能成為頁內錨點。
-    ([key]) => key === 'title' || key === 'body',
-  ); }
-
-  // 保留欄位外錯誤，例如版本衝突的欄位訊息。
-  contentOtherErrors(): string[] { return Object.entries(this.fieldErrors()).filter(
-    // 無對應輸入框時在摘要以文字顯示。
-    ([key]) => key !== 'title' && key !== 'body',
-  ).flatMap(
-    // API 可對同一欄回多則訊息。
-    ([key, errors]) => errors.map(
-      // 欄位名讓使用者可對照 API 診斷。
-      (message) => `${key}：${message}`,
-    ),
-  ); }
-
   // 原頁重登只在已知原帳號時提供，以免無法判定草稿能否保留。
   hasResumeAccount(): boolean { return this.session.resumeActor !== null; }
-
-  // 新留言須查留言列表；文章可見性結果不明時改讀文章本體與版本。
-  unknownNeedsCommentList(): boolean { return this.unknownNeedsComments; }
-
-  // 比較區只在最新資源確為文章時顯示標題。
-  isLatestArticle(value: Article | Comment): value is Article { return 'title' in value; }
 
   // SvelteKit 的登入返回仍須落在已完成頁；Nuxt 已支援全部十二個後端。
   canSwitchFrontend(id: string): boolean {
@@ -603,8 +400,8 @@ export class App implements OnInit, OnDestroy {
 
   // 帳號及內容的離頁摘要一起判斷，已送出請求須明示伺服器仍可能完成。
   private confirmDiscard(destination: string): boolean {
-    if (!this.dirty && !this.accountDirty && !this.pending() && !this.writePending()) return true;
-    const warning = this.writePending() ? '內容請求已送出，切換後伺服器仍可能完成處理，結果尚未確認。'
+    if (!this.dirty && !this.accountDirty && !this.pending() && !this.writePending() && !this.writes.unknown()) return true;
+    const warning = this.writePending() || this.writes.unknown() ? '內容請求已送出，切換後伺服器仍可能完成處理，結果尚未確認。'
       : this.pending() ? '帳號請求已送出，切換後伺服器仍可能完成處理。' : '目前表單有未儲存文字。';
     return window.confirm(`${warning}要捨棄目前表單並切換${destination}嗎？`);
   }
@@ -617,9 +414,7 @@ export class App implements OnInit, OnDestroy {
     if (!result) return;
     if (result.success) {
       this.clearProtectedContent();
-      this.titleDraft = ''; this.bodyDraft = ''; this.versionDraft = 0; this.dirty = false; this.accountDirty = false;
-      this.settingDraft = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
-      this.fieldErrors.set({}); this.writeUnknown.set(false); this.unknownVerified.set(false); this.writeProblem.set(null);
+      this.clearDrafts(); this.accountDirty = false;
       this.notice.set({ message: result.cleared ? '已登出。' : '已登出，但無法確認本機舊登入資料已清除；請關閉此分頁。' });
       void this.readContent();
     } else {
@@ -645,38 +440,44 @@ export class App implements OnInit, OnDestroy {
 
   // 會員狀態由管理員確認後送出；成功仍重讀伺服器，不推測寫入後狀態。
   changeMemberStatus(value: Member): void {
-    if (this.writePending() || this.writeUnknown() || this.account()?.role !== 'admin') return;
+    const key = `member-status:${value.id}`;
+    if (this.writes.blocked(key) || this.account()?.role !== 'admin') return;
     const next = value.status === 'active' ? 'disabled' : 'active';
     if (!window.confirm(`確定要${next === 'disabled' ? '停用' : '恢復'}會員 ${value.nickname} 嗎？`)) return;
-    void this.write(`/api/members/${value.id}/status`, 'PUT', { status: next },
-      // 寫入回應不帶會員資料，重讀才呈現實際狀態。
-      () => { this.notice.set({ message: '會員狀態已更新，正在重新讀取。' }); void this.readContent(); });
+    const operation = this.writes.operation(key, `會員 #${value.id} 狀態`, `/api/members/${value.id}/status`, 'PUT', { kind: 'member', id: value.id });
+    void this.writes.run(operation, { status: next },
+      // 只有該列完整成功才提示，並重新取得伺服器會員狀態。
+      () => { operation.problem.set({ message: '會員狀態已更新，正在重新讀取。' }); void this.readContent(); },
+    );
   }
 
+  // ngOnInit 已為設定路由建立操作，模板與欄位摘要只讀既有狀態，不在 render 建立 signals。
+  get settingsOperation(): WriteOperation { return this.settingsWrite!; }
+
   // 使用者改設定時保留草稿；已知欄位錯誤可在摘要跳往對應輸入。
-  settingChanged(): void { this.dirty = true; this.fieldErrors.set({}); this.notice.set(null); }
+  settingChanged(): void { this.settingsDirty = true; this.settingsOperation.errors.set({}); this.notice.set(null); }
 
   // 四欄一次送出，只有有效伺服器回應後才重讀；未知結果不自動重送。
   submitSettings(event: Event): void {
     event.preventDefault();
-    if (!this.settings() || this.writePending() || this.writeUnknown()) return;
+    if (!this.settings() || this.writes.blocked('settings')) return;
     const errors = settingErrors(this.settingDraft);
-    this.fieldErrors.set(errors);
+    this.settingsOperation.errors.set(errors);
     if (Object.keys(errors).length) return;
     const sent = { ...this.settingDraft };
-    void this.write('/api/settings/login-lockout', 'PUT', sent,
+    void this.writes.run(this.settingsOperation, sent,
       // 完整 PUT 成功後取消離開提醒，再以 GET 確認目前最後提交值。
-      () => { this.dirty = false; this.notice.set({ message: '設定已提交，正在重新讀取伺服器目前值。' }); void this.readContent(); });
+      () => { this.settingsDirty = false; this.settingsOperation.problem.set({ message: '設定已提交，正在重新讀取伺服器目前值。' }); void this.readContent(); });
   }
 
   // 只有有欄位控制的錯誤能連到錨點；其他錯誤仍須在摘要可讀。
-  settingErrorEntries(): [string, string[]][] { return Object.entries(this.fieldErrors()).filter(
+  settingErrorEntries(): [string, string[]][] { return Object.entries(this.settingsOperation.errors()).filter(
     // 設定表單四個欄位都具有對應的輸入位置。
     ([key]) => ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(key),
   ); }
 
   // API 可能回非表單欄位的錯誤；摘要仍呈現完整訊息但不建立無效錨點。
-  settingOtherErrors(): string[] { return Object.entries(this.fieldErrors()).filter(
+  settingOtherErrors(): string[] { return Object.entries(this.settingsOperation.errors()).filter(
     // 只排除已有輸入控制的四個欄位。
     ([key]) => !['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(key),
   ).flatMap(

@@ -1,21 +1,16 @@
-import { CommonModule } from '@angular/common';
-import { Component, TemplateRef, inject, input, output } from '@angular/core';
+import { Component, inject, input, output } from '@angular/core';
 import { Article, Comment, Problem, Session } from './contracts';
 import { ReadingContent } from './reading-content';
 
-export type ReadingWriterContext = { article?: Article; comment?: Comment };
-
 @Component({
   selector: 'app-reading-page',
-  imports: [CommonModule],
   templateUrl: './reading-page.html',
   styleUrl: './reading-page.css',
 })
 export class ReadingPage {
   readonly content = inject(ReadingContent);
   readonly session = this.content.session;
-  readonly writeBlocked = input(false);
-  readonly writer = input<TemplateRef<ReadingWriterContext> | null>(null);
+  readonly writeBlocked = input.required<(kind: 'article' | 'comment', id: number) => boolean>();
   readonly reload = output<void>();
   readonly visibility = output<{ kind: 'article'; resource: Article } | { kind: 'comment'; resource: Comment }>();
   readonly invalidated = output<{ sent: Session; failure: Problem }>();

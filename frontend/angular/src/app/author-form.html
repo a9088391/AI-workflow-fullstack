@@ -1,0 +1,115 @@
+@if (mode() === 'comment-new') {
+  @if (content.article(); as story) {
+    @if (session.account() && story.visibility === 'visible') {
+      <form class="content-form" (submit)="editor.submit($event)" novalidate>
+        <h3>留下留言</h3>
+        @if (Object.keys(editor.operation.errors()).length) {
+          <div class="field-summary" role="alert">
+            @for (entry of editor.errorEntries(); track entry[0]) {
+              <a [href]="content.path + search + '#comment-body'">留言：{{ entry[1].join('；') }}</a>
+            }
+            @for (message of editor.otherErrors(); track message) { <span>{{ message }}</span> }
+          </div>
+        }
+        <label for="comment-body">純文字留言</label>
+        <textarea id="comment-body" name="comment-body" rows="5" [(ngModel)]="editor.bodyDraft" (ngModelChange)="editor.changed()"
+          [disabled]="!!session.operation() || writes.pending()" [attr.aria-invalid]="editor.operation.errors()['body'] ? 'true' : null"></textarea>
+        <small class="field-error">{{ editor.operation.errors()['body']?.join('；') }}</small>
+        <button class="primary-button" type="submit" [disabled]="editor.blocked()">{{ writes.pending() ? '處理中…' : '發表留言' }}</button>
+      </form>
+    } @else if (!session.account()) {
+      <p class="read-only-note"><a [href]="'/angular/login?return_to=' + encodeURIComponent(content.path)">登入後留言</a></p>
+    }
+  }
+} @else {
+  @if (editor.route === 'article-new' || editor.articleEdit) {
+    <a class="back-link" [href]="editor.route === 'article-new' ? '/angular/me/articles' : '/angular/articles/' + content.validArticleId">← 返回文章</a>
+    <div class="page-heading">
+      <div><p class="eyebrow">WRITE / 創作</p><h1>{{ editor.articleEdit ? '編修文章' : '發表文章' }}</h1><p class="heading-subtitle">純文字會保留換行，建立來源由後端記錄。</p></div>
+      <span class="heading-flower" aria-hidden="true">✎</span>
+    </div>
+  } @else { <a class="back-link" href="/angular/me/comments">← 回我的留言</a> }
+  @if (content.loading()) { <p class="notice" role="status">{{ editor.route === 'comment-edit' ? '正在載入留言…' : '正在讀取文章…' }}</p> }
+  @if (content.error(); as failure) {
+    <div class="notice error" role="alert">
+      <p>{{ failure.message }}</p>
+      @if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button> }
+      <button type="button" (click)="reload.emit()">重新讀取</button>
+    </div>
+  }
+  @if (session.state() === 'active' && (editor.route === 'article-new' || content.article() || content.comment())) {
+    @if (editor.route === 'comment-edit' && content.comment(); as note) {
+      <article class="reading">
+        <p class="eyebrow">NOTE / 留言</p><h1>編修留言</h1>
+        <div class="story-meta">
+          <span>作者　{{ note.author.nickname }}</span><time>{{ note.created_at.slice(0, 10) }}</time>
+          <span>建立於 {{ editor.backendLabel(note.created_backend) }}</span>
+          @if (note.visibility === 'hidden') { <span>已下架</span> }
+        </div>
+        @if (content.parentLoading()) { <p class="notice" role="status">正在確認所屬文章…</p> }
+        @if (content.parentArticle(); as parent) { <p>所屬文章：<a [href]="'/angular/articles/' + parent.id">{{ parent.title }}</a></p> }
+        @if (content.parentError(); as failure) {
+          <div class="notice error" role="alert">
+            <p>{{ failure.message }}</p>
+            @if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button> }
+            <button type="button" (click)="readParent()">重試讀取所屬文章</button>
+          </div>
+        }
+      </article>
+    }
+    <form class="content-form" (submit)="editor.submit($event)" novalidate>
+      @if (Object.keys(editor.operation.errors()).length) {
+        <div class="field-summary" role="alert">
+          <strong>請檢查下列欄位</strong>
+          @for (entry of editor.errorEntries(); track entry[0]) {
+            <a [href]="content.path + search + '#' + entry[0]">{{ entry[0] === 'title' ? '標題' : editor.route === 'comment-edit' ? '留言' : '內文' }}：{{ entry[1].join('；') }}</a>
+          }
+          @for (message of editor.otherErrors(); track message) { <span>{{ message }}</span> }
+        </div>
+      }
+      @if (editor.route !== 'comment-edit') {
+        <label for="title">標題</label>
+        <input id="title" name="title" [(ngModel)]="editor.titleDraft" (ngModelChange)="editor.changed()"
+          [disabled]="!!session.operation() || writes.pending()" [attr.aria-invalid]="editor.operation.errors()['title'] ? 'true' : null">
+        <small class="field-error">{{ editor.operation.errors()['title']?.join('；') }}</small>
+      }
+      <label for="body">{{ editor.route === 'comment-edit' ? '純文字留言' : '純文字內文' }}</label>
+      <textarea id="body" name="body" [rows]="editor.route === 'comment-edit' ? 9 : 14" [(ngModel)]="editor.bodyDraft" (ngModelChange)="editor.changed()"
+        [disabled]="!!session.operation() || writes.pending()" [attr.aria-invalid]="editor.operation.errors()['body'] ? 'true' : null"></textarea>
+      <small class="field-error">{{ editor.operation.errors()['body']?.join('；') }}</small>
+      <button class="primary-button" type="submit" [disabled]="editor.blocked()">{{ writes.pending() ? '處理中…' : editor.route === 'article-new' ? '發表文章' : '儲存修改' }}</button>
+    </form>
+    @if (editor.route === 'comment-edit') { <p class="read-only-note">只有確認所屬文章公開後，才能送出內文修改。</p> }
+    @if (editor.route !== 'article-new') {
+      <button type="button" class="text-button" [disabled]="editor.operation.inspecting() || writes.pending() || !!session.operation()" (click)="editor.inspectLatest()">{{ editor.operation.inspecting() ? '讀取中…' : '重讀並比較最新內容' }}</button>
+    }
+    @if (editor.route === 'comment-edit' && content.comment(); as note) {
+      @if (note.visibility === 'visible' && (note.author.id === session.account()?.id || session.account()?.role === 'admin') || note.visibility === 'hidden' && note.can_restore) {
+        <div class="inline-actions">
+          <button type="button" [disabled]="writes.blocked('comment-visibility:' + note.id)" (click)="visibility.emit({ kind: 'comment', resource: note })">{{ note.visibility === 'visible' ? '下架留言' : '恢復留言' }}</button>
+        </div>
+      }
+    }
+    @if (!editor.completedUrl() && editor.operation.latest(); as latest) {
+      <div class="compare-panel">
+        <h2>{{ editor.route === 'comment-edit' ? '比較最新留言' : '比較最新內容' }}</h2>
+        <p>目前版本 {{ latest.version }}；你的草稿使用版本 {{ editor.versionDraft }}。先閱讀下方最新內容，再決定整合或捨棄。</p>
+        @if (editor.isArticle(latest)) { <h3>{{ latest.title }}</h3> }
+        <pre>{{ latest.body }}</pre>
+        <div class="inline-actions">
+          <button type="button" [disabled]="!writes.proofCurrent(editor.operation)" (click)="editor.acceptLatest(false)">保留草稿並採用新版本</button>
+          <button type="button" [disabled]="!writes.proofCurrent(editor.operation)" (click)="editor.acceptLatest(true)">捨棄草稿，使用最新內容</button>
+        </div>
+      </div>
+    }
+  }
+}
+
+@if (editor.completedUrl(); as destination) {
+  <section class="notice" aria-label="作者提交讀回">
+    @if (editor.dirty) { <p>此區顯示上次已確認提交的結果；目前表單的變更仍須手動送出。</p> }
+    @if (editor.operation.latest(); as latest) { <p>伺服器目前版本 {{ latest.version }}</p><pre class="write-readback">{{ latest.body }}</pre> }
+    <button type="button" [disabled]="session.state() !== 'active' || writes.pending() || !!session.operation() || editor.operation.inspecting()" (click)="editor.readCompleted()">重讀已提交內容</button>
+    <a class="completion-link" [href]="destination">{{ editor.commentNew ? '前往原文章留言第一頁' : editor.route === 'article-new' ? '前往我的文章第一頁' : '前往已儲存內容' }}</a>
+  </section>
+}

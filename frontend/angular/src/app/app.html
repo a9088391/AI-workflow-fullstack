@@ -98,9 +98,36 @@
         </div>
       }
       @if (notice(); as message) { <div class="notice" [class.error]="message.code || message.logId" role="alert"><p>{{ message.message }}</p>@if (message.logId) { <small>log_id：{{ message.logId }}</small><button type="button" (click)="copyLogId(message.logId)">複製 log_id</button> }</div> }
-      @if (writeProblem(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }@if (writeUnknown() && (route === 'article-new' || route === 'article' && unknownNeedsCommentList())) { <button type="button" [disabled]="authState() !== 'active' || pending() || writePending() || conflictLoading()" (click)="inspectUnknown()">讀取列表查證</button> }@if (failure.code === 'E0201' || isAdminRoute() && failure.code === 'E9999' || writeUnknown() && route !== 'article-new' && (route !== 'article' || !unknownNeedsCommentList())) { <button type="button" [disabled]="authState() !== 'active' || pending() || writePending()" (click)="readContent(true)">重讀最新狀態</button> }</div> }
-      @if (unknownList(); as data) { <section class="compare-panel" aria-label="查證結果"><h2>目前列表</h2><p>請自行比對內容與時間；列表不能證明哪筆是剛才的提交。</p>@for (item of data.list; track item.id) { <p>第 {{ item.id }} 筆 · {{ item.body }}</p> }@if (canAcknowledgeUnknown()) { <button type="button" class="text-button" (click)="acknowledgeUnknown()">已查證，允許自行決定下一步</button> }</section> }
-      @if (writeUnknown() && canAcknowledgeUnknown() && !unknownList()) { <button type="button" class="text-button" (click)="acknowledgeUnknown()">已查證伺服器目前狀態，自行決定下一步</button> }
+      @for (operation of writes.operations(); track operation.key) {
+        @if (operation.problem(); as failure) {
+          <section class="notice" [class.error]="operation.unknown() || operation.conflict() || failure.code || failure.logId"
+            role="alert" [attr.aria-label]="operation.label + '結果'">
+            <strong>{{ operation.label }}</strong>
+            <p>{{ failure.message }}</p>
+            @if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }
+            @if (operation.unknown() && (operation.target.kind === 'new-article' || operation.target.kind === 'new-comment')) {
+              <button type="button" [disabled]="authState() !== 'active' || pending() || writePending() || operation.inspecting()" (click)="inspectWrite(operation)">讀取列表查證</button>
+            } @else if (operation.unknown() || operation.conflict()) {
+              <button type="button" [disabled]="authState() !== 'active' || pending() || writePending() || operation.inspecting()" (click)="inspectWrite(operation)">重讀最新狀態</button>
+            }
+            @if (operation.inspecting()) { <p role="status">正在查證…</p> }
+            @if (operation.list(); as data) {
+              <section class="compare-panel" aria-label="查證結果">
+                <h2>{{ author.owns(operation) && author.completedUrl() && operation.target.kind === 'new-comment' ? '最新留言／第 1 頁' : '目前列表' }}</h2><p>請自行比對內容與時間；列表不能證明哪筆是剛才的提交。</p>
+                @for (item of data.list; track item.id) { <p>第 {{ item.id }} 筆 · {{ item.body }}</p> }
+              </section>
+            }
+            @if (!author.owns(operation)) {
+              @if (operation.latest(); as current) { <p>伺服器目前版本 {{ current.version }} · {{ current.visibility === 'visible' ? '公開' : '已下架' }}</p><pre class="write-readback">{{ current.body }}</pre> }
+              @if (operation.member(); as current) { <p>會員 #{{ current.id }} · {{ current.nickname }} · {{ current.status === 'active' ? '啟用' : '已停用' }}</p> }
+              @if (operation.settings(); as current) { <p>伺服器目前值：{{ current.enabled ? '啟用' : '停用' }}、{{ current.window_minutes }} 分鐘內 {{ current.failure_threshold }} 次、鎖定 {{ current.lock_seconds }} 秒。</p> }
+            }
+            @if (writes.canAcknowledge(operation)) {
+              <button type="button" class="text-button" (click)="acknowledgeWrite(operation)">{{ operation.list() ? '已查證，允許自行決定下一步' : '已查證伺服器目前狀態，自行決定下一步' }}</button>
+            }
+          </section>
+        }
+      }
       @if ((['article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit'].includes(route) || isAdminRoute() || route === 'article' && authState() === 'expired' && hasResumeAccount()) && authState() !== 'active' && authState() !== 'checking') {
         @if (authState() === 'expired' && hasResumeAccount()) {
           <app-account-form mode="reauth" [blocked]="writePending()"
@@ -109,39 +136,11 @@
       }
 
       @if (reading.rendered) {
-        <ng-template #readingWriter let-story="article" let-note="comment">
-          @if (story) {
-            @if (account() && story.visibility === 'visible') {
-              <form class="content-form" (submit)="submitComment($event)" novalidate>
-                <h3>留下留言</h3>
-                @if (fieldErrors()['body']) {
-                  <div class="field-summary" role="alert"><a [href]="path + search + '#comment-body'">留言：{{ fieldErrors()['body'].join('；') }}</a></div>
-                }
-                <label for="comment-body">純文字留言</label>
-                <textarea id="comment-body" name="comment-body" rows="5" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()"
-                  [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea>
-                <small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>
-                <button class="primary-button" type="submit" [disabled]="pending() || writePending() || writeUnknown()">{{ writePending() ? '處理中…' : '發表留言' }}</button>
-              </form>
-            } @else if (!account()) {
-              <p class="read-only-note"><a [href]="'/angular/login?return_to=' + encodeURIComponent(path)">登入後留言</a></p>
-            }
-          }
-          @if (note && conflictLatest(); as latest) {
-            <div class="compare-panel">
-              <h2>比較最新留言</h2><p>目前版本 {{ latest.version }}；你的草稿使用版本 {{ versionDraft }}。</p>
-              <pre>{{ latest.body }}</pre>
-              <div class="inline-actions">
-                <button type="button" (click)="acceptLatest(false)">保留草稿並採用新版本</button>
-                <button type="button" (click)="acceptLatest(true)">捨棄草稿，使用最新內容</button>
-              </div>
-            </div>
-          }
-        </ng-template>
-        <app-reading-page [writer]="readingWriter"
-          [writeBlocked]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'"
+        <app-reading-page [writeBlocked]="visibilityBlocked"
           (reload)="readContent()" (visibility)="changeVisibility($event.kind, $event.resource)"
           (invalidated)="invalidateReading($event.sent, $event.failure)" (copyLog)="copyLogId($event)" />
+        <!-- 作者成功的重讀／目的地不能依附主文章 GET 成功；表單仍由唯一閱讀資料判定公開父文章。 -->
+        @if (route === 'article') { <app-author-form mode="comment-new" /> }
       } @else if (route === 'managed-articles') {
         <div class="page-heading"><div><p class="eyebrow">STORIES / 文章</p><h1>文章管理</h1><p class="heading-subtitle">查看公開與下架的文章，從詳情處理狀態。</p></div><span class="heading-flower" aria-hidden="true">❧</span></div>
         @if (loading()) { <p class="notice" role="status">正在載入文章…</p> }
@@ -150,7 +149,7 @@
         @if (articles(); as data) {
           @if (data.list.length === 0) { <div class="empty-state"><span aria-hidden="true">✿</span><p>{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無文章。' }}</p>@if (data.pagination.page > 1) { <a [href]="pageHref(1)">回第一頁</a> }</div> }
           @else { <div class="article-list"><div class="list-head"><span>文章</span><span>發佈日期</span><span>建立來源</span></div>
-            @for (item of data.list; track item.id) { <article class="article-row"><div><h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2><p class="excerpt">{{ item.body }}</p><p class="byline">作者　{{ item.author.nickname }} @if (item.visibility === 'hidden') { · 已下架 }</p>@if (route === 'managed-articles') { <div class="inline-actions">@if (item.author.id === account()?.id) { <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('article', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div> }</div><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span></article> }
+            @for (item of data.list; track item.id) { <article class="article-row"><div><h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2><p class="excerpt">{{ item.body }}</p><p class="byline">作者　{{ item.author.nickname }} @if (item.visibility === 'hidden') { · 已下架 }</p>@if (route === 'managed-articles') { <div class="inline-actions">@if (item.author.id === account()?.id) { <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="writes.blocked('article-visibility:' + item.id)" (click)="changeVisibility('article', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div> }</div><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span></article> }
           </div> }
           <nav class="pagination" aria-label="文章分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 篇</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
@@ -162,21 +161,21 @@
         <!-- 搜尋首頁零筆顯示無符合結果；超頁保留返回入口。 -->
         @if (members(); as data) {
           @if (!data.list.length) { <div class="empty-state"><span aria-hidden="true">✿</span><p>{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : hasMemberKeyword() ? '沒有符合搜尋條件的會員。' : '目前尚無會員。' }}</p>@if (data.pagination.page > 1) { <a [href]="pageHref(1)">回第一頁</a> }</div> }
-          @else { <div class="admin-list" aria-label="會員列表">@for (item of data.list; track item.id) { <article class="admin-row"><div><h2><a [href]="'/angular/admin/members/' + item.id">{{ item.nickname }}</a></h2><p>{{ item.email }}</p></div><div><span class="admin-label">狀態</span><strong>{{ item.status === 'active' ? '啟用' : '已停用' }}</strong></div><div><span class="admin-label">加入日期</span><time>{{ item.created_at.slice(0, 10) }}</time></div><div class="inline-actions"><a [href]="'/angular/admin/members/' + item.id">查看詳情</a><button type="button" [disabled]="pending() || writePending() || writeUnknown()" (click)="changeMemberStatus(item)">{{ item.status === 'active' ? '停用' : '恢復' }}</button></div></article> }</div> }
+          @else { <div class="admin-list" aria-label="會員列表">@for (item of data.list; track item.id) { <article class="admin-row"><div><h2><a [href]="'/angular/admin/members/' + item.id">{{ item.nickname }}</a></h2><p>{{ item.email }}</p></div><div><span class="admin-label">狀態</span><strong>{{ item.status === 'active' ? '啟用' : '已停用' }}</strong></div><div><span class="admin-label">加入日期</span><time>{{ item.created_at.slice(0, 10) }}</time></div><div class="inline-actions"><a [href]="'/angular/admin/members/' + item.id">查看詳情</a><button type="button" [disabled]="writes.blocked('member-status:' + item.id)" (click)="changeMemberStatus(item)">{{ item.status === 'active' ? '停用' : '恢復' }}</button></div></article> }</div> }
           <nav class="pagination" aria-label="會員分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 位</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
       } @else if (route === 'member') {
         <a class="back-link" href="/angular/admin/members">← 回會員管理</a><div class="page-heading"><div><p class="eyebrow">MEMBER / 詳情</p><h1>會員詳情</h1></div><span class="heading-flower" aria-hidden="true">❀</span></div>
         @if (loading()) { <p class="notice" role="status">正在載入會員…</p> }
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }<button type="button" (click)="readContent()">重新讀取</button></div> }
-        @if (member(); as value) { <article class="member-card"><h2>{{ value.nickname }}</h2><dl><div><dt>會員編號</dt><dd>{{ value.id }}</dd></div><div><dt>Email</dt><dd>{{ value.email }}</dd></div><div><dt>狀態</dt><dd>{{ value.status === 'active' ? '啟用' : '已停用' }}</dd></div><div><dt>加入日期</dt><dd>{{ value.created_at }}</dd></div></dl><div class="inline-actions"><button type="button" [disabled]="pending() || writePending() || writeUnknown()" (click)="changeMemberStatus(value)">{{ value.status === 'active' ? '停用會員' : '恢復會員' }}</button></div></article> }
+        @if (member(); as value) { <article class="member-card"><h2>{{ value.nickname }}</h2><dl><div><dt>會員編號</dt><dd>{{ value.id }}</dd></div><div><dt>Email</dt><dd>{{ value.email }}</dd></div><div><dt>狀態</dt><dd>{{ value.status === 'active' ? '啟用' : '已停用' }}</dd></div><div><dt>加入日期</dt><dd>{{ value.created_at }}</dd></div></dl><div class="inline-actions"><button type="button" [disabled]="writes.blocked('member-status:' + value.id)" (click)="changeMemberStatus(value)">{{ value.status === 'active' ? '停用會員' : '恢復會員' }}</button></div></article> }
       } @else if (route === 'managed-comments') {
         <div class="page-heading"><div><p class="eyebrow">NOTES / 管理</p><h1>留言管理</h1><p class="heading-subtitle">包含個別下架與所屬文章下架的留言。</p></div><span class="heading-flower" aria-hidden="true">❀</span></div>
         @if (loading()) { <p class="notice" role="status">正在載入留言…</p> }
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }<button type="button" (click)="readContent()">重新讀取</button></div> }
         <!-- 管理留言零筆超頁不代表整體沒有留言。 -->
         @if (managedComments(); as data) { @if (!data.list.length) { <p class="empty-state">{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無留言。' }} @if (data.pagination.page > 1) { <a [href]="pageHref(1)">回第一頁</a> }</p> }
-          @for (item of data.list; track item.id) { <article class="comment admin-comment"><div class="comment-meta"><strong>{{ item.author.nickname }}</strong><span>文章 #{{ item.article_id }}</span><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span><span>{{ item.visibility === 'visible' ? '公開' : '已下架' }}</span></div><p>{{ item.body }}</p><div class="inline-actions"><a [href]="'/angular/comments/' + item.id">留言詳情</a>@if (item.author.id === account()?.id) { <a [href]="'/angular/comments/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div></article> }
+          @for (item of data.list; track item.id) { <article class="comment admin-comment"><div class="comment-meta"><strong>{{ item.author.nickname }}</strong><span>文章 #{{ item.article_id }}</span><time>{{ item.created_at.slice(0, 10) }}</time><span>建立於 {{ backendLabel(item.created_backend) }}</span><span>{{ item.visibility === 'visible' ? '公開' : '已下架' }}</span></div><p>{{ item.body }}</p><div class="inline-actions"><a [href]="'/angular/comments/' + item.id">留言詳情</a>@if (item.author.id === account()?.id) { <a [href]="'/angular/comments/' + item.id + '/edit'">編修</a> }@if (item.visibility === 'visible' || item.can_restore) { <button type="button" [disabled]="writes.blocked('comment-visibility:' + item.id)" (click)="changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button> }</div></article> }
           <nav class="pagination" aria-label="管理留言分頁"><span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 則</span>@if (data.pagination.page > 1) { <a [href]="pageHref(data.pagination.page - 1)">上一頁</a> }@if (data.pagination.page < data.pagination.total_pages) { <a [href]="pageHref(data.pagination.page + 1)">下一頁</a> }</nav>
         }
       } @else if (route === 'lockout-settings') {
@@ -184,101 +183,17 @@
         @if (loading()) { <p class="notice" role="status">正在讀取設定…</p> }
         @if (contentError(); as failure) { <div class="notice error" role="alert"><p>{{ failure.message }}</p>@if (failure.logId) { <small>log_id：{{ failure.logId }}</small><button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button> }<button type="button" (click)="readContent()">重新讀取</button></div> }
         @if (settings(); as current) { <form class="content-form settings-form" (submit)="submitSettings($event)" novalidate><h2>會員登入失敗鎖定</h2><p>伺服器目前值：{{ current.enabled ? '啟用' : '停用' }}、{{ current.window_minutes }} 分鐘內 {{ current.failure_threshold }} 次、鎖定 {{ current.lock_seconds }} 秒。</p>
-          @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of settingErrorEntries(); track entry[0]) { <a [href]="path + '#' + entry[0]">{{ entry[0] }}：{{ entry[1].join('；') }}</a> }@for (message of settingOtherErrors(); track message) { <span>{{ message }}</span> }</div> }
+          @if (Object.keys(settingsOperation.errors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of settingErrorEntries(); track entry[0]) { <a [href]="path + '#' + entry[0]">{{ entry[0] }}：{{ entry[1].join('；') }}</a> }@for (message of settingOtherErrors(); track message) { <span>{{ message }}</span> }</div> }
           <label class="check-label" for="enabled"><input id="enabled" name="enabled" type="checkbox" [(ngModel)]="settingDraft.enabled" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()">啟用登入失敗鎖定</label>
-          <label for="window_minutes">計算視窗（分鐘）</label><input id="window_minutes" name="window_minutes" type="number" min="1" max="60" step="1" [(ngModel)]="settingDraft.window_minutes" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['window_minutes'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['window_minutes']?.join('；') }}</small>
-          <label for="failure_threshold">失敗次數</label><input id="failure_threshold" name="failure_threshold" type="number" min="1" max="100" step="1" [(ngModel)]="settingDraft.failure_threshold" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['failure_threshold'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['failure_threshold']?.join('；') }}</small>
-          <label for="lock_seconds">鎖定秒數</label><input id="lock_seconds" name="lock_seconds" type="number" min="1" max="86400" step="1" [(ngModel)]="settingDraft.lock_seconds" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['lock_seconds'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['lock_seconds']?.join('；') }}</small>
-          <button class="primary-button" type="submit" [disabled]="pending() || writePending() || writeUnknown()">{{ writePending() ? '儲存中…' : '儲存設定' }}</button><button type="button" class="text-button" [disabled]="pending() || writePending()" (click)="readContent()">重讀伺服器值</button>
+          <label for="window_minutes">計算視窗（分鐘）</label><input id="window_minutes" name="window_minutes" type="number" min="1" max="60" step="1" [(ngModel)]="settingDraft.window_minutes" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="settingsOperation.errors()['window_minutes'] ? 'true' : null"><small class="field-error">{{ settingsOperation.errors()['window_minutes']?.join('；') }}</small>
+          <label for="failure_threshold">失敗次數</label><input id="failure_threshold" name="failure_threshold" type="number" min="1" max="100" step="1" [(ngModel)]="settingDraft.failure_threshold" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="settingsOperation.errors()['failure_threshold'] ? 'true' : null"><small class="field-error">{{ settingsOperation.errors()['failure_threshold']?.join('；') }}</small>
+          <label for="lock_seconds">鎖定秒數</label><input id="lock_seconds" name="lock_seconds" type="number" min="1" max="86400" step="1" [(ngModel)]="settingDraft.lock_seconds" (ngModelChange)="settingChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="settingsOperation.errors()['lock_seconds'] ? 'true' : null"><small class="field-error">{{ settingsOperation.errors()['lock_seconds']?.join('；') }}</small>
+          <button class="primary-button" type="submit" [disabled]="writes.blocked('settings')">{{ writePending() ? '儲存中…' : '儲存設定' }}</button><button type="button" class="text-button" [disabled]="pending() || writePending()" (click)="readContent()">重讀伺服器值</button>
         </form> }
-      } @else if (route === 'article-new' || route === 'article-edit') {
-        <a class="back-link" [href]="route === 'article-new' ? '/angular/me/articles' : '/angular/articles/' + validEditArticleId">← 返回文章</a>
-        <div class="page-heading"><div><p class="eyebrow">WRITE / 創作</p><h1>{{ route === 'article-new' ? '發表文章' : '編修文章' }}</h1><p class="heading-subtitle">純文字會保留換行，建立來源由後端記錄。</p></div><span class="heading-flower" aria-hidden="true">✎</span></div>
-        @if (loading()) { <p class="notice" role="status">正在讀取文章…</p> }
-        @if (contentError(); as failure) {
-          <div class="notice error" role="alert">
-            <p>{{ failure.message }}</p>
-            @if (failure.logId) {
-              <small>log_id：{{ failure.logId }}</small>
-              <button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button>
-            }
-            <button type="button" (click)="readContent()">重新讀取</button>
-          </div>
-        }
-        @if (authState() === 'active' && (route === 'article-new' || article())) {
-          <form class="content-form" (submit)="route === 'article-new' ? submitArticle($event) : submitEdit($event)" novalidate>
-            @if (Object.keys(fieldErrors()).length) { <div class="field-summary" role="alert"><strong>請檢查下列欄位</strong>@for (entry of contentErrorEntries(); track entry[0]) { <a [href]="path + search + '#' + entry[0]">{{ entry[0] === 'title' ? '標題' : '內文' }}：{{ entry[1].join('；') }}</a> }@for (message of contentOtherErrors(); track message) { <span>{{ message }}</span> }</div> }
-            <label for="title">標題</label><input id="title" name="title" [(ngModel)]="titleDraft" (ngModelChange)="contentChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['title'] ? 'true' : null"><small class="field-error">{{ fieldErrors()['title']?.join('；') }}</small>
-            <label for="body">純文字內文</label><textarea id="body" name="body" rows="14" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()" [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea><small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>
-            <button class="primary-button" type="submit" [disabled]="pending() || writePending() || !!conflictLatest() || writeUnknown() || writeProblem()?.code === 'E0201'">{{ writePending() ? '處理中…' : route === 'article-new' ? '發表文章' : '儲存修改' }}</button>
-          </form>
-          @if (route === 'article-edit') { <button type="button" class="text-button" [disabled]="conflictLoading() || writePending()" (click)="inspectLatest()">{{ conflictLoading() ? '讀取中…' : '重讀並比較最新內容' }}</button> }
-          @if (conflictLatest(); as latest) { <div class="compare-panel"><h2>比較最新內容</h2><p>目前版本 {{ latest.version }}；你的草稿使用版本 {{ versionDraft }}。先閱讀下方最新內容，再決定整合或捨棄。</p>@if (isLatestArticle(latest)) { <h3>{{ latest.title }}</h3> }<pre>{{ latest.body }}</pre><div class="inline-actions"><button type="button" (click)="acceptLatest(false)">保留草稿並採用新版本</button><button type="button" (click)="acceptLatest(true)">捨棄草稿，使用最新內容</button></div></div> }
-        }
-      } @else if (route === 'comment-edit') {
-        <a class="back-link" href="/angular/me/comments">← 回我的留言</a>
-        @if (loading()) { <p class="notice" role="status">正在載入留言…</p> }
-        @if (contentError(); as failure) {
-          <div class="notice error" role="alert">
-            <p>{{ failure.message }}</p>
-            @if (failure.logId) {
-              <small>log_id：{{ failure.logId }}</small>
-              <button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button>
-            }
-            <button type="button" (click)="readContent()">重新讀取</button>
-          </div>
-        }
-        @if (comment(); as note) {
-          <article class="reading">
-            <p class="eyebrow">NOTE / 留言</p><h1>編修留言</h1>
-            <div class="story-meta">
-              <span>作者　{{ note.author.nickname }}</span><time>{{ note.created_at.slice(0, 10) }}</time>
-              <span>建立於 {{ backendLabel(note.created_backend) }}</span>
-              @if (note.visibility === 'hidden') { <span>已下架</span> }
-            </div>
-            @if (parentLoading()) { <p class="notice" role="status">正在確認所屬文章…</p> }
-            @if (parentArticle(); as parent) { <p>所屬文章：<a [href]="'/angular/articles/' + parent.id">{{ parent.title }}</a></p> }
-            @if (parentError(); as failure) {
-              <div class="notice error" role="alert">
-                <p>{{ failure.message }}</p>
-                @if (failure.logId) {
-                  <small>log_id：{{ failure.logId }}</small>
-                  <button type="button" (click)="copyLogId(failure.logId)">複製 log_id</button>
-                }
-                <button type="button" (click)="readParent()">重試讀取所屬文章</button>
-              </div>
-            }
-            <form class="content-form" (submit)="submitEdit($event)" novalidate>
-              @if (fieldErrors()['body']) {
-                <div class="field-summary" role="alert"><a [href]="path + search + '#body'">留言：{{ fieldErrors()['body'].join('；') }}</a></div>
-              }
-              <label for="body">純文字留言</label>
-              <textarea id="body" name="body" rows="9" [(ngModel)]="bodyDraft" (ngModelChange)="contentChanged()"
-                [disabled]="pending() || writePending()" [attr.aria-invalid]="fieldErrors()['body'] ? 'true' : null"></textarea>
-              <small class="field-error">{{ fieldErrors()['body']?.join('；') }}</small>
-              @for (message of contentOtherErrors(); track message) { <p class="field-error">{{ message }}</p> }
-              <button class="primary-button" type="submit"
-                [disabled]="pending() || writePending() || parentArticle()?.visibility !== 'visible' || !!conflictLatest() || writeUnknown() || writeProblem()?.code === 'E0201'">{{ writePending() ? '處理中…' : '儲存修改' }}</button>
-            </form>
-            <p class="read-only-note">只有確認所屬文章公開後，才能送出內文修改。</p>
-            <button type="button" class="text-button" [disabled]="conflictLoading() || writePending()" (click)="inspectLatest()">{{ conflictLoading() ? '讀取中…' : '重讀並比較最新內容' }}</button>
-            @if (note.visibility === 'visible' && (note.author.id === account()?.id || account()?.role === 'admin') || note.visibility === 'hidden' && note.can_restore) {
-              <div class="inline-actions">
-                <button type="button" [disabled]="pending() || writePending() || writeUnknown() || writeProblem()?.code === 'E0201'" (click)="changeVisibility('comment', note)">{{ note.visibility === 'visible' ? '下架留言' : '恢復留言' }}</button>
-              </div>
-            }
-            @if (conflictLatest(); as latest) {
-              <div class="compare-panel">
-                <h2>比較最新留言</h2><p>目前版本 {{ latest.version }}；你的草稿使用版本 {{ versionDraft }}。</p>
-                <pre>{{ latest.body }}</pre>
-                <div class="inline-actions">
-                  <button type="button" (click)="acceptLatest(false)">保留草稿並採用新版本</button>
-                  <button type="button" (click)="acceptLatest(true)">捨棄草稿，使用最新內容</button>
-                </div>
-              </div>
-            }
-          </article>
-        }
+      } @else if (route === 'article-new' || route === 'article-edit' || route === 'comment-edit') {
+        <app-author-form (reload)="readContent()" (copyLog)="copyLogId($event)"
+          (visibility)="changeVisibility($event.kind, $event.resource)"
+          (invalidated)="invalidateReading($event.sent, $event.failure)" />
       } @else if (route === 'login' || route === 'register') {
         <div class="form-layout">
           <div class="form-decoration" aria-hidden="true">

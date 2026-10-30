@@ -42,7 +42,7 @@
                 <div class="inline-actions">
                   <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a>
                   @if (item.visibility === 'visible' || item.can_restore) {
-                    <button type="button" [disabled]="writeBlocked()" (click)="visibility.emit({ kind: 'article', resource: item })">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button>
+                    <button type="button" [disabled]="writeBlocked()('article', item.id)" (click)="visibility.emit({ kind: 'article', resource: item })">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button>
                   }
                 </div>
               }
@@ -88,7 +88,7 @@
       }
       @if (session.account() && (story.visibility === 'visible' && (story.author.id === session.account()?.id || session.account()?.role === 'admin') || story.visibility === 'hidden' && story.can_restore)) {
         <div class="inline-actions">
-          <button type="button" [disabled]="writeBlocked()" (click)="visibility.emit({ kind: 'article', resource: story })">{{ story.visibility === 'visible' ? '下架文章' : '恢復文章' }}</button>
+          <button type="button" [disabled]="writeBlocked()('article', story.id)" (click)="visibility.emit({ kind: 'article', resource: story })">{{ story.visibility === 'visible' ? '下架文章' : '恢復文章' }}</button>
         </div>
       }
     </article>
@@ -130,7 +130,6 @@
           @if (data.pagination.page < data.pagination.total_pages) { <a [href]="content.pageHref(data.pagination.page + 1)">下一頁</a> }
         </nav>
       }
-      <ng-container [ngTemplateOutlet]="writer()" [ngTemplateOutletContext]="{ article: story }" />
     </section>
   }
 } @else if (content.route === 'my-comments') {
@@ -167,7 +166,7 @@
         <div class="inline-actions">
           <a [href]="'/angular/comments/' + item.id">留言詳情</a><a [href]="'/angular/comments/' + item.id + '/edit'">編修</a>
           @if (item.visibility === 'visible' || item.can_restore) {
-            <button type="button" [disabled]="writeBlocked()" (click)="visibility.emit({ kind: 'comment', resource: item })">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button>
+            <button type="button" [disabled]="writeBlocked()('comment', item.id)" (click)="visibility.emit({ kind: 'comment', resource: item })">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button>
           }
         </div>
       </article>
@@ -217,10 +216,9 @@
       }
       @if (note.visibility === 'visible' && (note.author.id === session.account()?.id || session.account()?.role === 'admin') || note.visibility === 'hidden' && note.can_restore) {
         <div class="inline-actions">
-          <button type="button" [disabled]="writeBlocked()" (click)="visibility.emit({ kind: 'comment', resource: note })">{{ note.visibility === 'visible' ? '下架留言' : '恢復留言' }}</button>
+          <button type="button" [disabled]="writeBlocked()('comment', note.id)" (click)="visibility.emit({ kind: 'comment', resource: note })">{{ note.visibility === 'visible' ? '下架留言' : '恢復留言' }}</button>
         </div>
       }
-      <ng-container [ngTemplateOutlet]="writer()" [ngTemplateOutletContext]="{ comment: note }" />
     </article>
   }
 }
