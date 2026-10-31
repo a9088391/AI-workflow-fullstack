@@ -46,7 +46,7 @@ test('public, article comments, author and admin lists render zero-total overpag
     })
     const commentHtml = await renderList('./articles/[id]/index.vue', {
       site: { account: { value: null } }, route: { path: '/nuxt/articles/1', query: {} }, article: { id: 1, title: '文章', body: '內文', author: { nickname: '作者' }, visibility: 'hidden', created_at: '今天', created_backend: 'laravel' },
-      comments: data, page: requested, loading: false, error: '', commentError: '', visibilityError: '', commentOwner: null,
+      comments: data, page: requested, loading: false, error: '', commentError: '', visibilityError: '', commentOwner: null, writeError: '', uncertain: false,
       isAuthor: false, canChangeVisibility: false,
       // 來源標籤與分頁網址保持正式模板所需的函式形狀。
       backendName: () => 'Laravel',
@@ -74,5 +74,46 @@ test('public, article comments, author and admin lists render zero-total overpag
     } else {
       for (const html of [publicHtml, authorHtml, adminHtml, commentHtml]) assert.match(html, /前面的頁面仍有/)
     }
+  }
+})
+
+// 操作回饋不依附成功讀取的資源；失權、讀取中與失敗時仍保留查證入口及原 PUT 編號。
+test('write recovery remains rendered outside article comment and editor read branches', async () => {
+  for (const loading of [true, false]) {
+    const site = { ready: { value: true }, account: { value: null } }
+    const route = { path: '/articles/1', query: {} }
+    const shared = { site, route, loading, error: loading ? '' : '讀取失敗', logId: 'read-trace',
+      // 僅驗模板的查證控制；實際 callback 與請求順序由 author 及瀏覽器案例覆蓋。
+      load() {}, loginHref() { return '/nuxt/login' },
+    }
+    const articleHtml = await renderList('./articles/[id]/index.vue', {
+      ...shared, article: null, commentOwner: null, fieldErrors: {}, writeError: '留言結果尚未確認', writeLogId: 'comment-write-trace', uncertain: true,
+      visibilityError: '下架／恢復結果尚未確認', visibilityLogId: 'visibility-write-trace', visibilityPending: false,
+      // 模板回饋只應連接各自操作，不能借另一項操作清除未知結果。
+      refreshVisibility() {}, checkedComment() {},
+    })
+    assert.match(articleHtml, /留言結果尚未確認/)
+    assert.match(articleHtml, /重讀留言列表/)
+    assert.match(articleHtml, /comment-write-trace/)
+    assert.match(articleHtml, /visibility-write-trace/)
+    const commentHtml = await renderList('./comments/[id]/index.vue', {
+      ...shared, comment: null, writeError: '下架／恢復結果尚未確認', writeLogId: 'comment-visibility-trace', pending: false,
+      // 人工查證入口在沒有可讀留言時也必須存在。
+      refresh() {},
+    })
+    assert.match(commentHtml, /下架／恢復結果尚未確認/)
+    assert.match(commentHtml, /重讀留言確認/)
+    assert.match(commentHtml, /comment-visibility-trace/)
+    const editorHtml = await renderList('../components/ContentEditor.vue', {
+      ...shared, kind: 'article', id: 1, resource: null, draftReady: true, draftOwner: 2, conflict: true,
+      uncertain: true, writeError: '修改結果尚未確認', writeLogId: 'editor-write-trace',
+      // 保留重登事件形狀，模板不應將草稿或比較內容帶出授權分支。
+      restored() {}, resetForIdentity() {}, checkedResult() {},
+    })
+    assert.match(editorHtml, /修改結果尚未確認/)
+    assert.match(editorHtml, /重讀詳情查證/)
+    assert.match(editorHtml, /editor-write-trace/)
+    assert.match(editorHtml, /重新讀取最新內容/)
+    assert.doesNotMatch(editorHtml, /最新伺服器內容（版本/)
   }
 })

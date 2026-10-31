@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { runInNewContext } from 'node:vm'
-import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as contracts from '../utils/contracts.js'
+import { loadScriptSetup } from '../support/component-fixtures.js'
 
 // 執行既有頁面 script 與真實 Vue watch，只替換 Nuxt 邊界及可控制的 HTTP 回應。
 function guestPage(file, selectedBackend = contracts.API_BASE) {
@@ -30,10 +29,10 @@ function guestPage(file, selectedBackend = contracts.API_BASE) {
       return response.promise
     },
   }
-  const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-  const script = parse(source).descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const script = loadScriptSetup(new URL(file, import.meta.url))
   const visible = file === './index.vue' ? 'data' : 'article'
   const scope = vue.effectScope()
+  // 在 scope 內執行頁面 setup，讓建立的 watcher 能隨測試收尾一起停止。
   const page = scope.run(() => runInNewContext(`${script}\n;({ visible: ${visible} })`, context))
   return { site, page, requests,
     // 依元件原本生命週期撤銷請求與 watcher。
@@ -67,8 +66,10 @@ for (const file of ['./index.vue', './articles/[id]/index.vue']) {
   test(`guest ${file} ignores old backend response`, async (t) => {
     const app = guestPage(file)
     t.after(app.close)
+    // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
     assert.equal(app.requests.length, 1)
     assert.equal(app.requests[0].token, null)
+    // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
     app.site.backend.value = contracts.BACKENDS.symfony
     await vue.nextTick()
     assert.equal(app.requests[0].signal.aborted, true)

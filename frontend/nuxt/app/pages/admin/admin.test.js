@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { runInNewContext } from 'node:vm'
-import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as contracts from '../../utils/contracts.js'
 import * as admin from '../../utils/admin.js'
+import { loadScriptSetup } from '../../support/component-fixtures.js'
 
 const administrator = { id: 1, email: 'admin@example.test', nickname: '管理員', role: 'admin', status: 'active', created_at: '2026-09-24 09:00:00' }
 const member = { id: 2, email: 'member@example.test', nickname: '阿明', role: 'member', status: 'active', created_at: '2026-09-24 09:00:00' }
@@ -45,7 +44,7 @@ function page(file, exposed, { kind = 'members', role = 'admin', query = {}, id 
       },
     },
   }
-  const script = parse(readFileSync(new URL(file, import.meta.url), 'utf8')).descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
+  const script = loadScriptSetup(new URL(file, import.meta.url))
   const scope = vue.effectScope()
   const state = scope.run(
     // 在獨立 reactive scope 執行正式頁面 script，結束時可移除所有 watch。
@@ -67,12 +66,14 @@ async function respond(request, status, data, errorCode = '') {
 test('admin list gates private reads and uses approved member search', async (t) => {
   const instance = page('../../components/AdminList.vue', '({ data, load })', { role: 'member', query: { page: '3', keyword: '阿' } })
   t.after(instance.close)
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(instance.requests.length, 0)
   instance.site.account.value = administrator
   await vue.nextTick()
   assert.equal(instance.requests[0].path, '/api/members?page=3&per_page=20&filters%5Bkeyword%5D=%E9%98%BF')
   await respond(instance.requests[0], 200, { list: [], pagination: { page: 3, per_page: 20, total: 1, total_pages: 1 } })
   assert.equal(instance.state.data.value.pagination.total, 1)
+  // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
   instance.site.backend.value = contracts.BACKENDS.symfony
   await vue.nextTick()
   assert.equal(instance.state.data.value, null)
@@ -84,6 +85,7 @@ test('admin list clears stale keyword validation on route query change', async (
   const invalidKeyword = '字'.repeat(255)
   const instance = page('../../components/AdminList.vue', '({ data, error, fieldError })', { query: { keyword: invalidKeyword } })
   t.after(instance.close)
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(instance.requests.length, 0)
   assert.match(instance.state.fieldError.value, /最多 254 個字/)
   instance.route.query.keyword = '阿'
@@ -113,6 +115,7 @@ test('member status unknown requires readback before another PUT', async (t) => 
   const instance = page('./members/[id].vue', '({ member, pending, unknown, needsReadback, changeStatus, load })')
   t.after(instance.close)
   await respond(instance.requests[0], 200, member)
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   const first = instance.state.changeStatus()
   assert.equal(instance.requests[1].path, '/api/members/2/status')
   assert.deepEqual(JSON.parse(JSON.stringify(instance.requests[1].body)), { status: 'disabled' })
@@ -122,7 +125,9 @@ test('member status unknown requires readback before another PUT', async (t) => 
   assert.equal(instance.state.unknown.value, true)
   assert.equal(instance.state.needsReadback.value, true)
   await instance.state.changeStatus()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(instance.requests.length, 2)
+  // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
   const reread = instance.state.load()
   await respond(instance.requests[2], 200, { ...member, status: 'disabled' })
   await reread
@@ -141,6 +146,7 @@ test('different administrator clears unknown member status and aborts old write'
   const instance = page('./members/[id].vue', '({ member, pending, unknown, needsReadback, notice, changeStatus })')
   t.after(instance.close)
   await respond(instance.requests[0], 200, member)
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   const uncertain = instance.state.changeStatus()
   await respond(instance.requests[1], 500, null, 'E9999')
   await uncertain
@@ -148,6 +154,7 @@ test('different administrator clears unknown member status and aborts old write'
   instance.site.account.value = null
   instance.site.token.value = null
   await vue.nextTick()
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
   instance.site.account.value = { ...administrator, id: 3, email: 'admin3@example.test' }
   instance.site.token.value = 'second-token'
   await vue.nextTick()
@@ -177,11 +184,14 @@ for (const change of ['backend', 'account']) {
     const instance = page('./members/[id].vue', '({ member, notice, changeStatus })')
     t.after(instance.close)
     await respond(instance.requests[0], 200, member)
+    // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
     const updating = instance.state.changeStatus()
     await respond(instance.requests[1], 200, {})
     assert.equal(instance.requests[2].path, '/api/members/2')
     assert.equal(instance.state.notice.value, '更新已送達；正在重新讀取會員狀態。')
+    // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
     if (change === 'backend') instance.site.backend.value = contracts.BACKENDS.symfony
+    // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
     else { instance.site.account.value = { ...administrator, id: 3 }; instance.site.token.value = 'new-token' }
     await vue.nextTick()
     assert.equal(instance.requests[2].signal.aborted, true)
@@ -200,8 +210,10 @@ test('lockout settings validate draft and display confirmed readback', async (t)
   const instance = page('./settings/login-lockout.vue', '({ current, draft, errors, save })')
   t.after(instance.close)
   await respond(instance.requests[0], 200, settings)
+  // 先以越界值確認本地驗證阻止 PUT；修正後才測伺服器 422 與保留草稿。
   instance.state.draft.value.window_minutes = 0
   await instance.state.save()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(instance.requests.length, 1)
   assert.ok(instance.state.errors.value.window_minutes)
   instance.state.draft.value.window_minutes = 6
@@ -214,6 +226,7 @@ test('lockout settings validate draft and display confirmed readback', async (t)
   await rejected
   assert.deepEqual([...instance.state.errors.value.window_minutes], ['欄位格式或範圍不正確'])
   assert.equal(instance.state.draft.value.window_minutes, 6)
+  // 成功空回應不能直接當作目前值；必須等接下來的 GET 才同步完整設定。
   const save = instance.state.save()
   await respond(instance.requests[2], 200, {})
   assert.equal(instance.state.current.value, null)
@@ -235,6 +248,8 @@ test('lockout settings clear stale field errors after readback', async (t) => {
   instance.requests[1].resolve({ status: 422, body: { success: false, error_code: 'E0001', errors: { window_minutes: ['欄位格式或範圍不正確'] } } })
   await rejected
   assert.ok(instance.state.errors.value.window_minutes)
+  // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
+  // 手動重讀應清除舊 422 明細，但不覆寫使用者先前修改的數值。
   const readback = instance.state.load()
   await respond(instance.requests[2], 200, settings)
   await readback
@@ -251,6 +266,8 @@ test('lockout draft remains dirty through pending and failed rereads', async (t)
   instance.state.draft.value.window_minutes = 6
   await vue.nextTick()
   assert.equal(instance.site.dirty.value, true)
+  // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
+  // 可見伺服器值在 GET 期間會暫空，離頁提示仍須依保留基準辨識未送出的草稿。
   const failed = instance.state.load()
   await vue.nextTick()
   assert.equal(instance.state.current.value, null)
@@ -258,6 +275,7 @@ test('lockout draft remains dirty through pending and failed rereads', async (t)
   await respond(instance.requests[1], 500, null, 'E9999')
   await failed
   assert.equal(instance.site.dirty.value, true)
+  // 失敗後再讀回成功也不能將未儲存的 6 分鐘覆寫成伺服器 5 分鐘。
   const recovered = instance.state.load()
   await respond(instance.requests[2], 200, settings)
   await recovered
@@ -278,12 +296,15 @@ test('lockout draft baseline belongs only to its admin and backend', async (t) =
   assert.equal(instance.state.draft.value.window_minutes, 6)
   assert.equal(instance.state.confirmed.value.window_minutes, 5)
   assert.equal(instance.site.dirty.value, true)
+  // 同帳號恢復只重新授權，保留原修改及比較基準供使用者自行送出。
   instance.site.account.value = administrator
   instance.site.token.value = 'restored-token'
   await vue.nextTick()
   await respond(instance.requests[1], 200, settings)
   assert.equal(instance.state.draft.value.window_minutes, 6)
   assert.equal(instance.site.dirty.value, true)
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
+  // 換成另一已驗證管理員才清掉原草稿／基準，避免把前人的設定送給新帳號。
   instance.site.account.value = { ...administrator, id: 3 }
   instance.site.token.value = 'new-token'
   await vue.nextTick()
@@ -295,6 +316,7 @@ test('lockout draft baseline belongs only to its admin and backend', async (t) =
   instance.state.draft.value.window_minutes = 7
   await vue.nextTick()
   assert.equal(instance.site.dirty.value, true)
+  // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
   instance.site.backend.value = contracts.BACKENDS.symfony
   await vue.nextTick()
   assert.equal(instance.state.draft.value, null)
@@ -308,13 +330,17 @@ test('lockout unknown write keeps draft and blocks automatic retry', async (t) =
   t.after(instance.close)
   await respond(instance.requests[0], 200, settings)
   instance.state.draft.value.lock_seconds = 600
+  // 已送達後回 500 視為未知，不能只因本地數值合法就再次 PUT。
   const write = instance.state.save()
   await respond(instance.requests[1], 500, null, 'E9999')
   await write
   assert.equal(instance.state.unknown.value, true)
   assert.equal(instance.state.needsReadback.value, true)
   await instance.state.save()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(instance.requests.length, 2)
+  // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
+  // 有效讀回只解除再次人工操作前的查證門禁，不證明前一個 PUT 是否成功。
   const readback = instance.state.load()
   await respond(instance.requests[2], 200, settings)
   await readback

@@ -105,40 +105,47 @@ async function submitLogout() {
   <div class="shell">
     <header class="masthead">
       <div class="masthead-top">
-        <a class="wordmark" href="/nuxt/" aria-label="文章集，回文章列表">文章集<span class="wordmark-dot">.</span></a>
+        <a class="wordmark"
+          href="/nuxt/"
+          aria-label="文章集，回文章列表">文章集<span class="wordmark-dot">.</span></a>
         <p class="edition">一份關於文字的日常刊物</p>
-        <div class="environment" aria-label="目前版本與後端">
-          <span>目前前端 <strong>Nuxt</strong></span>
-          <span>目前後端 <strong>{{ backendLabels[site.backend.value] }}</strong></span>
-        </div>
+        <div class="environment"
+          aria-label="目前版本與後端"><span>目前前端 <strong>Nuxt</strong></span><span>目前後端 <strong>{{ backendLabels[site.backend.value] }}</strong></span></div>
       </div>
       <div class="masthead-rule" />
-      <nav class="main-nav" aria-label="主要導覽">
+      <nav class="main-nav"
+        aria-label="主要導覽">
         <a href="/nuxt/">所有文章</a>
         <span class="nav-spacer" />
         <template v-if="site.account.value">
           <a href="/nuxt/articles/new">發文</a>
           <a href="/nuxt/me/articles">我的文章</a>
           <a href="/nuxt/me/comments">我的留言</a>
-          <template v-if="site.account.value.role === 'admin'">
-            <a href="/nuxt/admin/members">會員管理</a>
-            <a href="/nuxt/admin/articles">文章管理</a>
-            <a href="/nuxt/admin/comments">留言管理</a>
-            <a href="/nuxt/admin/settings/login-lockout">鎖定設定</a>
-          </template>
+          <template v-if="site.account.value.role === 'admin'"><a href="/nuxt/admin/members">會員管理</a><a href="/nuxt/admin/articles">文章管理</a><a href="/nuxt/admin/comments">留言管理</a><a href="/nuxt/admin/settings/login-lockout">鎖定設定</a></template>
           <span class="reader-name">{{ site.account.value.nickname }}</span>
-          <button type="button" class="text-button" :disabled="logoutPending || site.adminPending.value" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
+          <button type="button"
+            class="text-button"
+            :disabled="logoutPending || site.adminPending.value"
+            @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
         </template>
-        <template v-else>
-          <a href="/nuxt/login">登入</a>
-          <a href="/nuxt/register">註冊</a>
-        </template>
+        <template v-else><a href="/nuxt/login">登入</a><a href="/nuxt/register">註冊</a></template>
       </nav>
       <details class="version-controls">
         <summary>切換版本</summary>
         <div class="version-fields">
-          <div><label for="nuxt-frontend-version">前端版本</label><select id="nuxt-frontend-version" value="nuxt" @change="chooseFrontend"><option value="nuxt">Nuxt（目前使用）</option><option value="vue" :disabled="!frontendTarget">Vue 3＋Vite{{ frontendTarget ? '' : '（此頁不可切換）' }}</option><option value="react" :disabled="!reactTarget">React＋Vite{{ reactTarget ? '' : '（此頁不可切換）' }}</option><option value="next" :disabled="!nextTarget">Next.js{{ nextTarget ? '' : '（此頁不可切換）' }}</option><option value="angular" :disabled="!angularTarget">Angular{{ angularTarget ? '' : '（此頁不可切換）' }}</option><option value="sveltekit" :disabled="!svelteTarget">SvelteKit{{ svelteTarget ? '' : '（此頁不可切換）' }}</option></select></div>
-          <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version" :value="site.backend.value" @change="chooseBackend"><option v-for="(label, value) in backendLabels" :key="value" :value="value">{{ label }}</option></select></div>
+          <div><label for="nuxt-frontend-version">前端版本</label><select id="nuxt-frontend-version"
+              value="nuxt"
+              @change="chooseFrontend"><option value="nuxt">Nuxt（目前使用）</option><option value="vue"
+                :disabled="!frontendTarget">Vue 3＋Vite{{ frontendTarget ? '' : '（此頁不可切換）' }}</option><option value="react"
+                :disabled="!reactTarget">React＋Vite{{ reactTarget ? '' : '（此頁不可切換）' }}</option><option value="next"
+                :disabled="!nextTarget">Next.js{{ nextTarget ? '' : '（此頁不可切換）' }}</option><option value="angular"
+                :disabled="!angularTarget">Angular{{ angularTarget ? '' : '（此頁不可切換）' }}</option><option value="sveltekit"
+                :disabled="!svelteTarget">SvelteKit{{ svelteTarget ? '' : '（此頁不可切換）' }}</option></select></div>
+          <div><label for="nuxt-backend-version">後端版本</label><select id="nuxt-backend-version"
+              :value="site.backend.value"
+              @change="chooseBackend"><option v-for="(label, value) in backendLabels"
+                :key="value"
+                :value="value">{{ label }}</option></select></div>
           <p>切換後端會清除目前登入並要求重新登入。</p>
         </div>
       </details>
@@ -150,33 +157,56 @@ async function submitLogout() {
             <a href="/nuxt/articles/new">發文</a>
             <a href="/nuxt/me/articles">我的文章</a>
             <a href="/nuxt/me/comments">我的留言</a>
-            <template v-if="site.account.value.role === 'admin'">
-              <a href="/nuxt/admin/members">會員管理</a>
-              <a href="/nuxt/admin/articles">文章管理</a>
-              <a href="/nuxt/admin/comments">留言管理</a>
-              <a href="/nuxt/admin/settings/login-lockout">鎖定設定</a>
-            </template>
+            <template v-if="site.account.value.role === 'admin'"><a href="/nuxt/admin/members">會員管理</a><a href="/nuxt/admin/articles">文章管理</a><a href="/nuxt/admin/comments">留言管理</a><a href="/nuxt/admin/settings/login-lockout">鎖定設定</a></template>
             <span class="reader-name">{{ site.account.value.nickname }}</span>
-            <button type="button" class="text-button" :disabled="logoutPending || site.adminPending.value" @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
+            <button type="button"
+              class="text-button"
+              :disabled="logoutPending || site.adminPending.value"
+              @click="submitLogout">{{ logoutPending ? '登出中…' : '登出' }}</button>
           </template>
-          <template v-else>
-            <a href="/nuxt/login">登入</a>
-            <a href="/nuxt/register">註冊</a>
-          </template>
+          <template v-else><a href="/nuxt/login">登入</a><a href="/nuxt/register">註冊</a></template>
         </nav>
       </details>
     </header>
-    <div v-if="!site.ready.value" class="site-status" role="status">正在確認登入狀態…</div>
-    <div v-else-if="site.authError.value" class="site-status" role="alert">
+    <div v-if="!site.ready.value"
+      class="site-status"
+      role="status">正在確認登入狀態…</div>
+    <div v-else-if="site.authError.value"
+      class="site-status"
+      role="alert">
       {{ site.authError.value }}
-      <button v-if="site.credential.value" type="button" class="inline-button" :disabled="site.checking.value" @click="site.verify()">重新驗證</button>
-      <a v-else :href="loginHref(route.path)">前往登入</a>
+      <button v-if="site.credential.value"
+        type="button"
+        class="inline-button"
+        :disabled="site.checking.value"
+        @click="site.verify()">重新驗證</button>
+      <a v-else
+        :href="loginHref(route.path)">前往登入</a>
     </div>
-    <div v-if="notice" class="site-status" role="status">{{ notice }} <small v-if="noticeLogId">log_id：{{ noticeLogId }}</small></div>
+    <div v-if="notice"
+      class="site-status"
+      role="status">{{ notice }} <small v-if="noticeLogId">log_id：{{ noticeLogId }}</small></div>
     <div :class="{ 'admin-layout': route.path.startsWith('/admin') && site.account.value?.role === 'admin' }">
-      <aside v-if="route.path.startsWith('/admin') && site.account.value?.role === 'admin'" class="admin-sidebar" aria-label="管理後台"><h2>管理後台</h2><nav aria-label="管理導覽"><a href="/nuxt/admin/members" :aria-current="route.path.startsWith('/admin/members') ? 'page' : undefined">會員管理</a><a href="/nuxt/admin/articles" :aria-current="route.path === '/admin/articles' ? 'page' : undefined">文章管理</a><a href="/nuxt/admin/comments" :aria-current="route.path === '/admin/comments' ? 'page' : undefined">留言管理</a><a href="/nuxt/admin/settings/login-lockout" :aria-current="route.path === '/admin/settings/login-lockout' ? 'page' : undefined">系統設定</a></nav></aside>
+      <aside v-if="route.path.startsWith('/admin') && site.account.value?.role === 'admin'"
+        class="admin-sidebar"
+        aria-label="管理後台">
+        <h2>管理後台</h2>
+        <nav aria-label="管理導覽">
+          <a href="/nuxt/admin/members"
+            :aria-current="route.path.startsWith('/admin/members') ? 'page' : undefined">會員管理</a>
+          <a href="/nuxt/admin/articles"
+            :aria-current="route.path === '/admin/articles' ? 'page' : undefined">文章管理</a>
+          <a href="/nuxt/admin/comments"
+            :aria-current="route.path === '/admin/comments' ? 'page' : undefined">留言管理</a>
+          <a href="/nuxt/admin/settings/login-lockout"
+            :aria-current="route.path === '/admin/settings/login-lockout' ? 'page' : undefined">系統設定</a>
+        </nav>
+      </aside>
       <NuxtPage />
     </div>
-    <footer class="footer"><span>文章集 / Nuxt</span><span>留下文字，也留下時間。</span></footer>
+    <footer class="footer">
+      <span>文章集 / Nuxt</span>
+      <span>留下文字，也留下時間。</span>
+    </footer>
   </div>
 </template>

@@ -54,8 +54,10 @@ function focusFirstError() { if (errors.value.title?.length) titleElement.value?
 // 新增只接受空 data 的 201；成功固定前往我的文章第一頁，不猜資源 ID。
 async function submit() {
   if (pending.value || uncertain.value || site.leaving.value || !site.account.value || !site.token.value || ownerId.value !== null && ownerId.value !== site.account.value.id) return
+  // 草稿先依共同文字規則驗證，失敗保留原文並將摘要移到焦點。
   const checked = validateContent({ title: title.value, body: body.value })
   if (Object.keys(checked).length) { errors.value = checked; message.value = '欄位資料不正確，請確認後再送出'; await nextTick(); summaryElement.value?.focus(); return }
+  // 固定本次作者、token 與後端；草稿在暫時失權時仍由原作者持有。
   const request = new AbortController()
   controller = request
   const sentToken = site.token.value
@@ -79,7 +81,9 @@ async function submit() {
       }
       return
     }
+    // 新增成功只有空 data，不猜新 ID；固定回我的文章第一頁由伺服器重讀。
     if (emptySuccess(response.status, response.body, 201)) { site.dirty.value = false; window.location.assign('/nuxt/me/articles?published=1'); return }
+    // 明確拒絕保留草稿；5xx 或不完整回應則鎖住再次提交並提供查證入口。
     const failure = apiFailure(response.status, response.body, ['title', 'body'])
     if (response.status === 401 && failure.code === 'E0002' || response.status === 403 && failure.code === 'E0102') site.forget(failure.message)
     if (response.status >= 500 || !failure.code) uncertain.value = true
@@ -87,8 +91,10 @@ async function submit() {
     message.value = uncertain.value ? '發表結果尚未確認。請先到我的文章查證，再決定是否重新送出。' : failure.message
     logId.value = failure.logId
     if (response.status === 422) { await nextTick(); summaryElement.value?.focus() }
+    // 只有原作者／來源仍相同的在途例外才成為此草稿的未知結果，不自動重送。
   } catch {
     if (!request.signal.aborted && !site.leaving.value && sentBackend === site.backend.value && ownerId.value === sentOwner && (!site.account.value || site.account.value.id === sentOwner)) { uncertain.value = true; message.value = '發表結果尚未確認。請先到我的文章查證，再決定是否重新送出。' }
+  // 舊請求完成只可清自己的等待狀態，不得清掉新一次提交的控制器。
   } finally { if (controller === request) { controller = null; pending.value = false } }
 }
 
@@ -101,18 +107,70 @@ function restored() { if (!uncertain.value) message.value = '已恢復同帳號�
 
 <template>
   <main class="reading-page author-page">
-    <a class="back-link" href="/nuxt/">← 返回文章列表</a><div class="author-heading"><div><p class="section-label">會員發表</p><h1>發表文章</h1></div></div>
-    <p v-if="!site.ready.value" class="state-block" role="status">正在確認登入狀態…</p>
-    <div v-else-if="!site.account.value && ownerId === null" class="state-block"><p>請先登入後發表文章。</p><a :href="loginHref(route.path)">前往登入</a></div>
+    <a class="back-link"
+      href="/nuxt/">← 返回文章列表</a>
+    <div class="author-heading">
+      <div>
+        <p class="section-label">會員發表</p>
+        <h1>發表文章</h1>
+      </div>
+    </div>
+    <p v-if="!site.ready.value"
+      class="state-block"
+      role="status">正在確認登入狀態…</p>
+    <div v-else-if="!site.account.value && ownerId === null"
+      class="state-block">
+      <p>請先登入後發表文章。</p>
+      <a :href="loginHref(route.path)">前往登入</a>
+    </div>
     <template v-else>
-      <ReauthForm v-if="!site.account.value" :owner-id="ownerId" @restored="restored" @different="clearDraft" />
+      <ReauthForm v-if="!site.account.value"
+        :owner-id="ownerId"
+        @restored="restored"
+        @different="clearDraft" />
       <p class="field-hint">文章以純文字發表，換行會保留；公開來源由目前後端記錄。</p>
-      <form class="editor-form" novalidate @submit.prevent="submit">
-        <p v-if="message" ref="summaryElement" class="form-error" tabindex="-1" role="alert">{{ message }}<small v-if="logId">log_id：{{ logId }}</small><button v-if="errors.title?.length || errors.body?.length" type="button" class="inline-button" @click="focusFirstError">前往第一個錯誤欄位</button></p>
-        <div v-if="uncertain" class="state-actions"><a href="/nuxt/me/articles">查看我的文章</a><button type="button" class="inline-button" @click="checkedResult">我已查證結果</button></div>
-        <label for="new-title">標題</label><input id="new-title" ref="titleElement" v-model="title" :aria-invalid="Boolean(errors.title)" :aria-describedby="errors.title ? 'new-title-error' : undefined" :disabled="pending || !site.account.value"><small v-if="errors.title" id="new-title-error" class="field-error">{{ errors.title.join('；') }}</small>
-        <label for="new-body">內文</label><textarea id="new-body" ref="bodyElement" v-model="body" rows="14" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'new-body-error' : undefined" :disabled="pending || !site.account.value" /><small v-if="errors.body" id="new-body-error" class="field-error">{{ errors.body.join('；') }}</small>
-        <button class="primary-button" type="submit" :disabled="pending || uncertain || !site.account.value">{{ pending ? '發表中…' : '發表文章' }}</button>
+      <form class="editor-form"
+        novalidate
+        @submit.prevent="submit">
+        <p v-if="message"
+          ref="summaryElement"
+          class="form-error"
+          tabindex="-1"
+          role="alert">{{ message }}<small v-if="logId">log_id：{{ logId }}</small><button v-if="errors.title?.length || errors.body?.length"
+            type="button"
+            class="inline-button"
+            @click="focusFirstError">前往第一個錯誤欄位</button></p>
+        <div v-if="uncertain"
+          class="state-actions">
+          <a href="/nuxt/me/articles">查看我的文章</a>
+          <button type="button"
+            class="inline-button"
+            @click="checkedResult">我已查證結果</button>
+        </div>
+        <label for="new-title">標題</label>
+        <input id="new-title"
+          ref="titleElement"
+          v-model="title"
+          :aria-invalid="Boolean(errors.title)"
+          :aria-describedby="errors.title ? 'new-title-error' : undefined"
+          :disabled="pending || !site.account.value">
+        <small v-if="errors.title"
+          id="new-title-error"
+          class="field-error">{{ errors.title.join('；') }}</small>
+        <label for="new-body">內文</label>
+        <textarea id="new-body"
+          ref="bodyElement"
+          v-model="body"
+          rows="14"
+          :aria-invalid="Boolean(errors.body)"
+          :aria-describedby="errors.body ? 'new-body-error' : undefined"
+          :disabled="pending || !site.account.value" />
+        <small v-if="errors.body"
+          id="new-body-error"
+          class="field-error">{{ errors.body.join('；') }}</small>
+        <button class="primary-button"
+          type="submit"
+          :disabled="pending || uncertain || !site.account.value">{{ pending ? '發表中…' : '發表文章' }}</button>
       </form>
     </template>
   </main>

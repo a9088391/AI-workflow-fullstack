@@ -1,11 +1,14 @@
 import { normalizeEmail, validEmail } from './contracts.js'
 
+// 只排除 API10 固定空白碼點；FEFF 與 U+200B 不在集合內，仍是可用暱稱。
+const blankNickname = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/u
+
 // 管理員只讀取一般會員完整欄位，避免把不完整的權限資料顯示為可操作帳號。
 export function isMember(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Number.isSafeInteger(value.id) && value.id > 0
     && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
-    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30 && value.nickname.trim().length > 0 && !value.nickname.includes('\0')
+    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30 && !blankNickname.test(value.nickname) && !value.nickname.includes('\0')
     && value.role === 'member' && (value.status === 'active' || value.status === 'disabled')
     && typeof value.created_at === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value.created_at)
 }
@@ -32,6 +35,7 @@ const settingLimits = { window_minutes: 60, failure_threshold: 100, lock_seconds
 export function validLockoutSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).length !== 4 || typeof value.enabled !== 'boolean') return false
+  // 數值逐欄檢查既定範圍；關閉狀態也須完整提供，以免重新啟用時缺值。
   for (const [name, maximum] of Object.entries(settingLimits)) {
     if (!Number.isInteger(value[name]) || value[name] < 1 || value[name] > maximum) return false
   }
@@ -47,6 +51,7 @@ export function readLockoutSettings(status, body) {
 export function validateLockoutSettings(value) {
   const errors = {}
   if (typeof value.enabled !== 'boolean') errors.enabled = ['請選擇是否啟用。']
+  // 保留各欄錯誤給可聚焦摘要，不把 number input 的空字串轉成合法數字。
   for (const [name, maximum] of Object.entries(settingLimits)) {
     if (!Number.isInteger(value[name]) || value[name] < 1 || value[name] > maximum) errors[name] = [`請輸入 1 到 ${maximum} 的整數。`]
   }

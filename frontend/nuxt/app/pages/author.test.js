@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { runInNewContext } from 'node:vm'
-import { parse } from '@vue/compiler-sfc'
 import * as vue from 'vue'
 import * as contracts from '../utils/contracts.js'
+import { loadScriptSetup } from '../support/component-fixtures.js'
 
 const account = { id: 2, nickname: '作者', role: 'member' }
 const stamp = '2026-09-24 10:00:00'
@@ -24,7 +23,7 @@ function page(file, kind = 'article') {
     // 伺服器確認憑證失效時撤銷身分，但原頁草稿由頁面自己決定是否保留。
     forget() { this.account.value = null; this.token.value = null },
   }
-  const route = { path: '/nuxt/articles/1', params: { id: kind === 'article' ? '1' : '5' }, query: {} }
+  const route = vue.reactive({ path: '/nuxt/articles/1', params: { id: kind === 'article' ? '1' : '5' }, query: {} })
   const context = { ...vue, ...contracts, AbortController,
     // 本測試不建立瀏覽器 head，只檢查頁面執行流程。
     useHead() {},
@@ -47,16 +46,15 @@ function page(file, kind = 'article') {
     // 本測試無父元件事件接收者，保留元件宣告的 emit 邊界。
     defineEmits() { return ignoreEmit },
   }
-  const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-  const script = parse(source).descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
-  const names = ['title', 'body', 'article', 'comments', 'data', 'comment', 'commentBody', 'ownerId', 'commentOwner', 'message', 'loading', 'draftReady', 'pending', 'writePending', 'visibilityUnknown', 'visibilityError', 'unknown', 'uncertain', 'conflict', 'version', 'parent', 'parentError', 'canEdit', 'canChangeVisibility', 'resource', 'writeError', 'submit', 'submitComment', 'changeVisibility', 'load', 'loadParent', 'adoptLatest', 'checkedResult', 'checkedComment', 'refresh', 'refreshVisibility', 'restored', 'restoredComment']
+  const script = loadScriptSetup(new URL(file, import.meta.url))
+  const names = ['visibilityNeedsReadback', 'needsReadback', 'visibilityConflict', 'visibilityLogId', 'writeLogId', 'errors', 'logId', 'title', 'body', 'article', 'comments', 'data', 'comment', 'commentBody', 'ownerId', 'commentOwner', 'message', 'loading', 'draftReady', 'pending', 'writePending', 'visibilityUnknown', 'visibilityError', 'unknown', 'uncertain', 'conflict', 'version', 'parent', 'parentError', 'canEdit', 'canChangeVisibility', 'resource', 'writeError', 'submit', 'submitComment', 'changeVisibility', 'load', 'loadParent', 'adoptLatest', 'checkedResult', 'checkedComment', 'refresh', 'refreshVisibility', 'restored', 'restoredComment']
   const scope = vue.effectScope()
   // 各頁只暴露自己宣告的狀態，缺少的名稱安全地讀作 undefined。
   function optionalBinding(name) { return `${name}: typeof ${name} === 'undefined' ? undefined : ${name}` }
-  // 在 Vue effectScope 中執行 setup，讓 watcher 可於測試結束時完整清理。
+  // 在 Vue effectScope 中執行 setup 並取出頁面狀態，讓 watcher 可於測試結束時完整清理。
   function evaluatePage() { return runInNewContext(`${script}\n;({ ${names.map(optionalBinding).join(', ')} })`, context) }
   const state = scope.run(evaluatePage)
-  return { requests, navigations, site, state,
+  return { requests, navigations, site, state, route,
     // 每個測試結束時執行元件原清理並停止 Vue effect。
     close() { lifecycle.unmount?.(); scope.stop() },
   }
@@ -86,8 +84,10 @@ test('editor pending read logout clears loading and same-account read recovers d
   await settle()
   app.state.body.value = '尚未儲存的內文'
   await settle()
+  // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
   app.state.load()
   assert.equal(app.state.loading.value, true)
+  // 取消舊 GET 並結束 loading 才能顯示原頁重登入口；草稿另由 owner 保留。
   app.site.forget()
   await settle()
   assert.equal(app.requests[1].signal.aborted, true)
@@ -97,6 +97,7 @@ test('editor pending read logout clears loading and same-account read recovers d
   app.requests[1].resolve(ok({ ...article, body: '晚到舊內容' }))
   await settle()
   assert.equal(app.state.body.value, '尚未儲存的內文')
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -112,6 +113,7 @@ test('comment detail pending read logout exposes login and reauth loads comment'
   const app = page('./comments/[id]/index.vue', 'comment')
   t.after(app.close)
   assert.equal(app.state.loading.value, true)
+  // 撤下私有留言並結束舊 loading，讓未登入入口可見；重登後須重新授權 GET。
   app.site.forget()
   await settle()
   assert.equal(app.requests[0].signal.aborted, true)
@@ -120,6 +122,7 @@ test('comment detail pending read logout exposes login and reauth loads comment'
   app.requests[0].resolve(ok(comment))
   await settle()
   assert.equal(app.state.comment.value, null)
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -138,20 +141,25 @@ test('new article late publish after logout requires same-account readback befor
   app.state.title.value = '待查證標題'
   app.state.body.value = '待查證內文'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   app.site.forget()
   app.requests[0].resolve(ok({}, 201))
   await settle()
   assert.equal(app.state.uncertain.value, true)
   assert.match(app.state.message.value, /發表結果尚未確認/)
   assert.equal(app.navigations.length, 0)
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
   app.state.restored()
   assert.match(app.state.message.value, /發表結果尚未確認/)
   app.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(app.requests.length, 1)
+  // 人工確認查證才解除這次未知門禁；下一個寫入必須由另一個明確提交觸發。
   app.state.checkedResult()
   app.state.submit()
   assert.equal(app.requests.length, 2)
@@ -164,7 +172,9 @@ test('different account rejects late old article publish state', async (t) => {
   app.state.title.value = '舊帳號標題'
   app.state.body.value = '舊帳號內文'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
   app.site.account.value = { ...account, id: 3 }
   app.site.token.value = 'other-jwt'
   await settle()
@@ -182,7 +192,9 @@ test('backend switch discards pending old article publish without carrying uncer
   app.state.title.value = '舊後端標題'
   app.state.body.value = '舊後端內文'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
+  // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
   app.site.backend.value = contracts.BACKENDS.symfony
   await settle()
   assert.equal(app.requests[0].signal.aborted, true)
@@ -203,8 +215,10 @@ test('article comment late publish after logout stays uncertain until manual che
   await settle()
   app.state.commentBody.value = '待查證留言'
   await settle()
+  // 從正式留言提交入口建立在途 POST，後續失敗不得被當成未送出而自動重建。
   app.state.submitComment()
   assert.equal(app.requests[2].path, '/api/articles/1/comments')
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   app.site.forget()
   await settle()
   app.requests[2].resolve(ok({}, 201))
@@ -213,6 +227,7 @@ test('article comment late publish after logout stays uncertain until manual che
   assert.match(app.state.writeError.value, /留言結果尚未確認/)
   assert.equal(app.state.commentBody.value, '待查證留言')
   assert.equal(app.navigations.length, 0)
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -225,7 +240,9 @@ test('article comment late publish after logout stays uncertain until manual che
   app.requests.at(-1).resolve(ok({ list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }))
   await settle()
   app.state.submitComment()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'POST'), 1)
+  // 人工確認查證才解除這次未知門禁；下一個寫入必須由另一個明確提交觸發。
   app.state.checkedComment()
   app.state.submitComment()
   assert.equal(countMethod(app.requests, 'POST'), 2)
@@ -241,12 +258,14 @@ test('known comment POST 401 keeps draft without unknown-result guard', async (t
   await settle()
   app.state.commentBody.value = '401 留言草稿'
   await settle()
+  // 從正式留言提交入口建立在途 POST，後續失敗不得被當成未送出而自動重建。
   app.state.submitComment()
   app.requests[2].resolve(fail(401, 'E0002'))
   await settle()
   assert.equal(app.state.uncertain.value, false)
   assert.equal(app.state.commentBody.value, '401 留言草稿')
   assert.equal(app.site.account.value, null)
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'POST'), 1)
 })
 
@@ -264,11 +283,14 @@ test('late article and comment POST auth rejection preserves drafts and fresh lo
   newPage.state.body.value = '舊請求內文'
   articlePage.state.commentBody.value = '舊請求留言'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   newPage.state.submit()
   articlePage.state.submitComment()
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   newPage.site.forget()
   articlePage.site.forget()
   await settle()
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   newPage.site.account.value = account
   newPage.site.token.value = 'fresh-jwt'
   articlePage.site.account.value = account
@@ -289,6 +311,7 @@ test('late article and comment POST auth rejection preserves drafts and fresh lo
   assert.deepEqual(articlePage.navigations, [])
   // 舊 POST 已確定未成功，新文章由目前登入者自行按下送出才有第二次請求。
   newPage.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(newPage.requests, 'POST'), 2)
   assert.equal(newPage.requests[1].token, 'fresh-jwt')
 })
@@ -301,8 +324,10 @@ test('editor late update after logout preserves draft and blocks resubmit until 
   await settle()
   app.state.body.value = '新的內文'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
   assert.equal(app.requests[1].method, 'PUT')
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   app.site.forget()
   await settle()
   app.requests[1].resolve(ok())
@@ -311,13 +336,16 @@ test('editor late update after logout preserves draft and blocks resubmit until 
   assert.match(app.state.writeError.value, /修改結果尚未確認/)
   assert.equal(app.state.body.value, '新的內文')
   assert.deepEqual(app.navigations, [])
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
   app.requests[2].resolve(ok(article))
   await settle()
   app.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'PUT'), 1)
+  // 人工確認查證才解除這次未知門禁；下一個寫入必須由另一個明確提交觸發。
   app.state.checkedResult()
   app.state.submit()
   assert.equal(countMethod(app.requests, 'PUT'), 2)
@@ -331,12 +359,14 @@ test('known editor PUT 401 keeps draft without unknown-result guard', async (t) 
   await settle()
   app.state.body.value = '401 編修草稿'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
   app.requests[1].resolve(fail(401, 'E0002'))
   await settle()
   assert.equal(app.state.uncertain.value, false)
   assert.equal(app.state.body.value, '401 編修草稿')
   assert.equal(app.site.account.value, null)
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'PUT'), 1)
 })
 
@@ -348,9 +378,12 @@ test('late editor PUT 401 keeps draft and does not revoke fresh token', async (t
   await settle()
   app.state.body.value = '待重新送出的內文'
   await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   app.site.forget()
   await settle()
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -365,6 +398,7 @@ test('late editor PUT 401 keeps draft and does not revoke fresh token', async (t
   app.requests[2].resolve(ok(article))
   await settle()
   app.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'PUT'), 2)
   assert.equal(app.requests[3].token, 'fresh-jwt')
 })
@@ -377,14 +411,17 @@ test('article visibility late update after logout needs readback before another 
   await settle()
   app.requests[1].resolve(ok({ list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }))
   await settle()
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   app.state.changeVisibility()
   assert.equal(app.requests[2].path, '/api/articles/1/visibility')
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   app.site.forget()
   await settle()
   app.requests[2].resolve(ok())
   await settle()
   assert.equal(app.state.visibilityUnknown.value, true)
   assert.match(app.state.visibilityError.value, /結果尚未確認/)
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -393,6 +430,7 @@ test('article visibility late update after logout needs readback before another 
   app.requests.at(-1).resolve(ok({ list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }))
   await settle()
   app.state.changeVisibility()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'PUT'), 1)
 })
 
@@ -404,14 +442,17 @@ test('comment visibility late update after logout needs readback before another 
   await settle()
   app.requests[1].resolve(ok(article))
   await settle()
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   app.state.changeVisibility()
   assert.equal(app.requests[2].path, '/api/comments/5/visibility')
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   app.site.forget()
   await settle()
   app.requests[2].resolve(ok())
   await settle()
   assert.equal(app.state.unknown.value, true)
   assert.match(app.state.writeError.value, /結果尚未確認/)
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -420,6 +461,7 @@ test('comment visibility late update after logout needs readback before another 
   app.requests.at(-1).resolve(ok(article))
   await settle()
   app.state.changeVisibility()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(app.requests, 'PUT'), 1)
 })
 
@@ -435,8 +477,10 @@ test('different account does not inherit old visibility uncertainty', async (t) 
   articlePage.requests[1].resolve(ok({ list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }))
   commentPage.requests[1].resolve(ok(article))
   await settle()
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   articlePage.state.changeVisibility()
   commentPage.state.changeVisibility()
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   articlePage.site.forget()
   commentPage.site.forget()
   await settle()
@@ -445,6 +489,7 @@ test('different account does not inherit old visibility uncertainty', async (t) 
   await settle()
   assert.equal(articlePage.state.visibilityUnknown.value, true)
   assert.equal(commentPage.state.unknown.value, true)
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
   articlePage.site.account.value = { ...account, id: 3 }
   articlePage.site.token.value = 'other-jwt'
   commentPage.site.account.value = { ...account, id: 3 }
@@ -468,6 +513,7 @@ test('known visibility PUT 401 does not claim an unknown update', async (t) => {
   articlePage.requests[1].resolve(ok({ list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }))
   commentPage.requests[1].resolve(ok(article))
   await settle()
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   articlePage.state.changeVisibility()
   commentPage.state.changeVisibility()
   articlePage.requests[2].resolve(fail(401, 'E0002'))
@@ -491,11 +537,14 @@ test('late visibility PUT auth rejection does not require unknown-result readbac
   articlePage.requests[1].resolve(ok({ list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }))
   commentPage.requests[1].resolve(ok(article))
   await settle()
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   articlePage.state.changeVisibility()
   commentPage.state.changeVisibility()
+  // 先撤銷頁面信任再完成原請求，區分暫時失權、明確拒絕與可能已送達的結果。
   articlePage.site.forget()
   commentPage.site.forget()
   await settle()
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   articlePage.site.account.value = account
   articlePage.site.token.value = 'fresh-jwt'
   commentPage.site.account.value = account
@@ -522,6 +571,7 @@ test('late visibility PUT auth rejection does not require unknown-result readbac
   assert.equal(articlePage.state.article.value?.id, 1)
   assert.equal(articlePage.state.canChangeVisibility.value, true)
   articlePage.state.changeVisibility()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(countMethod(articlePage.requests, 'PUT'), 2)
   assert.equal(articlePage.requests.at(-1).token, 'fresh-jwt')
 })
@@ -552,6 +602,7 @@ test('new article preserves same-account draft on 401 and never auto-resubmits',
   app.state.body.value = '草稿內文'
   await settle()
   assert.equal(app.site.dirty.value, true)
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
   assert.equal(app.requests[0].path, '/api/articles')
   app.requests[0].resolve(fail(401, 'E0002'))
@@ -559,7 +610,9 @@ test('new article preserves same-account draft on 401 and never auto-resubmits',
   assert.equal(app.state.body.value, '草稿內文')
   assert.equal(app.state.uncertain.value, false)
   assert.equal(app.site.account.value, null)
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(app.requests.length, 1)
+  // 恢復原作者身分後重新授權讀取；若原頁有草稿，換發 token 也不能自動重送文字。
   app.site.account.value = account
   app.site.token.value = 'fresh-jwt'
   await settle()
@@ -580,12 +633,15 @@ test('new article unknown write needs check and different account clears draft',
   app.state.body.value = '內文'
   await settle()
   assert.equal(app.site.dirty.value, true)
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
   app.requests[0].reject(new Error('connection lost'))
   await settle()
   assert.equal(app.state.uncertain.value, true)
   app.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(app.requests.length, 1)
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
   app.site.account.value = { ...account, id: 3 }
   await settle()
   assert.equal(app.state.title.value, '')
@@ -599,6 +655,7 @@ test('backend restore only reports discarded article and comment text when text 
   const detailPage = page('./articles/[id]/index.vue')
   t.after(articlePage.close)
   t.after(detailPage.close)
+  // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
   articlePage.site.backend.value = contracts.BACKENDS.symfony
   detailPage.site.backend.value = contracts.BACKENDS.symfony
   await settle()
@@ -627,6 +684,7 @@ test('different account clears existing author text without warning for empty fo
   filled.state.body.value = '舊帳號內文'
   filledComment.state.commentBody.value = '舊帳號留言'
   await settle()
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
   filled.site.account.value = { ...account, id: 3 }
   filledComment.site.account.value = { ...account, id: 3 }
   empty.site.account.value = { ...account, id: 3 }
@@ -651,8 +709,11 @@ test('comment editor retries parent independently and compares 409 without overw
   assert.equal(app.state.parent.value, null)
   assert.equal(app.state.canEdit.value, false)
   app.state.body.value = '保留我的文字'
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(app.requests.length, 2)
+  // 父文章獨立查證，不能因先前不可讀就永久禁止作者修改留言。
   app.state.loadParent()
   app.requests[2].resolve(ok(article))
   await settle()
@@ -671,6 +732,7 @@ test('comment editor retries parent independently and compares 409 without overw
   assert.equal(app.state.body.value, '保留我的文字')
   assert.equal(app.state.conflict.value, true)
   assert.equal(app.state.version.value, 1)
+  // 採用最新版本是使用者的明確動作，自己的文字仍須保留且不能隨之自動 PUT。
   app.state.adoptLatest()
   assert.equal(app.state.version.value, 2)
   assert.equal(app.requests.length, 6)
@@ -687,6 +749,7 @@ test('comment detail keeps readable comment and visibility when parent is hidden
   assert.equal(app.state.comment?.value?.body, '舊留言')
   assert.equal(app.state.parent.value, null)
   assert.equal(app.state.canChangeVisibility.value, true)
+  // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
   app.state.changeVisibility()
   assert.equal(app.requests[2].path, '/api/comments/5/visibility')
   assert.equal(app.requests[2].body.visibility, 'hidden')
@@ -694,6 +757,7 @@ test('comment detail keeps readable comment and visibility when parent is hidden
   await settle()
   assert.equal(app.state.conflict.value, true)
   app.state.changeVisibility()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(app.requests.length, 3)
 })
 
@@ -701,6 +765,7 @@ test('comment detail keeps readable comment and visibility when parent is hidden
 test('admin cannot edit another author comment body', async (t) => {
   const app = page('../components/ContentEditor.vue', 'comment')
   t.after(app.close)
+  // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
   app.site.account.value = { ...account, id: 9, role: 'admin' }
   await settle()
   app.requests.at(-1).resolve(ok(comment))
@@ -709,7 +774,9 @@ test('admin cannot edit another author comment body', async (t) => {
   await settle()
   assert.equal(app.state.canEdit.value, false)
   const count = app.requests.length
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
   app.state.submit()
+  // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
   assert.equal(app.requests.length, count)
 })
 
@@ -733,9 +800,11 @@ test('article comment creation uses known article path and ignores late frontend
   await settle()
   app.state.commentBody.value = '新留言'
   await settle()
+  // 從正式留言提交入口建立在途 POST，後續失敗不得被當成未送出而自動重建。
   app.state.submitComment()
   assert.equal(app.requests[2].path, '/api/articles/1/comments')
   assert.equal(app.requests[2].body.body, '新留言')
+  // 離頁旗標必須同步作廢來源回應，不能等 token 改變才阻擋舊頁導覽。
   app.site.leaving.value = true
   assert.equal(app.requests[2].signal.aborted, true)
   app.requests[2].resolve(ok({}, 201))
@@ -753,6 +822,7 @@ test('independent visibility success does not clear unknown comment result', asy
   await settle()
   app.state.commentBody.value = '待查證留言'
   await settle()
+  // 從正式留言提交入口建立在途 POST，後續失敗不得被當成未送出而自動重建。
   app.state.submitComment()
   app.requests[2].reject(new Error('connection lost'))
   await settle()
@@ -768,3 +838,147 @@ test('independent visibility success does not clear unknown comment result', asy
   assert.equal(app.state.uncertain.value, true)
   assert.equal(app.state.commentBody.value, '待查證留言')
 })
+
+// 可見性查證只有同一資源的有效 GET 才解鎖；失敗不能抹掉原寫入未知與追蹤碼。
+for (const kind of ['article', 'comment']) {
+  test(`${kind} visibility keeps unknown and write trace through failed readback`,
+    // 依序驗證 pending、500、404 與成功讀回，避免只檢查單一旗標。
+    async (t) => {
+      const app = page(kind === 'article' ? './articles/[id]/index.vue' : './comments/[id]/index.vue', kind)
+      t.after(app.close)
+      const content = kind === 'article' ? article : comment
+      const list = { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } }
+      app.requests[0].resolve(ok(content))
+      await settle()
+      app.requests[1].resolve(ok(kind === 'article' ? list : article))
+      await settle()
+      // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
+      const writing = app.state.changeVisibility()
+      app.requests[2].resolve(fail(500, 'E9999'))
+      await writing
+      const unknown = kind === 'article' ? app.state.visibilityUnknown : app.state.unknown
+      const trace = kind === 'article' ? app.state.visibilityLogId : app.state.writeLogId
+      const reread = kind === 'article' ? app.state.refreshVisibility : app.state.refresh
+      for (const status of [500, 404]) {
+        const reading = reread()
+        assert.equal(unknown.value, true)
+        app.requests.at(-1).resolve({ ...fail(status, status === 500 ? 'E9999' : 'E0004'), body: { ...fail(status, status === 500 ? 'E9999' : 'E0004').body, log_id: 'read-trace' } })
+        await reading
+        assert.equal(unknown.value, true)
+        assert.equal(trace.value, 'test-log')
+        app.state.changeVisibility()
+        // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
+        assert.equal(countMethod(app.requests, 'PUT'), 1)
+      }
+      const reading = reread()
+      app.requests.at(-1).resolve(ok(content))
+      await settle()
+      app.requests.at(-1).resolve(ok(kind === 'article' ? list : article))
+      await reading
+      assert.equal(unknown.value, true, 'readback cannot prove which request changed the current value')
+      app.state.changeVisibility()
+      assert.equal(countMethod(app.requests, 'PUT'), 2, 'only an explicit action after valid readback may write')
+      assert.equal(trace.value, '', 'new attempt must reset only its own previous trace')
+    })
+}
+
+// GET 不能洗掉編修 PUT 的追蹤碼；失敗時草稿與未知結果仍由原編輯器保有。
+test('editor failed readback preserves unknown draft and independent write trace', async (t) => {
+  const app = page('../components/ContentEditor.vue')
+  t.after(app.close)
+  app.requests[0].resolve(ok(article))
+  await settle()
+  app.state.body.value = '待查證編修'
+  await settle()
+  // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
+  const writing = app.state.submit()
+  app.requests[1].resolve(fail(500, 'E9999'))
+  await writing
+  for (const status of [500, 404]) {
+    // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
+    const reading = app.state.load()
+    app.requests.at(-1).resolve({ ...fail(status, status === 500 ? 'E9999' : 'E0004'), body: { ...fail(status, status === 500 ? 'E9999' : 'E0004').body, log_id: 'read-trace' } })
+    await reading
+    assert.equal(app.state.uncertain.value, true)
+    assert.equal(app.state.body.value, '待查證編修')
+    assert.equal(app.state.writeLogId.value, 'test-log')
+    app.state.submit()
+    // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
+    assert.equal(countMethod(app.requests, 'PUT'), 1)
+  }
+})
+
+// 409 的後續 GET 等待時換來源，舊 continuation 不可把錯誤回填新表單。
+for (const change of ['backend', 'account', 'id']) {
+  test(`editor conflict readback ignores old feedback after ${change} change`,
+    // 三種已核准上下文變動都作廢原 PUT 的錯誤與版本，不建立新的共用狀態。
+    async (t) => {
+      const app = page('../components/ContentEditor.vue')
+      t.after(app.close)
+      app.requests[0].resolve(ok(article))
+      await settle()
+      app.state.body.value = '舊帳號修改'
+      await settle()
+      // 先送出正式作者表單，再控制回應時機，確保測到的是已送出的寫入而非單純草稿。
+      const writing = app.state.submit()
+      app.requests[1].resolve(fail(409, 'E0201'))
+      await settle()
+      assert.equal(app.requests[2].path, '/api/articles/1')
+      // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
+      if (change === 'backend') app.site.backend.value = contracts.BACKENDS.symfony
+      // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
+      else if (change === 'account') { app.site.account.value = { ...account, id: 3 }; app.site.token.value = 'new-jwt' }
+      else app.route.params.id = '9'
+      await settle()
+      app.requests[2].resolve(ok({ ...article, version: 2 }))
+      await writing
+      assert.equal(app.state.writeError.value, '')
+      assert.equal(app.state.writeLogId.value, '')
+      assert.deepEqual(Object.keys(app.state.errors.value), [])
+      assert.equal(app.state.conflict.value, false)
+      assert.equal(app.navigations.length, 0)
+    })
+}
+
+// 查證 GET 等待時更換上下文，原 GET 不能替新帳號、來源或 ID 解鎖或留下追蹤碼。
+for (const kind of ['article', 'comment']) {
+  for (const change of ['backend', 'account', 'id', 'frontend']) {
+    test(`${kind} visibility readback isolates ${change} changes`,
+      // 先建立真實未知 PUT，再於人工 GET 等待期間觸發既有清理路徑。
+      async (t) => {
+        const app = page(kind === 'article' ? './articles/[id]/index.vue' : './comments/[id]/index.vue', kind)
+        t.after(app.close)
+        const content = kind === 'article' ? article : comment
+        app.requests[0].resolve(ok(content))
+        await settle()
+        app.requests[1].resolve(ok(kind === 'article' ? { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } : article))
+        await settle()
+        // 先送出需要查證的狀態寫入，再由可控制回應驗證重讀與再次人工操作的順序。
+        const writing = app.state.changeVisibility()
+        app.requests[2].resolve(fail(500, 'E9999'))
+        await writing
+        // 人工重讀只確認目前伺服器值，不能順便宣告先前寫入成功或清掉另一操作的未知結果。
+        const reading = kind === 'article' ? app.state.refreshVisibility() : app.state.refresh()
+        const oldRead = app.requests.at(-1)
+        // 切換 API 來源使原請求失效；舊來源的資料或未知結果不能變成新來源的狀態。
+        if (change === 'backend') app.site.backend.value = contracts.BACKENDS.symfony
+        // 確認換成另一帳號後才完成舊結果，檢查原作者的文字與回饋不被新帳號繼承。
+        else if (change === 'account') { app.site.account.value = { ...account, id: 3 }; app.site.token.value = 'other-jwt' }
+        else if (change === 'id') app.route.params.id = '9'
+        // 離頁旗標必須同步作廢來源回應，不能等 token 改變才阻擋舊頁導覽。
+        else app.site.leaving.value = true
+        await settle()
+        assert.equal(oldRead.signal.aborted, true)
+        oldRead.resolve(ok(content))
+        await reading
+        const feedback = kind === 'article' ? app.state.visibilityError : app.state.writeError
+        const trace = kind === 'article' ? app.state.visibilityLogId : app.state.writeLogId
+        if (change !== 'frontend') {
+          assert.equal(feedback.value, '')
+          assert.equal(trace.value, '')
+        } else assert.doesNotMatch(feedback.value, /狀態已重讀/)
+        // 核對實際請求數，避免狀態旗標看似正確卻已偷偷重送或追加讀寫。
+        assert.equal(countMethod(app.requests, 'PUT'), 1)
+      })
+  }
+}

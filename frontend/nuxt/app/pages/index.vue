@@ -38,21 +38,25 @@ async function load(_values, _previous, onCleanup = noCleanup) {
   )
   const currentPage = requestedPage(route.query.page)
   page.value = currentPage
+  // 新一輪讀取先移除舊頁內容；失敗另外顯示錯誤，不能冒充空清單。
   data.value = null
   loading.value = true
   error.value = ''
   logId.value = ''
+  // 使用原頁碼讀取並驗證完整回應，合法超頁保留 API 回傳的 total。
   try {
     const response = await apiRequest(`/api/articles?page=${currentPage}&per_page=20`, { token: site.token.value, signal: request.signal })
     if (request.signal.aborted) return
     const list = readList(response.status, response.body, currentPage)
     if (list) data.value = list
+      // 只有明確失效／停用才撤銷身分，其他失敗留在此列表供手動重讀。
     else {
       const failure = apiFailure(response.status, response.body)
       if (response.status === 401 && failure.code === 'E0002' || response.status === 403 && failure.code === 'E0102') site.forget(failure.message)
       error.value = failure.message
       logId.value = failure.logId
     }
+    // 連線失敗不清 JWT 或改選來源；取消的舊請求也不能寫回錯誤。
   } catch {
     if (!request.signal.aborted) error.value = '無法讀取文章；請檢查連線後手動重試。'
   } finally { if (!request.signal.aborted) loading.value = false }
@@ -83,25 +87,58 @@ onBeforeUnmount(
 
 <template>
   <main class="index-page">
-    <div class="index-head"><div><p class="section-label">文字與日常</p><h1>所有文章</h1></div><p>每篇文字都有它自己的節奏。<br>選一篇，慢慢讀。</p></div>
-    <div class="section-rule"><span>文章索引</span><span v-if="data">共 {{ data.pagination.total }} 篇</span></div>
-    <p v-if="loading" class="state-block" role="status">正在載入文章…</p>
-    <div v-else-if="error" class="state-block" role="alert"><p>{{ error }}</p><small v-if="logId">log_id：{{ logId }}</small><button type="button" class="inline-button" @click="load">重新讀取</button></div>
-    <div v-else-if="data && data.list.length" class="article-grid">
-      <article v-for="(article, index) in data.list" :key="article.id" class="article-teaser">
+    <div class="index-head">
+      <div>
+        <p class="section-label">文字與日常</p>
+        <h1>所有文章</h1>
+      </div>
+      <p>每篇文字都有它自己的節奏。<br>選一篇，慢慢讀。</p>
+    </div>
+    <div class="section-rule">
+      <span>文章索引</span>
+      <span v-if="data">共 {{ data.pagination.total }} 篇</span>
+    </div>
+    <p v-if="loading"
+      class="state-block"
+      role="status">正在載入文章…</p>
+    <div v-else-if="error"
+      class="state-block"
+      role="alert">
+      <p>{{ error }}</p>
+      <small v-if="logId">log_id：{{ logId }}</small>
+      <button type="button"
+        class="inline-button"
+        @click="load">重新讀取</button>
+    </div>
+    <div v-else-if="data && data.list.length"
+      class="article-grid">
+      <article v-for="(article, index) in data.list"
+        :key="article.id"
+        class="article-teaser">
         <div class="teaser-number">{{ String((page - 1) * 20 + index + 1).padStart(2, '0') }}</div>
-        <div class="teaser-copy"><p class="teaser-meta">{{ article.created_at }}　/　{{ backendName(article.created_backend) }}</p><h2><a :href="`/nuxt/articles/${article.id}`">{{ article.title }}</a></h2><p class="teaser-excerpt">{{ preview(article.body) }}</p><p class="teaser-author">文字／{{ article.author.nickname }}</p></div>
+        <div class="teaser-copy">
+          <p class="teaser-meta">{{ article.created_at }}　/　{{ backendName(article.created_backend) }}</p>
+          <h2><a :href="`/nuxt/articles/${article.id}`">{{ article.title }}</a></h2>
+          <p class="teaser-excerpt">{{ preview(article.body) }}</p>
+          <p class="teaser-author">文字／{{ article.author.nickname }}</p>
+        </div>
       </article>
     </div>
     <!-- total_pages=0 也可能是第 1 頁空列表；只有原頁碼大於 1 才算超頁。 -->
-    <div v-else-if="data" class="state-block">
+    <div v-else-if="data"
+      class="state-block">
       <p>{{ page > 1 && page > data.pagination.total_pages ? data.pagination.total === 0 ? '此頁沒有文章。' : '此頁沒有文章，前面的頁面仍有內容。' : '目前還沒有公開文章。' }}</p>
-      <a v-if="page > 1" href="/nuxt/">回第一頁</a>
+      <a v-if="page > 1"
+        href="/nuxt/">回第一頁</a>
     </div>
-    <nav v-if="data && (data.pagination.total_pages > 1 || page > 1)" class="pagination" aria-label="文章分頁">
-      <a v-if="page > 1" :href="pageHref(page - 1)">上一頁</a>
+    <nav v-if="data && (data.pagination.total_pages > 1 || page > 1)"
+      class="pagination"
+      aria-label="文章分頁">
+      <a v-if="page > 1"
+        :href="pageHref(page - 1)">上一頁</a>
       <span>第 {{ page }} 頁／共 {{ data.pagination.total_pages }} 頁</span>
-      <a v-if="page < data.pagination.total_pages" :href="pageHref(page + 1)">下一頁</a>
+      <a v-if="page < data.pagination.total_pages"
+        :href="pageHref(page + 1)">下一頁</a>
     </nav>
   </main>
 </template>

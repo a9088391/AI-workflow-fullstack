@@ -119,6 +119,7 @@ export function readSession(storage) {
   try {
     const raw = storage.getItem(SESSION_KEY)
     if (!raw) return null
+    // 儲存內容只當待驗證資料，來源、欄位與型態吻合才交回 useSite 做 /me。
     const value = JSON.parse(raw)
     const selected = storage.getItem(BACKEND_KEY)
     // 損壞的後端選擇不可退回 Laravel 後順勢授權舊憑證。
@@ -168,10 +169,12 @@ export function validEmail(value) {
 
 // 在送出前回饋已知格式錯誤；後端仍負責最終驗證與唯一性。
 export function validateCredentials(input, registration = false) {
+  // Email 只做核准的 ASCII 正規化；密碼與暱稱維持原輸入，不偷偷修剪。
   const email = normalizeEmail(input.email)
   const errors = {}
   if (!validEmail(email)) errors.email = ['請輸入符合格式的 Email']
   if (!/^[A-Za-z0-9]{4,16}$/.test(input.password)) errors.password = ['密碼須為 4–16 碼英文字母或數字']
+  // 暱稱只在註冊時驗證，以碼點和固定空白集合對齊後端資料契約。
   if (registration) {
     const nickname = input.nickname
     if (typeof nickname !== 'string' || [...nickname].length < 1 || [...nickname].length > 30 || blank.test(nickname) || nickname.includes('\0')) errors.nickname = ['暱稱須為 1–30 個字、不可全空白或含不支援字元']
@@ -222,6 +225,7 @@ export function emptySuccess(status, body, expectedStatus) {
 
 // 解析固定錯誤碼與可顯示明細，保留 log_id 供使用者追查。
 export function apiFailure(status, body, fields = []) {
+  // 錯誤碼必須來自失敗 envelope，不能讓不完整成功回應冒充已知拒絕。
   const code = body?.success === false && typeof body.error_code === 'string' ? body.error_code : ''
   const known = { E0001: '欄位資料不正確，請確認後再送出', E0002: '登入已逾期，請重新登入', E0003: '沒有權限使用此功能', E0004: '找不到指定資料或 API', E0101: '帳號或密碼錯誤', E0102: '此帳號已停用，請聯絡系統管理員', E0104: '後台認證設定異常，請聯絡系統管理員', E0105: '登入失敗次數過多，請稍後再試', E0201: '內容已更新，請確認最新內容後再送出', E9999: '系統暫時無法處理，請稍後再試' }
   const errors = {}
@@ -238,6 +242,7 @@ export function apiFailure(status, body, fields = []) {
       else extra.push(...messages)
     }
   }
+  // 已知碼使用共同文案；未對應欄位附在摘要，追蹤碼留給該次操作自己顯示。
   const message = known[code] || (body?.success === false && typeof body.message === 'string' ? body.message : '伺服器回應不完整，請稍後手動重試。')
   return { status, code, message: extra.length ? `${message}：${extra.join('；')}` : message, errors, logId: typeof body?.log_id === 'string' ? body.log_id : '' }
 }
@@ -272,6 +277,7 @@ export function readList(status, body, page, kind = 'article', articleId = null)
   const valid = kind === 'article' ? isArticle : isComment
   if (status !== 200 || body?.success !== true || body.message !== 'OK' || !Array.isArray(data?.list) || !data.list.every(valid)
     || !p || p.page !== page || p.per_page !== 20 || !Number.isSafeInteger(p.total) || p.total < 0 || p.total_pages !== Math.ceil(p.total / 20)) return null
+  // 留言清單還須對應目前文章；有效分頁格式不代表可以混入別篇留言。
   if (articleId !== null && data.list.some(
     // 列表不得包含其他文章的留言。
     (item) => item.article_id !== articleId,
@@ -287,13 +293,16 @@ export function readComment(status, body, id) { return status === 200 && body?.s
 
 // 業務 API 直接呼叫同分頁目前後端，Nuxt 伺服器僅提供頁面外殼。
 export async function apiRequest(path, { method = 'GET', body, token, signal } = {}) {
+  // 只組裝呼叫端明確傳入的 Bearer 與 JSON；是否已授權由各頁／useSite 決定。
   const headers = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = `Bearer ${token}`
   // 瀏覽器可能連 sessionStorage 屬性都拒絕讀取；公開請求仍可退回首次預設。
   let backend = API_BASE
   try { backend = readBackend(globalThis.sessionStorage) } catch { /* 無法取得同源選擇時使用 Laravel。 */ }
+  // 直接呼叫目前後端，不替框架改寫路徑，也不在失敗時自動重送寫入。
   const response = await fetch(`${backend}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal })
+  // 非 JSON 回應保留狀態碼並回 null，讓寫入端判為不完整結果而非假成功。
   let data
   try { data = await response.json() } catch { data = null }
   return { status: response.status, body: data, retryAfter: response.headers.get('Retry-After') }

@@ -9,6 +9,7 @@ import { buildTree, toVueRouter4 } from 'unrouting'
 test('article and comment edit pages resolve beside their detail pages', () => {
   const root = fileURLToPath(new URL('.', import.meta.url))
   const files = []
+  // 使用真實頁面檔建立路由樹，避免只比對手寫路徑而漏掉錯誤父子巢狀。
   for (const relative of readdirSync(root, { recursive: true })) {
     if (relative.endsWith('.vue')) files.push({ path: resolve(root, relative), priority: 0 })
   }
@@ -43,6 +44,7 @@ test('all administration routes resolve to their own Nuxt pages', () => {
     // 只選管理語意路由，保留與公開頁分開的精確對照。
     (route) => route.path.startsWith('/admin/'),
   ).map(
+    // 把 router 解析出的管理路徑交給下方精確清單比對。
     // 檔案路由的 path 是瀏覽器深連結會解析的實際值。
     (route) => route.path,
   ).sort()

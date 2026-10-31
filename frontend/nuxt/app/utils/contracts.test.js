@@ -8,6 +8,7 @@ const article = { id: 101, title: '一篇文章', body: '第一行\n第二行', 
 
 // SvelteKit 接收本票已完成的公開、帳號、作者與管理頁；登入返回仍限合法目標。
 test('SvelteKit target maps public, author, and management routes and rejects unsafe targets', () => {
+  // 先驗證已知語意路徑與原始合法 ID 的正向映射，再區分登入返回與未知路徑。
   for (const [source, target] of [
     ['/nuxt/', '/sveltekit/'], ['/nuxt/register', '/sveltekit/register'],
     ['/nuxt/login', '/sveltekit/login'], ['/nuxt/articles/001', '/sveltekit/articles/001'],
@@ -50,6 +51,7 @@ test('SvelteKit target maps public, author, and management routes and rejects un
 
 // Angular 接收全部語意頁，登入返回保留合法原始 ID。
 test('Angular frontend target maps all routes and rejects unknown or unsafe targets', () => {
+  // 先驗證已知語意路徑與原始合法 ID 的正向映射，再區分登入返回與未知路徑。
   for (const [source, target] of [
     ['/nuxt/', '/angular/'], ['/nuxt/register', '/angular/register'],
     ['/nuxt/login', '/angular/login'], ['/nuxt/articles/001', '/angular/articles/001'],
@@ -96,6 +98,7 @@ test('React frontend targets preserve author and admin routes and reject invalid
 
 // Next.js 接收已完成的公開、帳號、作者與管理頁；登入返回只保留合法目標的原始 ID。
 test('Next.js frontend target maps public, author, and admin routes and rejects unsafe returns', () => {
+  // 先驗證已知語意路徑與原始合法 ID 的正向映射，再區分登入返回與未知路徑。
   for (const [source, target] of [
     ['/nuxt/', '/next/'], ['/nuxt/register', '/next/register'], ['/nuxt/login', '/next/login'],
     ['/nuxt/articles/001', '/next/articles/001'], ['/nuxt/articles/new', '/next/articles/new'],
@@ -161,12 +164,14 @@ test('shared backend selection and token remain bound in both directions', () =>
   saveSession(s, 'same-jwt', '2026-09-24 18:00:00')
   assert.equal(readBackend(s), BACKENDS.symfony)
   assert.deepEqual(readSession(s), { backend: BACKENDS.symfony, accessToken: 'same-jwt', expiresAt: '2026-09-24 18:00:00' })
+  // 切回原預設來源仍必須移除 Symfony token，不能因位址常見就復用錯後端憑證。
   selectBackend(s, BACKENDS.laravel)
   assert.equal(readSession(s), null)
   assert.equal(readBackend(s), BACKENDS.laravel)
   s.setItem(SESSION_KEY, JSON.stringify({ backend: BACKENDS.symfony, accessToken: 'old', expiresAt: '2026-09-24 18:00:00' }))
   assert.equal(readSession(s), null)
   saveSession(s, 'laravel-jwt', '2026-09-24 18:00:00')
+  // 已損壞的來源不應順勢授權舊 token；只有完整新登入才能修復儲存配對。
   s.setItem(BACKEND_KEY, 'broken')
   assert.equal(readSession(s), null)
   saveSession(s, 'new-login', '2026-09-24 18:00:00')
@@ -216,6 +221,7 @@ test('backend switch keeps original pairing when storage removal fails', () => {
     // 刻意拒絕清除 token。
     removeItem() { throw new Error('storage denied') },
   }
+  // 確認切換時的儲存錯誤會傳給呼叫端，讓 UI 能回復原選項。
   assert.throws(() => selectBackend(denied, BACKENDS.symfony), /storage denied/)
   assert.equal(readBackend(s), API_BASE)
   assert.equal(readSession(s).accessToken, 'old-token')
@@ -233,6 +239,7 @@ test('route and credential boundaries', () => {
   assert.equal(positiveUrlInteger('+1'), null)
   assert.equal(positiveUrlInteger('1.0'), null)
   for (const path of ['https://evil.test', '//evil.test', '/nuxt/login', '/nuxt/articles/0', '/nuxt/articles/9007199254740992', '/nuxt/articles/1?x=1']) assert.equal(validReturn(path), false)
+  // Router 不含 /nuxt 基底；登入返回必須補回已知語意頁並保留合法原始 ID。
   const articleReturn = new URL(loginHref('/articles/001'), 'http://localhost:8080').searchParams.get('return_to')
   assert.equal(articleReturn, '/nuxt/articles/001')
   assert.equal(validReturn(articleReturn), true)
@@ -243,6 +250,7 @@ test('route and credential boundaries', () => {
   for (const path of ['/nuxt/admin/members', '/nuxt/admin/members/001', '/nuxt/admin/articles', '/nuxt/admin/comments', '/nuxt/admin/settings/login-lockout']) assert.equal(vueFrontendTarget(path), path.replace('/nuxt/', '/vue/'))
   for (const path of ['/nuxt/admin/members/0', '/nuxt/admin/members/1/edit', '/nuxt/articles/0', '//evil.test']) assert.equal(vueFrontendTarget(path), null)
   assert.equal(new URL(loginHref('/admin/members/001'), 'http://localhost').searchParams.get('return_to'), '/nuxt/admin/members/001')
+  // Email 可做核准正規化，密碼與暱稱則仍須保留各自格式及固定空白邊界。
   assert.deepEqual(validateCredentials({ email: ' Reader@Example.Test ', password: 'abcd' }), { email: 'reader@example.test', errors: {} })
   assert.ok(validateCredentials({ email: 'bad', password: 'a', nickname: '　' }, true).errors.nickname)
 })
@@ -285,10 +293,12 @@ test('API response parsing distinguishes success, validation, and hidden content
   assert.equal(loginData(200, body).access_token, 'jwt')
   assert.equal(loginData(200, { ...body, data: { ...body.data, token_type: 'Basic' } }), null)
   assert.equal(emptySuccess(201, { success: true, message: 'OK', data: {} }, 201), true)
+  // 未對應欄位錯誤也必須進摘要並保留追蹤碼，不能因沒有控制項就丟掉。
   const invalid = apiFailure(422, { success: false, error_code: 'E0001', errors: { email: ['此 Email 已註冊'], unknown: ['其他錯誤'] }, log_id: 'test-log' }, ['email'])
   assert.deepEqual(invalid.errors.email, ['此 Email 已註冊'])
   assert.match(invalid.message, /其他錯誤/)
   assert.equal(invalid.logId, 'test-log')
+  // 完整回應仍須對上目標 ID；合法超頁則保留後端的實際 total。
   assert.equal(readArticle(200, { success: true, message: 'OK', data: article }, 101)?.id, 101)
   assert.equal(readArticle(200, { success: true, message: 'OK', data: article }, 102), null)
   assert.equal(readList(200, { success: true, message: 'OK', data: { list: [], pagination: { page: 3, per_page: 20, total: 21, total_pages: 2 } } }, 3).pagination.total, 21)
@@ -314,6 +324,7 @@ test('API request keeps base path and headers', async (t) => {
     },
   )
   Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: selected })
+  // 從已驗證 token 的私有 GET 開始，再切來源驗證無憑證公開請求的標頭差異。
   const response = await apiRequest('/api/me', { token: 'jwt' })
   assert.equal(request.url, `${API_BASE}/api/me`)
   assert.equal(request.options.headers.Authorization, 'Bearer jwt')

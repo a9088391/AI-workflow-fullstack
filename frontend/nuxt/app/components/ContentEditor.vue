@@ -23,6 +23,7 @@ const uncertain = ref(false)
 const error = ref('')
 const parentError = ref('')
 const writeError = ref('')
+const writeLogId = ref('')
 const logId = ref('')
 const errors = ref({})
 const summaryElement = ref(null)
@@ -73,6 +74,7 @@ async function load(_value, _old, onCleanup = noCleanup) {
   error.value = ''
   logId.value = ''
   parent.value = null
+  // URL 與登入資格先決定能否送 GET；失權先隱藏資源但保留原 owner 的文字。
   if (!id.value) { resource.value = null; error.value = '找不到指定資料或 API'; return }
   if (!site.account.value || !site.token.value) { resource.value = null; return }
   loading.value = true
@@ -88,6 +90,7 @@ async function load(_value, _old, onCleanup = noCleanup) {
       logId.value = failure.logId
       return
     }
+    // 初讀才建立草稿基準；已有文字時僅記錄最新版本供人工比較，不靜默覆寫。
     resource.value = data
     latest.value = data
     if (!draftReady.value) {
@@ -101,6 +104,7 @@ async function load(_value, _old, onCleanup = noCleanup) {
     } else if (data.version !== version.value) conflict.value = true
     // 父文慢或不可讀時仍先呈現已授權的留言與草稿，編修按鈕等父文結果。
     if (!isArticle.value) loadParent(data.article_id)
+    // HTTP 拒絕已在上方清除資源；連線例外只顯示失敗，不猜測伺服器內容。
   } catch {
     if (!request.signal.aborted) error.value = '無法讀取內容；請檢查連線後手動重試。'
   } finally { if (!request.signal.aborted) loading.value = false }
@@ -109,6 +113,7 @@ async function load(_value, _old, onCleanup = noCleanup) {
 // 留言的父文章獨立 GET；404 只代表目前不可讀，不透露標題或原因。
 async function loadParent(articleId = resource.value?.article_id) {
   if (!articleId || site.leaving.value || !site.token.value) return
+  // 父文獨立取消並清除舊資料；失敗不能沿用先前可讀的標題或可編修資格。
   parentController?.abort()
   const request = new AbortController()
   parentController = request
@@ -118,6 +123,7 @@ async function loadParent(articleId = resource.value?.article_id) {
   try {
     const response = await apiRequest(`/api/articles/${articleId}`, { token: site.token.value, signal: request.signal })
     if (request.signal.aborted || site.leaving.value) return
+    // 先驗證目前父文回應；404 只表示不可讀，不能推斷或透露隱藏原因。
     const data = readArticle(response.status, response.body, articleId)
     if (data) parent.value = data
     else {
@@ -125,6 +131,7 @@ async function loadParent(articleId = resource.value?.article_id) {
       if (response.status === 401 && failure.code === 'E0002' || response.status === 403 && failure.code === 'E0102') site.forget(failure.message)
       parentError.value = response.status === 404 ? '所屬文章目前無法讀取' : failure.message
     }
+    // 父文連線失敗只停留在父文查證區，不把既有留言冒充不可讀或空值。
   } catch {
     if (!request.signal.aborted) parentError.value = '無法確認所屬文章狀態；請手動重試。'
   } finally { if (!request.signal.aborted) parentLoading.value = false }
@@ -133,6 +140,7 @@ async function loadParent(articleId = resource.value?.article_id) {
 // 409 後先展示最新內容，明確採用其版本才允許人工再次送出。
 function adoptLatest() {
   if (!latest.value || !resource.value || latest.value.id !== resource.value.id) return
+  // 只採用使用者剛比較的最新版本，不改寫其輸入，也不代為重新 PUT。
   version.value = latest.value.version
   conflict.value = false
   writeError.value = '已採用最新版本。請比較文字並手動送出，或捨棄自己的修改。'
@@ -141,6 +149,7 @@ function adoptLatest() {
 // 使用者選擇放棄草稿時才把伺服器最新內容填回編修欄位。
 function discardDraft() {
   if (!latest.value) return
+  // 明確捨棄後才同步伺服器文字與比較基準，不把重讀本身當成同意覆寫。
   title.value = isArticle.value ? latest.value.title : ''
   body.value = latest.value.body
   baseTitle.value = title.value
@@ -157,8 +166,11 @@ function focusFirstError() { if (errors.value.title?.length) titleElement.value?
 // 已知 ID 更新只送目前編修值與版本，成功後返回該 ID 的詳情重新讀取。
 async function submit() {
   if (!canEdit.value || pending.value || conflict.value || uncertain.value || site.leaving.value || !version.value) return
+  // 本次驗證與寫入各有自己的摘要，不能沿用先前 PUT 的追蹤碼。
+  writeLogId.value = ''
   const checked = validateContent({ title: title.value, body: body.value }, props.kind)
   if (Object.keys(checked).length) { errors.value = checked; writeError.value = '欄位資料不正確，請確認後再送出'; await nextTick(); summaryElement.value?.focus(); return }
+  // 固定這次送出的身分、來源與 ID，晚到結果只能回到原草稿。
   const request = new AbortController()
   writeController = request
   const token = site.token.value
@@ -179,21 +191,25 @@ async function submit() {
         const rejected = response.status === 401 && failure.code === 'E0002' || response.status === 403 && failure.code === 'E0102'
         uncertain.value = !rejected
         writeError.value = rejected ? failure.message : '修改結果尚未確認。請先重讀詳情查證，再決定是否重新送出。'
-        logId.value = rejected ? failure.logId : ''
+        writeLogId.value = failure.logId
       }
       return
     }
+    // 只有完整成功才導向既有 ID；其他回應依已知拒絕或未知結果保留草稿。
     if (emptySuccess(response.status, response.body, 200)) { site.dirty.value = false; window.location.assign(`/nuxt/${isArticle.value ? 'articles' : 'comments'}/${id.value}`); return }
+    // 驗證拒絕與系統未知分開處理；409 先保留原稿與錯誤，再讀最新版本供比較。
     const failure = apiFailure(response.status, response.body, isArticle.value ? ['title', 'body'] : ['body'])
     if (response.status === 401 && failure.code === 'E0002' || response.status === 403 && failure.code === 'E0102') site.forget(failure.message)
-    if (response.status === 409 && failure.code === 'E0201') { conflict.value = true; latest.value = null; await load() }
     if (response.status >= 500 || !failure.code) uncertain.value = true
     errors.value = failure.errors
     writeError.value = uncertain.value ? '修改結果尚未確認。請先重讀詳情查證，再決定是否重新送出。' : failure.message
-    logId.value = failure.logId
+    writeLogId.value = failure.logId
+    // 先記錄本次 409，再開始讀回；await 後不再用舊 PUT 回填任何新帳號畫面。
+    if (response.status === 409 && failure.code === 'E0201') { conflict.value = true; latest.value = null; await load(); return }
     if (response.status === 422) { await nextTick(); summaryElement.value?.focus() }
   } catch {
     if (!request.signal.aborted && !site.leaving.value && backend === site.backend.value && sentId === id.value && draftReady.value && draftOwner.value === sentOwner && (!site.account.value || site.account.value.id === sentOwner)) { uncertain.value = true; writeError.value = '修改結果尚未確認。請先重讀詳情查證，再決定是否重新送出。' }
+  // 換帳號／來源已作廢控制器時，舊 finally 不再改動新表單的 pending。
   } finally { if (writeController === request) { writeController = null; pending.value = false } }
 }
 
@@ -202,6 +218,16 @@ function checkedResult() { uncertain.value = false; writeError.value = '請確�
 
 // 帳號變更後清除前人文字，父文章與內容都必須重新授權讀取。
 function resetForIdentity() {
+  // 確認換人、換來源或換 ID 才作廢寫入與回饋；暫時失權不走這個清理。
+  writeController?.abort()
+  writeController = null
+  pending.value = false
+  writeError.value = ''
+  writeLogId.value = ''
+  errors.value = {}
+  latest.value = null
+  version.value = null
+  // 身分綁定與比較基準一起清除，避免新資源繼承前人的文字或版本。
   title.value = ''
   body.value = ''
   baseTitle.value = ''
@@ -245,19 +271,122 @@ onBeforeUnmount(
 
 <template>
   <main class="reading-page author-page">
-    <a class="back-link" :href="`/nuxt/${kind === 'article' ? 'articles' : 'comments'}/${id || ''}`">← 返回詳情</a>
-    <div class="author-heading"><div><p class="section-label">作者編修</p><h1>編輯{{ kind === 'article' ? '文章' : '留言' }}</h1></div></div>
-    <p v-if="!site.ready.value || loading" class="state-block" role="status">正在讀取內容…</p>
-    <div v-else-if="!site.account.value && !draftReady" class="state-block"><p>請先登入後編輯自己的內容。</p><a :href="loginHref(route.path)">前往登入</a></div>
+    <a class="back-link"
+      :href="`/nuxt/${kind === 'article' ? 'articles' : 'comments'}/${id || ''}`">← 返回詳情</a>
+    <div class="author-heading">
+      <div>
+        <p class="section-label">作者編修</p>
+        <h1>編輯{{ kind === 'article' ? '文章' : '留言' }}</h1>
+      </div>
+    </div>
+    <p v-if="writeError"
+      ref="summaryElement"
+      class="form-error"
+      tabindex="-1"
+      role="alert">{{ writeError }}<small v-if="writeLogId">log_id：{{ writeLogId }}</small><button v-if="resource && (errors.title?.length || errors.body?.length)"
+        type="button"
+        class="inline-button"
+        @click="focusFirstError">前往第一個錯誤欄位</button></p>
+    <div v-if="uncertain"
+      class="state-actions">
+      <button type="button"
+        class="inline-button"
+        :disabled="loading"
+        @click="load">重讀詳情查證</button>
+      <button type="button"
+        class="inline-button"
+        @click="checkedResult">我已查證結果</button>
+    </div>
+    <div v-if="conflict"
+      class="state-block"
+      role="alert">
+      <p>內容已更新，請確認最新內容後再送出。你的文字仍保留。</p>
+      <button type="button"
+        class="inline-button"
+        :disabled="loading"
+        @click="load">重新讀取最新內容</button>
+    </div>
+    <p v-if="!site.ready.value || loading"
+      class="state-block"
+      role="status">正在讀取內容…</p>
+    <div v-else-if="!site.account.value && !draftReady"
+      class="state-block">
+      <p>請先登入後編輯自己的內容。</p>
+      <a :href="loginHref(route.path)">前往登入</a>
+    </div>
     <template v-else>
-      <ReauthForm v-if="!site.account.value && draftReady" :owner-id="draftOwner" @restored="restored" @different="resetForIdentity" />
-      <div v-if="error" class="state-block" role="alert"><p>{{ error }}</p><small v-if="logId">log_id：{{ logId }}</small><button type="button" class="inline-button" @click="load">重新讀取</button></div>
+      <ReauthForm v-if="!site.account.value && draftReady"
+        :owner-id="draftOwner"
+        @restored="restored"
+        @different="resetForIdentity" />
+      <div v-if="error"
+        class="state-block"
+        role="alert">
+        <p>{{ error }}</p>
+        <small v-if="logId">log_id：{{ logId }}</small>
+        <button type="button"
+          class="inline-button"
+          @click="load">重新讀取</button>
+      </div>
       <template v-if="resource && draftReady">
         <p class="teaser-meta">建立來源 {{ backendName(resource.created_backend) }}　/　{{ resource.visibility === 'hidden' ? '已下架' : '公開' }}　/　版本 {{ resource.version }}</p>
-        <div v-if="!isArticle" class="state-block"><p v-if="parentLoading">正在確認所屬文章…</p><p v-else-if="parentError">{{ parentError }}</p><p v-else-if="parent">所屬文章：{{ parent.title }}（{{ parent.visibility === 'visible' ? '公開' : '已下架' }}）</p><button v-if="parentError" type="button" class="inline-button" @click="loadParent()">單獨重試文章讀取</button></div>
-        <p v-if="!canEdit" class="state-block" role="alert">{{ isArticle ? '只有作者能修改本文。' : '須是留言作者，且已確認所屬文章公開，才能修改內文。' }}</p>
-        <div v-if="conflict" class="state-block" role="alert"><p>內容已更新，請確認最新內容後再送出。你的文字仍保留。</p><div v-if="latest" class="comparison"><h2>最新伺服器內容（版本 {{ latest.version }}）</h2><p v-if="isArticle">{{ latest.title }}</p><div class="article-body">{{ latest.body }}</div></div><div class="state-actions"><button type="button" class="inline-button" @click="load">重新讀取最新內容</button><button type="button" class="inline-button" @click="adoptLatest">採用最新版本，保留我的文字</button><button type="button" class="inline-button" @click="discardDraft">捨棄我的修改</button></div></div>
-        <form class="editor-form" novalidate @submit.prevent="submit"><p v-if="writeError" ref="summaryElement" class="form-error" tabindex="-1" role="alert">{{ writeError }}<small v-if="logId">log_id：{{ logId }}</small><button v-if="errors.title?.length || errors.body?.length" type="button" class="inline-button" @click="focusFirstError">前往第一個錯誤欄位</button></p><div v-if="uncertain" class="state-actions"><button type="button" class="inline-button" @click="load">重讀詳情查證</button><button type="button" class="inline-button" @click="checkedResult">我已查證結果</button></div><p class="field-hint">以純文字儲存，原有換行會保留。</p><template v-if="isArticle"><label for="edit-title">標題</label><input id="edit-title" ref="titleElement" v-model="title" :aria-invalid="Boolean(errors.title)" :aria-describedby="errors.title ? 'edit-title-error' : undefined" :disabled="pending || !canEdit"><small v-if="errors.title" id="edit-title-error" class="field-error">{{ errors.title.join('；') }}</small></template><label for="edit-body">內文</label><textarea id="edit-body" ref="bodyElement" v-model="body" rows="14" :aria-invalid="Boolean(errors.body)" :aria-describedby="errors.body ? 'edit-body-error' : undefined" :disabled="pending || !canEdit" /><small v-if="errors.body" id="edit-body-error" class="field-error">{{ errors.body.join('；') }}</small><button class="primary-button" type="submit" :disabled="pending || conflict || uncertain || !canEdit">{{ pending ? '儲存中…' : '儲存修改' }}</button></form>
+        <div v-if="!isArticle"
+          class="state-block">
+          <p v-if="parentLoading">正在確認所屬文章…</p>
+          <p v-else-if="parentError">{{ parentError }}</p>
+          <p v-else-if="parent">所屬文章：{{ parent.title }}（{{ parent.visibility === 'visible' ? '公開' : '已下架' }}）</p>
+          <button v-if="parentError"
+            type="button"
+            class="inline-button"
+            @click="loadParent()">單獨重試文章讀取</button>
+        </div>
+        <p v-if="!canEdit"
+          class="state-block"
+          role="alert">{{ isArticle ? '只有作者能修改本文。' : '須是留言作者，且已確認所屬文章公開，才能修改內文。' }}</p>
+        <div v-if="conflict"
+          class="state-block">
+          <div v-if="latest"
+            class="comparison">
+            <h2>最新伺服器內容（版本 {{ latest.version }}）</h2>
+            <p v-if="isArticle">{{ latest.title }}</p>
+            <div class="article-body">{{ latest.body }}</div>
+          </div>
+          <div class="state-actions">
+            <button type="button"
+              class="inline-button"
+              @click="adoptLatest">採用最新版本，保留我的文字</button>
+            <button type="button"
+              class="inline-button"
+              @click="discardDraft">捨棄我的修改</button>
+          </div>
+        </div>
+        <form class="editor-form"
+          novalidate
+          @submit.prevent="submit">
+          <p class="field-hint">以純文字儲存，原有換行會保留。</p>
+          <template v-if="isArticle"><label for="edit-title">標題</label><input id="edit-title"
+              ref="titleElement"
+              v-model="title"
+              :aria-invalid="Boolean(errors.title)"
+              :aria-describedby="errors.title ? 'edit-title-error' : undefined"
+              :disabled="pending || !canEdit"><small v-if="errors.title"
+              id="edit-title-error"
+              class="field-error">{{ errors.title.join('；') }}</small></template>
+          <label for="edit-body">內文</label>
+          <textarea id="edit-body"
+            ref="bodyElement"
+            v-model="body"
+            rows="14"
+            :aria-invalid="Boolean(errors.body)"
+            :aria-describedby="errors.body ? 'edit-body-error' : undefined"
+            :disabled="pending || !canEdit" />
+          <small v-if="errors.body"
+            id="edit-body-error"
+            class="field-error">{{ errors.body.join('；') }}</small>
+          <button class="primary-button"
+            type="submit"
+            :disabled="pending || conflict || uncertain || !canEdit">{{ pending ? '儲存中…' : '儲存修改' }}</button>
+        </form>
       </template>
     </template>
   </main>
