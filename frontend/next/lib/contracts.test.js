@@ -284,3 +284,23 @@ test('request uses selected fixed backend and exposes Retry-After', async () => 
     await assert.rejects(apiRequest('https://attacker.invalid', '/api/me'))
   } finally { globalThis.fetch = original }
 })
+
+// JSON 時間不能靠 RegExp 隱式轉字串；讀取及登入也不能接受後端不可能儲存的文字。
+test('account and reading responses reject coerced timestamps and invalid text', () => {
+  const account = { id: 1, email: 'user@example.test', nickname: '會員', role: 'member', status: 'active', created_at: '2026-10-31 10:00:00' }
+  const article = { id: 7, title: '文章', body: '內文', author: { id: 1, nickname: '作者' }, version: 1,
+    created_backend: 'laravel', created_at: account.created_at, updated_at: account.created_at, visibility: 'visible', can_restore: false }
+  // 完整封套保持不變，只逐項破壞核准欄位型態。
+  const envelope = (data) => ({ success: true, message: 'OK', data })
+  for (const nickname of [' ', '\u3000', '\0']) {
+    const malformed = { ...account, nickname }
+    assert.equal(successData(200, envelope(malformed), 'account'), null)
+    assert.equal(loginData(200, envelope({ access_token: 'jwt', token_type: 'Bearer', expires_at: account.created_at, user: malformed })), null)
+  }
+  assert.equal(successData(200, envelope({ ...account, created_at: [account.created_at] }), 'account'), null)
+  for (const field of ['created_at', 'updated_at']) {
+    assert.equal(successData(200, envelope({ ...article, [field]: [article[field]] }), 'article', 7), null, field)
+  }
+  for (const field of ['title', 'body']) assert.equal(successData(200, envelope({ ...article, [field]: '含\0字元' }), 'article', 7), null, field)
+  assert.equal(successData(200, envelope({ ...article, author: { ...article.author, nickname: '含\0字元' } }), 'article', 7), null)
+})

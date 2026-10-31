@@ -87,7 +87,7 @@ export function positiveId(value) {
   return Number.isSafeInteger(number) && number > 0 ? number : null
 }
 
-// 登入返回只接受已完成的作者／管理語意頁與合法 ID，避免開放式轉址。
+// 登入返回接受白名單中的公開、作者與管理頁及安全正整數 ID，不接受登入／註冊或外站。
 export function validReturn(path) {
   if (['/next/', '/next', '/next/articles/new', '/next/me/articles', '/next/me/comments', '/next/admin/members', '/next/admin/articles', '/next/admin/comments', '/next/admin/settings/login-lockout'].includes(path)) return true
   const match = typeof path === 'string' && path.match(/^\/next\/(?:(?:articles|comments)\/([0-9]+)(?:\/edit)?|admin\/members\/([0-9]+))$/)
@@ -111,7 +111,7 @@ export function frontendTarget(path, frontend, returnTo = '/next/') {
   if (!Object.hasOwn(FRONTENDS, frontend)) return null
   if (frontend === 'angular' && !supportsAngularRoute(path)) return null
   if (frontend === 'sveltekit') {
-    // 登入返回限列表或文章詳情；未實作及不安全目標不能回退成可切換狀態。
+    // 登入返回沿用完整頁面白名單；非法目標不能回退成可切換狀態。
     if (path === '/next/login') {
       if (!validReturn(returnTo)) return null
       const target = svelteTarget(returnTo)
@@ -179,7 +179,6 @@ export function remainingSeconds(deadline, now = Date.now()) { return Math.max(0
 
 // 固定兩位數呈現分秒，超過一小時才加上時數。
 export function formatCountdown(seconds) {
-  // 固定寬度避免倒數數字變化時晃動版面。
   // 補零讓倒數格式與視覺寬度保持穩定。
   const two = (number) => String(number).padStart(2, '0')
   const hours = Math.floor(seconds / 3600)
@@ -191,8 +190,9 @@ export function formatCountdown(seconds) {
 export function validAccount(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Number.isSafeInteger(value.id) && value.id > 0
     && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
-    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30
-    && (value.role === 'member' || value.role === 'admin') && value.status === 'active' && timestamp.test(value.created_at)
+    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30 && !blank.test(value.nickname) && !value.nickname.includes('\0')
+    && (value.role === 'member' || value.role === 'admin') && value.status === 'active'
+    && typeof value.created_at === 'string' && timestamp.test(value.created_at)
 }
 
 // 管理列表須容納停用的一般會員，但不得把管理員或不完整資料當成會員。
@@ -234,13 +234,14 @@ export function memberKeyword(value) {
 // 文章與留言的共用欄位必須完整，才可顯示伺服器文字。
 export function validContent(item, kind = 'article') {
   return item && typeof item === 'object' && !Array.isArray(item) && Number.isSafeInteger(item.id) && item.id > 0
-    && typeof item.body === 'string' && [...item.body].length >= 1 && [...item.body].length <= (kind === 'comment' ? 2000 : 20000) && !blank.test(item.body)
-    && (kind === 'comment' ? Number.isSafeInteger(item.article_id) && item.article_id > 0 : typeof item.title === 'string' && [...item.title].length >= 1 && [...item.title].length <= 200 && !blank.test(item.title))
+    && typeof item.body === 'string' && [...item.body].length >= 1 && [...item.body].length <= (kind === 'comment' ? 2000 : 20000) && !blank.test(item.body) && !item.body.includes('\0')
+    && (kind === 'comment' ? Number.isSafeInteger(item.article_id) && item.article_id > 0 : typeof item.title === 'string' && [...item.title].length >= 1 && [...item.title].length <= 200 && !blank.test(item.title) && !item.title.includes('\0'))
     && item.author && typeof item.author === 'object' && Object.keys(item.author).length === 2
     && Number.isSafeInteger(item.author.id) && item.author.id > 0
-    && typeof item.author.nickname === 'string' && [...item.author.nickname].length >= 1 && [...item.author.nickname].length <= 30 && !blank.test(item.author.nickname)
+    && typeof item.author.nickname === 'string' && [...item.author.nickname].length >= 1 && [...item.author.nickname].length <= 30 && !blank.test(item.author.nickname) && !item.author.nickname.includes('\0')
     && Number.isSafeInteger(item.version) && item.version > 0 && Object.hasOwn(BACKENDS, item.created_backend)
-    && timestamp.test(item.created_at) && timestamp.test(item.updated_at)
+    && typeof item.created_at === 'string' && timestamp.test(item.created_at)
+    && typeof item.updated_at === 'string' && timestamp.test(item.updated_at)
     && ['visible', 'hidden'].includes(item.visibility) && typeof item.can_restore === 'boolean'
 }
 
