@@ -51,6 +51,17 @@ test('corrupt session is rejected', () => {
   assert.equal(readSession(s), null)
 })
 
+// 到期時間必須保留 API 的字串型態，拒絕正規表示式會隱式轉型的陣列。
+test('session save rejects a non-string expiry without replacing a valid login', () => {
+  const s = storage()
+  saveSession(s, BACKENDS.laravel[1], 'original', '2026-10-16 18:00:00')
+  for (const expiresAt of [['2026-10-16 19:00:00'], null, 123]) {
+    assert.equal(saveSession(s, BACKENDS.laravel[1], 'replacement', expiresAt), false)
+    assert.equal(readSession(s).accessToken, 'original')
+    assert.equal(readSession(s).expiresAt, '2026-10-16 18:00:00')
+  }
+})
+
 // 返回與切換只接受本票實作的本地語意頁及安全 ID。
 test('return target and frontend mapping', () => {
   assert.equal(validReturn('/react/'), true)

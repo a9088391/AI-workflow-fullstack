@@ -11,6 +11,8 @@ a:hover { color: #c0e8ff; }
 .site-header { grid-column: 1 / -1; display: flex; align-items: center; gap: 2rem; min-height: 100px; padding: 1.2rem clamp(1rem, 4vw, 4rem); border-bottom: 1px solid #354353; background: #18222e; }
 .brand { flex: 1; color: #f4f8ff; text-decoration: none; font-size: clamp(1.55rem, 2vw, 2rem); font-weight: 700; white-space: nowrap; }
 .brand span { font-size: .7rem; letter-spacing: .18em; color: #84d0ff; vertical-align: middle; }
+/* 主要導覽／閱讀入口保留完整可點範圍，短文字也符合手機觸控尺寸。 */
+.brand, .article-row h2 a, .account-link a, .comment a, .related a, .admin-row h2 a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; }
 .current { min-width: 12rem; font-size: .84rem; line-height: 1.6; color: #a9bbcb; }
 .current strong { color: #eef5fa; font-weight: 500; }
 .switches { position: relative; width: 215px; }
@@ -115,7 +117,7 @@ h2 { line-height: 1.35; }
 .notice strong { font-weight: 600; }
 .break { overflow-wrap: anywhere; }
 .error-fields .text-button { min-height: 44px; text-align: left; }
-.notice p .text-button { display: inline-flex; align-items: center; min-height: 44px; margin-left: .4rem; }
+.notice p .text-button { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; margin-left: .4rem; }
 .secondary { min-height: 44px; margin-top: .7rem; padding: .5rem .9rem; border: 1px solid #86cefa; border-radius: 4px; color: #8cd3ff; background: transparent; }
 .lock-message { color: #ffcf98; font-variant-numeric: tabular-nums; }
 .auth-notice, .shell-error { max-width: 1120px; margin: 0 auto 1rem; }

@@ -27,17 +27,34 @@ function ErrorNotice({ error, retry, focusRef }) {
   if (!error) return null
   // 可聚焦摘要讓鍵盤使用者取得錯誤，欄位連結可直接回到需修正的輸入。
   function focusField(event) { document.getElementById(event.currentTarget.dataset.field)?.focus() }
-  return <div className="notice error" role="alert" tabIndex={-1} ref={focusRef}>
-    <strong>{error.message}</strong>
-    {error.errors && Object.entries(error.errors).length > 0 && <ul className="error-fields">{Object.entries(error.errors).map(
-      // 已知欄位可直接聚焦；未知欄位仍完整呈現，避免遺失後端明細。
-      ([name, messages]) => <li key={name}>{['email', 'password', 'nickname', 'title', 'body', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name) ? <button type="button" className="text-button" data-field={name} onClick={focusField}>{name}：{messages.join('；')}</button> : `${name}：${messages.join('；')}`}</li>,
-    )}</ul>}
-    {error.logId && <p>追蹤編號：<span className="break">{error.logId}</span> <button type="button" className="text-button" onClick={copyLogId}>複製</button></p>}
-    {retry && <button className="secondary" type="button" onClick={retry}>重新讀取</button>}
-  </div>
-  // 使用者可複製後端追蹤編號回報問題，複製失敗仍保留可選取原文。
-  async function copyLogId() { try { await navigator.clipboard?.writeText(error.logId) } catch { /* 保留可選取的原文供手動複製。 */ } }
+  // 複製失敗仍保留可選取原文，讓使用者能回報同次請求的追蹤編號。
+  async function copyLogId() {
+    try { await navigator.clipboard?.writeText(error.logId) }
+    catch { /* 保留可選取的原文供手動複製。 */ }
+  }
+  return (
+    <div className="notice error" role="alert" tabIndex={-1} ref={focusRef}>
+      <strong>{error.message}</strong>
+      {error.errors && Object.entries(error.errors).length > 0 && (
+        <ul className="error-fields">
+          {Object.entries(error.errors).map(
+            // 已知欄位可直接聚焦；未知欄位完整呈現，避免遺失後端明細。
+            ([name, messages]) => (
+              <li key={name}>
+                {['email', 'password', 'nickname', 'title', 'body', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)
+                  ? <button type="button" className="text-button" data-field={name} onClick={focusField}>{name}：{messages.join('；')}</button>
+                  : `${name}：${messages.join('；')}`}
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+      {error.logId && (
+        <p>追蹤編號：<span className="break">{error.logId}</span> <button type="button" className="text-button" onClick={copyLogId}>複製</button></p>
+      )}
+      {retry && <button className="secondary" type="button" onClick={retry}>重新讀取</button>}
+    </div>
+  )
 }
 
 // 每次後端、憑證或分頁變動都取消舊讀取，避免過時資料覆寫新選擇。
@@ -49,7 +66,11 @@ function useRead(backend, credential, path, currentPage, enabled, onAuthFailure,
   const current = ownsRead(result, owner)
   // 每個讀取生命週期只擁有自己的一次請求，依賴變動時清理。
   useEffect(() => {
-    if (!enabled) { setResult({ ...owner, loading: false, data: null, error: null }); return undefined }
+    // 尚未取得讀取資格時清掉資料與等待，避免失權畫面繼續顯示舊結果。
+    if (!enabled) {
+      setResult({ ...owner, loading: false, data: null, error: null })
+      return undefined
+    }
     const controller = new AbortController()
     const startedEpoch = switchEpoch.current
     setResult({ ...owner, loading: true, data: null, error: null })
@@ -59,15 +80,25 @@ function useRead(backend, credential, path, currentPage, enabled, onAuthFailure,
         // 只接受本次路徑預期的成功 envelope；不完整資料不顯示為空列表。
         ({ status, body }) => {
           if (controller.signal.aborted || startedEpoch !== switchEpoch.current || !ownsSession(sessionStorage, backend, credential)) return
-          if (status === 200 && body?.success === true && body.message === 'OK' && (currentPage ? validList(body.data, currentPage, kind) : kind === 'settings' ? validLockout(body.data) : body.data?.id === Number(expectedId) && (kind === 'member' ? validMember(body.data) : validContent(body.data, kind)))) setResult({ ...owner, loading: false, data: body.data, error: null })
-          else {
+          const validData = currentPage
+            ? validList(body?.data, currentPage, kind)
+            : kind === 'settings'
+              ? validLockout(body?.data)
+              : body?.data?.id === Number(expectedId) && (kind === 'member' ? validMember(body.data) : validContent(body.data, kind))
+          if (status === 200 && body?.success === true && body.message === 'OK' && validData) {
+            setResult({ ...owner, loading: false, data: body.data, error: null })
+          } else {
             const problem = failure(body)
             if (credential && (problem.code === 'E0002' || problem.code === 'E0102')) onAuthFailure(problem, backend, credential)
             setResult({ ...owner, loading: false, data: null, error: problem })
           }
         },
         // 網路中斷保留登入狀態並提供手動重讀。
-        () => { if (!controller.signal.aborted && startedEpoch === switchEpoch.current && ownsSession(sessionStorage, backend, credential)) setResult({ ...owner, loading: false, data: null, error: { message: '暫時無法連線，請稍後手動重試。' } }) },
+        () => {
+          if (!controller.signal.aborted && startedEpoch === switchEpoch.current && ownsSession(sessionStorage, backend, credential)) {
+            setResult({ ...owner, loading: false, data: null, error: { message: '暫時無法連線，請稍後手動重試。' } })
+          }
+        },
       )
     // 來源變動或元件離開時中止舊請求，避免舊回應落到新畫面。
     return () => controller.abort()
@@ -87,7 +118,13 @@ function useRead(backend, credential, path, currentPage, enabled, onAuthFailure,
 // 顯示文章原始時間與後端來源；純文字由 React 轉義，不解讀 HTML。
 function Metadata({ item }) {
   const source = BACKENDS[item.created_backend]?.[0] || item.created_backend
-  return <div className="metadata"><span>作者　{item.author?.nickname}</span><span>{item.created_at}</span><span>建立於　<b>{source}</b></span></div>
+  return (
+    <div className="metadata">
+      <span>作者　{item.author?.nickname}</span>
+      <span>{item.created_at}</span>
+      <span>建立於　<b>{source}</b></span>
+    </div>
+  )
 }
 
 // 分頁使用 API 回傳的總頁數；超頁仍保留原頁碼及返回第一頁入口。
@@ -202,14 +239,33 @@ function MyContent({ kind, backend, credential, enabled, onAuthFailure, switchEp
   const isArticle = kind === 'article'
   const path = isArticle ? '/me/articles' : '/me/comments'
   const read = useRead(backend, credential, `/api${path}?page=${listPage}&per_page=20`, listPage, enabled, onAuthFailure, switchEpoch, kind)
-  return <section className="content"><p className="eyebrow">MY CONTENT / REACT</p><h1>{isArticle ? '我的文章' : '我的留言'}</h1>
-    {read.loading && enabled && <p role="status">正在載入…</p>}<ErrorNotice error={read.error} retry={read.retry} />
-    {/* 指定超頁即使總數為零，也只表示這一頁沒有資料。 */}
-    {read.data && <>{read.data.list.length === 0 ? <p className="notice">{read.data.pagination.page > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無內容。'}</p> : <div className="article-list">{read.data.list.map(
-      // 穩定 ID 對應個別內容，留言的 article_id 不授予父文章讀取權。
-      (item) => <article className="article-row" key={item.id}><h2><a href={`/react/${isArticle ? 'articles' : 'comments'}/${item.id}`}>{isArticle ? item.title : `留言 #${item.id}`}</a></h2><p className="excerpt">{item.body}</p><Metadata item={item} /><p>{item.visibility === 'hidden' ? '已下架' : '公開'}</p></article>,
-    )}</div>}<Pagination pagination={read.data.pagination} base={`/react${path}`} /></>}
-  </section>
+  return (
+    <section className="content">
+      <p className="eyebrow">MY CONTENT / REACT</p>
+      <h1>{isArticle ? '我的文章' : '我的留言'}</h1>
+      {read.loading && enabled && <p role="status">正在載入…</p>}
+      <ErrorNotice error={read.error} retry={read.retry} />
+      {read.data && <>
+        {/* 指定超頁即使總數為零，也只表示這一頁沒有資料。 */}
+        {read.data.list.length === 0
+          ? <p className="notice">{read.data.pagination.page > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無內容。'}</p>
+          : <div className="article-list">
+            {read.data.list.map(
+              // 穩定 ID 對應個別內容，留言的 article_id 不授予父文章讀取權。
+              (item) => (
+                <article className="article-row" key={item.id}>
+                  <h2><a href={`/react/${isArticle ? 'articles' : 'comments'}/${item.id}`}>{isArticle ? item.title : `留言 #${item.id}`}</a></h2>
+                  <p className="excerpt">{item.body}</p>
+                  <Metadata item={item} />
+                  <p>{item.visibility === 'hidden' ? '已下架' : '公開'}</p>
+                </article>
+              ),
+            )}
+          </div>}
+        <Pagination pagination={read.data.pagination} base={`/react${path}`} />
+      </>}
+    </section>
+  )
 }
 
 // 發文與編修共用純文字表單；草稿只留在本頁記憶體，不隨切換傳送。
@@ -389,44 +445,91 @@ function Article({ backend, credential, account, enabled, onAuthFailure, switchE
   function firstComments() { setCommentPage(1) }
   // 新留言後先回第一頁再重讀，避免以當前超頁錯認建立失敗。
   function reloadFirstComments() { setCommentPage(1); comments.retry() }
-  return <section className="content reading">
-    <a className="back" href={account?.role === 'admin' ? '/react/admin/articles' : '/react/'}>← 返回{account?.role === 'admin' ? '文章管理' : '文章列表'}</a>
-    {article.loading && <p role="status">正在載入文章…</p>}
-    <ErrorNotice error={article.error} retry={article.retry} />
-    {article.data && <>
-      <article><p className="eyebrow">ARTICLE / {article.data.id}</p><h1>{article.data.title}</h1><Metadata item={article.data} /><p>{article.data.visibility === 'hidden' ? '已下架' : '公開'}</p><div className="prose">{article.data.body}</div></article>
-      {canEditContent(article.data, account) && <a className="back" href={`/react/articles/${article.data.id}/edit`}>編輯文章</a>}
-      {account && <VisibilityActions item={article.data} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={article.retry} enabled={enabled} onDraftChange={changeVisibilityDraft} />}
-      <section className="comments" aria-labelledby="comments-title"><h2 id="comments-title">留言</h2>
-        {comments.loading && <p role="status">正在載入留言…</p>}
-        <ErrorNotice error={comments.error} retry={comments.retry} />
-        {comments.data && <>
-          {/* 指定超頁先顯示此頁無資料，避免把第 99 頁誤說成首頁尚無留言。 */}
-          {comments.data.list.length === 0 ? <p className="notice">{emptyCommentMessage(comments.data.pagination)}</p> : comments.data.list.map(
-            // 使用留言 ID 保留穩定身份，全文依純文字呈現。
-            (item) => <article className="comment" key={item.id}><Metadata item={item} /><p className="prose">{item.body}</p>{account && (account.id === item.author.id || account.role === 'admin') && <a href={`/react/comments/${item.id}`}>留言詳情</a>}</article>,
-          )}
-          {/* 留言分頁直接呈現 API 原頁碼與總筆數，超頁也不誤報為零筆。 */}
-          {showCommentPagination(comments.data.pagination) && <nav className="pagination" aria-label="留言分頁"><span>第 {comments.data.pagination.page} 頁／共 {comments.data.pagination.total_pages} 頁，{comments.data.pagination.total} 筆</span>{commentPage > 1 && <button className="text-button" onClick={previousComments}>上一頁</button>}{commentPage < comments.data.pagination.total_pages && <button className="text-button" onClick={nextComments}>下一頁</button>}{commentPage > comments.data.pagination.total_pages && <button className="text-button" onClick={firstComments}>返回第一頁</button>}</nav>}
-        </>}
-      </section>
-    </>}
-    {snapshot && <div hidden={!article.data}><CommentComposer article={article.data || snapshot} backend={backend} credential={credential} account={account} enabled={enabled && Boolean(article.data)} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onDraftChange={changeCommentDraft} onCreated={reloadFirstComments} onArticleRefresh={article.retry} commentsRead={comments} /></div>}
-  </section>
+  return (
+    <section className="content reading">
+      <a className="back" href={account?.role === 'admin' ? '/react/admin/articles' : '/react/'}>← 返回{account?.role === 'admin' ? '文章管理' : '文章列表'}</a>
+      {article.loading && <p role="status">正在載入文章…</p>}
+      <ErrorNotice error={article.error} retry={article.retry} />
+      {article.data && <>
+        <article>
+          <p className="eyebrow">ARTICLE / {article.data.id}</p>
+          <h1>{article.data.title}</h1>
+          <Metadata item={article.data} />
+          <p>{article.data.visibility === 'hidden' ? '已下架' : '公開'}</p>
+          <div className="prose">{article.data.body}</div>
+        </article>
+        {canEditContent(article.data, account) && <a className="back" href={`/react/articles/${article.data.id}/edit`}>編輯文章</a>}
+        {account && <VisibilityActions item={article.data} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={article.retry} enabled={enabled} onDraftChange={changeVisibilityDraft} />}
+        <section className="comments" aria-labelledby="comments-title">
+          <h2 id="comments-title">留言</h2>
+          {comments.loading && <p role="status">正在載入留言…</p>}
+          <ErrorNotice error={comments.error} retry={comments.retry} />
+          {comments.data && <>
+            {/* 指定超頁先顯示此頁無資料，避免把第 99 頁誤說成首頁尚無留言。 */}
+            {comments.data.list.length === 0
+              ? <p className="notice">{emptyCommentMessage(comments.data.pagination)}</p>
+              : comments.data.list.map(
+                // 使用留言 ID 保留穩定身分，全文依純文字呈現。
+                (item) => (
+                  <article className="comment" key={item.id}>
+                    <Metadata item={item} />
+                    <p className="prose">{item.body}</p>
+                    {account && (account.id === item.author.id || account.role === 'admin') && <a href={`/react/comments/${item.id}`}>留言詳情</a>}
+                  </article>
+                ),
+              )}
+            {/* 留言分頁直接呈現 API 原頁碼與總筆數，超頁也不誤報為零筆。 */}
+            {showCommentPagination(comments.data.pagination) && (
+              <nav className="pagination" aria-label="留言分頁">
+                <span>第 {comments.data.pagination.page} 頁／共 {comments.data.pagination.total_pages} 頁，{comments.data.pagination.total} 筆</span>
+                {commentPage > 1 && <button className="text-button" onClick={previousComments}>上一頁</button>}
+                {commentPage < comments.data.pagination.total_pages && <button className="text-button" onClick={nextComments}>下一頁</button>}
+                {commentPage > comments.data.pagination.total_pages && <button className="text-button" onClick={firstComments}>返回第一頁</button>}
+              </nav>
+            )}
+          </>}
+        </section>
+      </>}
+      {snapshot && (
+        <div hidden={!article.data}>
+          <CommentComposer article={article.data || snapshot} backend={backend} credential={credential} account={account} enabled={enabled && Boolean(article.data)} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onDraftChange={changeCommentDraft} onCreated={reloadFirstComments} onArticleRefresh={article.retry} commentsRead={comments} />
+        </div>
+      )}
+    </section>
+  )
 }
 
 // 留言詳情先依留言權限讀取；父文章獨立讀取，404 不推測其隱藏原因。
 function CommentDetail({ backend, credential, account, enabled, onAuthFailure, switchEpoch, onDraftChange }) {
   const comment = useRead(backend, credential, `/api/comments/${commentId}`, null, enabled, onAuthFailure, switchEpoch, 'comment', commentId)
   const parent = useRead(backend, credential, `/api/articles/${comment.data?.article_id || 0}`, null, enabled && Boolean(comment.data), onAuthFailure, switchEpoch, 'article', comment.data?.article_id)
-  return <section className="content reading"><a className="back" href={account?.role === 'admin' ? '/react/admin/comments' : '/react/me/comments'}>← 返回{account?.role === 'admin' ? '留言管理' : '我的留言'}</a><p className="eyebrow">COMMENT / REACT</p><h1>留言詳情</h1>
-    {comment.loading && enabled && <p role="status">正在讀取留言…</p>}<ErrorNotice error={comment.error} retry={comment.retry} />
-    {comment.data && <><article><Metadata item={comment.data} /><p>{comment.data.visibility === 'hidden' ? '已下架' : '公開'}</p><div className="prose">{comment.data.body}</div></article>
-      <section className="related"><h2>所屬文章</h2>{parent.loading && <p role="status">正在讀取所屬文章…</p>}{parent.data && <p><a href={`/react/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'hidden' ? '已下架' : '公開'}</p>}{parent.error && <><ErrorNotice error={{ ...parent.error, message: parent.error.code === 'E0004' ? '所屬文章目前無法讀取。' : parent.error.message }} /><button type="button" className="secondary" onClick={parent.retry}>單獨重試文章讀取</button></>}</section>
-      {canEditContent(comment.data, account, parent.data?.visibility === 'visible') && <a className="back" href={`/react/comments/${comment.data.id}/edit`}>編輯留言</a>}
-      {account && <VisibilityActions item={comment.data} kind="comment" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={comment.retry} enabled={enabled} onDraftChange={onDraftChange} />}
-    </>}
-  </section>
+  return (
+    <section className="content reading">
+      <a className="back" href={account?.role === 'admin' ? '/react/admin/comments' : '/react/me/comments'}>← 返回{account?.role === 'admin' ? '留言管理' : '我的留言'}</a>
+      <p className="eyebrow">COMMENT / REACT</p>
+      <h1>留言詳情</h1>
+      {comment.loading && enabled && <p role="status">正在讀取留言…</p>}
+      <ErrorNotice error={comment.error} retry={comment.retry} />
+      {comment.data && <>
+        <article>
+          <Metadata item={comment.data} />
+          <p>{comment.data.visibility === 'hidden' ? '已下架' : '公開'}</p>
+          <div className="prose">{comment.data.body}</div>
+        </article>
+        <section className="related">
+          <h2>所屬文章</h2>
+          {parent.loading && <p role="status">正在讀取所屬文章…</p>}
+          {parent.data && <p><a href={`/react/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'hidden' ? '已下架' : '公開'}</p>}
+          {parent.error && <>
+            <ErrorNotice error={{ ...parent.error, message: parent.error.code === 'E0004' ? '所屬文章目前無法讀取。' : parent.error.message }} />
+            <button type="button" className="secondary" onClick={parent.retry}>單獨重試文章讀取</button>
+          </>}
+        </section>
+        {canEditContent(comment.data, account, parent.data?.visibility === 'visible') && <a className="back" href={`/react/comments/${comment.data.id}/edit`}>編輯留言</a>}
+        {account && <VisibilityActions item={comment.data} kind="comment" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={comment.retry} enabled={enabled} onDraftChange={onDraftChange} />}
+      </>}
+    </section>
+  )
 }
 
 // 管理頁在 /api/me 確認角色前不送私有請求，也不呈現上次登入的資料。
@@ -622,12 +725,19 @@ function AccountForm({ mode, backend, onLogin, onDraftChange, switchEpoch, inlin
   }, [deadline])
   // 倒數歸零只恢復表單與提示，不自動送出帳密。
   useEffect(() => {
-    if (deadline && !remaining) { setDeadline(0); setUnlocked(true) }
+    if (deadline && !remaining) {
+      setDeadline(0)
+      setUnlocked(true)
+    }
   }, [deadline, remaining])
   // 元件切走時使舊帳號回應失效，並終止仍在途的請求。
   useEffect(() => {
     // 清理屬於這次表單的請求，避免切換後重新顯示舊鎖定。
-    return () => { latest.current++; controller.current?.abort(); onDraftChange(false, false) }
+    return () => {
+      latest.current++
+      controller.current?.abort()
+      onDraftChange(false, false)
+    }
   }, [onDraftChange])
   // 每次欄位或伺服器錯誤更新，將鍵盤焦點放回可聚焦摘要。
   useEffect(() => { if (notice) summary.current?.focus() }, [notice])
@@ -655,9 +765,11 @@ function AccountForm({ mode, backend, onLogin, onDraftChange, switchEpoch, inlin
   async function submit(event) {
     event.preventDefault()
     if (pending || locked) return
+    // 先在本機檢查格式並呈現欄位錯誤，避免無效帳密送出登入請求。
     const checked = validateAccount({ email, password, nickname }, register)
     setErrors(checked.errors)
     if (Object.keys(checked.errors).length) { setNotice({ message: '請修正標示欄位後再送出。' }); return }
+    // 固定本次帳號、表單序號與頁面世代並標記等待，舊回應不能接管後續嘗試。
     const sequence = ++latest.current
     const startingEpoch = switchEpoch.current
     const attempt = { email: checked.email, password, ...(register ? { nickname } : {}) }
@@ -666,42 +778,82 @@ function AccountForm({ mode, backend, onLogin, onDraftChange, switchEpoch, inlin
     setPending(true)
     onDraftChange(true, true)
     setNotice(null)
+    // 註冊成功導頁時仍會執行 finally，須避免重新把已完成表單標成草稿。
+    let registered = false
     try {
       const { status, body, retryAfter } = await request(backend, `/api/auth/${register ? 'register' : 'login'}`, { method: 'POST', signal: abort.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(attempt) })
       // 已確認切換會同步增加世代；卸載前抵達的舊成功也不得存 JWT 或導覽。
       if (!ownsAttempt(abort.signal, sequence, latest.current, startingEpoch, switchEpoch.current)) return
-      if (register && status === 201 && body?.success === true && body.message === 'OK' && body.data && !Array.isArray(body.data) && Object.keys(body.data).length === 0) { window.location.assign('/react/login?registered=1'); return }
+      if (register && status === 201 && body?.success === true && body.message === 'OK' && body.data && typeof body.data === 'object' && !Array.isArray(body.data) && Object.keys(body.data).length === 0) {
+        registered = true
+        onDraftChange(false, false)
+        window.location.assign('/react/login?registered=1')
+        return
+      }
       if (!register && status === 200 && body?.success === true && body.message === 'OK' && body.data?.token_type === 'Bearer' && validAccount(body.data.user)) {
         // 原頁恢復只接受原作者；其他帳號不能接收舊草稿或沿用編修版本。
-        if (inline && expectedOwnerId && body.data.user.id !== expectedOwnerId) { setNotice({ message: '登入帳號與草稿作者不同；請使用原帳號重新登入，或離開並捨棄草稿。' }); return }
-        if (saveSession(sessionStorage, backend, body.data.access_token, body.data.expires_at)) { setPending(false); onDraftChange(false, false); onLogin(); if (!inline) window.location.assign(returnTo); return }
+        if (inline && expectedOwnerId && body.data.user.id !== expectedOwnerId) {
+          setNotice({ message: '登入帳號與草稿作者不同；請使用原帳號重新登入，或離開並捨棄草稿。' })
+          return
+        }
+        // 儲存完整憑證成功才通知外殼並導覽，儲存被拒絕仍留在原表單。
+        if (saveSession(sessionStorage, backend, body.data.access_token, body.data.expires_at)) {
+          setPending(false)
+          onDraftChange(false, false)
+          onLogin()
+          if (!inline) window.location.assign(returnTo)
+          return
+        }
       }
       const problem = failure(body)
       if (register && (status >= 500 || status === 201)) problem.message += '。無法確認註冊結果；請先確認帳號狀態，再決定是否重試。'
       setErrors(problem.errors)
       if (!register && status === 429 && problem.code === 'E0105') {
         const seconds = retryAfterSeconds(retryAfter)
-        if (seconds !== null) { setNow(Date.now()); setDeadline(Date.now() + seconds * 1000); setUnlocked(false) }
-        else console.warn('Login lockout response has invalid Retry-After header')
+        if (seconds !== null) {
+          setNow(Date.now())
+          setDeadline(Date.now() + seconds * 1000)
+          setUnlocked(false)
+        } else console.warn('Login lockout response has invalid Retry-After header')
       } else if (problem.code === 'E0102') setDeadline(0)
       setNotice(problem)
     } catch {
       if (ownsAttempt(abort.signal, sequence, latest.current, startingEpoch, switchEpoch.current)) setNotice({ message: register ? '無法確認註冊結果；請先確認帳號狀態，再決定是否重試。' : '無法確認登入結果；請稍後手動重試。' })
-    } finally { if (ownsAttempt(abort.signal, sequence, latest.current, startingEpoch, switchEpoch.current)) { setPending(false); onDraftChange(true, false) } }
+    } finally {
+      // 只結束仍屬目前表單的等待，不讓過時回應重設新嘗試的狀態。
+      if (ownsAttempt(abort.signal, sequence, latest.current, startingEpoch, switchEpoch.current)) {
+        setPending(false)
+        onDraftChange(!registered, false)
+      }
+    }
   }
 
-  return <section className="account"><p className="eyebrow">{register ? 'CREATE ACCOUNT' : 'MEMBER ACCESS'}</p><h1>{register ? '註冊會員' : inline ? '在原頁重新登入' : '會員登入'}</h1><p className="intro">{register ? '建立帳號後，請再登入。' : inline ? '登入成功後會留在目前頁面；若有保留的草稿，請確認後手動送出。' : '登入後可跨前端保留同一次登入期限。'}</p>
-    {!register && params.get('registered') === '1' && <p className="notice success">註冊完成，請登入。</p>}
-    <ErrorNotice error={notice} focusRef={summary} />
-    {locked && <p className="lock-message">登入暫時鎖定，約剩 {formatCountdown(remaining)}</p>}
-    {unlocked && !locked && <p className="notice" role="status">可再次嘗試登入</p>}
-    <form noValidate onSubmit={submit}>
-      <label htmlFor="email">Email</label><input id="email" type="email" autoComplete="email" value={email} disabled={pending || locked} aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? 'email-error' : undefined} onChange={editEmail} />{errors.email && <p className="field-error" id="email-error">{errors.email.join('；')}</p>}
-      {register && <><label htmlFor="nickname">暱稱</label><input id="nickname" value={nickname} disabled={pending} aria-invalid={Boolean(errors.nickname)} aria-describedby={errors.nickname ? 'nickname-error' : undefined} onChange={editNickname} />{errors.nickname && <p className="field-error" id="nickname-error">{errors.nickname.join('；')}</p>}</>}
-      <label htmlFor="password">密碼</label><input id="password" type="password" autoComplete={register ? 'new-password' : 'current-password'} value={password} disabled={pending || locked} aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? 'password-error' : undefined} onChange={editPassword} />{errors.password && <p className="field-error" id="password-error">{errors.password.join('；')}</p>}
-      <button className="primary" type="submit" disabled={pending || locked}>{pending ? '處理中…' : register ? '建立帳號' : '登入'}</button>
-    </form><p className="account-link">{register ? <>已有帳號？ <a href="/react/login">前往登入</a></> : <>還沒有帳號？ <a href="/react/register">註冊會員</a></>}</p>
-  </section>
+  return (
+    <section className="account">
+      <p className="eyebrow">{register ? 'CREATE ACCOUNT' : 'MEMBER ACCESS'}</p>
+      <h1>{register ? '註冊會員' : inline ? '在原頁重新登入' : '會員登入'}</h1>
+      <p className="intro">{register ? '建立帳號後，請再登入。' : inline ? '登入成功後會留在目前頁面；若有保留的草稿，請確認後手動送出。' : '登入後可跨前端保留同一次登入期限。'}</p>
+      {!register && params.get('registered') === '1' && <p className="notice success">註冊完成，請登入。</p>}
+      <ErrorNotice error={notice} focusRef={summary} />
+      {locked && <p className="lock-message">登入暫時鎖定，約剩 {formatCountdown(remaining)}</p>}
+      {unlocked && !locked && <p className="notice" role="status">可再次嘗試登入</p>}
+      <form noValidate onSubmit={submit}>
+        <label htmlFor="email">Email</label>
+        <input id="email" type="email" autoComplete="email" value={email} disabled={pending || locked} aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? 'email-error' : undefined} onChange={editEmail} />
+        {errors.email && <p className="field-error" id="email-error">{errors.email.join('；')}</p>}
+        {register && <>
+          <label htmlFor="nickname">暱稱</label>
+          <input id="nickname" value={nickname} disabled={pending} aria-invalid={Boolean(errors.nickname)} aria-describedby={errors.nickname ? 'nickname-error' : undefined} onChange={editNickname} />
+          {errors.nickname && <p className="field-error" id="nickname-error">{errors.nickname.join('；')}</p>}
+        </>}
+        <label htmlFor="password">密碼</label>
+        <input id="password" type="password" autoComplete={register ? 'new-password' : 'current-password'} value={password} disabled={pending || locked} aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? 'password-error' : undefined} onChange={editPassword} />
+        {errors.password && <p className="field-error" id="password-error">{errors.password.join('；')}</p>}
+        <button className="primary" type="submit" disabled={pending || locked}>{pending ? '處理中…' : register ? '建立帳號' : '登入'}</button>
+      </form>
+      <p className="account-link">{register ? <>已有帳號？ <a href="/react/login">前往登入</a></> : <>還沒有帳號？ <a href="/react/register">註冊會員</a></>}</p>
+    </section>
+  )
 }
 
 // 工具列保持目前版本與後端可見，切換只導覽同源已知路徑。
@@ -768,8 +920,10 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
 
   // 只有伺服器確認撤銷才回報登出；連線失敗保留 JWT 供手動重試。
   async function logout() {
+    // 無憑證或已在等待時不重送；有草稿先由使用者決定是否放棄。
     if (!credential || busy) return
     if (draft.dirty && !window.confirm(draft.pending ? '請求已送出，登出後仍可能完成。要捨棄目前表單並登出嗎？' : '目前表單有未儲存文字。要捨棄並登出嗎？')) return
+    // 這次登出持有自己的取消控制與頁面世代，供切換後隔離延遲回應。
     setBusy(true)
     setLogoutError(null)
     const controller = new AbortController()
@@ -779,29 +933,69 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
       const { status, body } = await request(backend, '/api/auth/logout', { method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${credential.accessToken}` } })
       // 舊登出縱使伺服器已完成，也不可清除另一個前端剛保存的 JWT。
       if (controller.signal.aborted || startedEpoch !== switchEpoch.current || !ownsSession(sessionStorage, backend, credential)) return
-      if (status === 200 && body?.success === true && body.message === 'OK' && body.data && !Array.isArray(body.data) && Object.keys(body.data).length === 0) onLogout(null, backend, credential)
-      else if (body?.error_code === 'E0002' || body?.error_code === 'E0102') onLogout(failure(body), backend, credential)
+      if (status === 200 && body?.success === true && body.message === 'OK' && body.data && typeof body.data === 'object' && !Array.isArray(body.data) && Object.keys(body.data).length === 0) onLogout(null, backend, credential)
       else {
-        // 已知登出失敗須明示未完成，仍保留原錯誤與追蹤編號供使用者手動重試。
+        // 只有共同失敗 envelope 的失效代碼才能清除 JWT，矛盾回應不能冒充登出。
         const problem = failure(body)
-        setLogoutError({ ...problem, message: `登出未完成；請再次按「登出」手動重試。${problem.message}` })
+        if (problem.code === 'E0002' || problem.code === 'E0102') onLogout(problem, backend, credential)
+        else setLogoutError({ ...problem, message: `登出未完成；請再次按「登出」手動重試。${problem.message}` })
       }
     } catch { if (!controller.signal.aborted && startedEpoch === switchEpoch.current && ownsSession(sessionStorage, backend, credential)) setLogoutError({ message: '登出尚未確認；請稍後手動重試。' }) }
     finally { if (!controller.signal.aborted && startedEpoch === switchEpoch.current) setBusy(false) }
   }
 
-  return <><header className="site-header"><a className="brand" href="/react/">文章集<span> / REACT</span></a><div className="current">目前前端　<strong>React＋Vite</strong><br />目前後端　<strong>{name}</strong></div><details className="switches"><summary>切換版本</summary><div className="switch-panel"><label htmlFor="frontend">目前前端</label><select id="frontend" value={front} onChange={switchFrontend}>{Object.entries(FRONTENDS).map(
-    // 六版入口保持可見；只啟用目前頁面在目標版已完成且可用的選項。
-    ([id, label]) => {
-      const unavailable = id === 'sveltekit' && !svelteTarget || id === 'angular' && !angularReady || id === 'next' && !nextReady
-      return <option key={id} value={id} disabled={unavailable}>{label}{(id === 'next' && !nextReady || id === 'angular' && !angularReady || id === 'sveltekit' && !svelteTarget) ? '（此頁尚未提供）' : unavailable ? '（尚未提供）' : ''}</option>
-    },
-  )}</select><label htmlFor="backend">目前後端</label><select id="backend" value={backend} onChange={switchBackend}>{Object.entries(BACKENDS).map(
-    // 十二個後端共享 API 路徑，只需更換固定基底。
-    ([id, [label, url]]) => <option key={id} value={url}>{label}</option>,
-  )}</select><p className="switch-help">切換後端會清除登入，請重新登入。</p></div></details></header>
+  return <>
+    <header className="site-header">
+      <a className="brand" href="/react/">文章集<span> / REACT</span></a>
+      <div className="current">目前前端　<strong>React＋Vite</strong><br />目前後端　<strong>{name}</strong></div>
+      <details className="switches">
+        <summary>切換版本</summary>
+        <div className="switch-panel">
+          <label htmlFor="frontend">目前前端</label>
+          <select id="frontend" value={front} onChange={switchFrontend}>
+            {Object.entries(FRONTENDS).map(
+              // 六版入口保持可見；只啟用目前頁面在目標版已完成且可用的選項。
+              ([id, label]) => {
+                const unavailable = id === 'sveltekit' && !svelteTarget || id === 'angular' && !angularReady || id === 'next' && !nextReady
+                return <option key={id} value={id} disabled={unavailable}>{label}{unavailable ? '（此頁尚未提供）' : ''}</option>
+              },
+            )}
+          </select>
+          <label htmlFor="backend">目前後端</label>
+          <select id="backend" value={backend} onChange={switchBackend}>
+            {Object.entries(BACKENDS).map(
+              // 十二個後端共享 API 路徑，只需更換固定基底。
+              ([id, [label, url]]) => <option key={id} value={url}>{label}</option>,
+            )}
+          </select>
+          <p className="switch-help">切換後端會清除登入，請重新登入。</p>
+        </div>
+      </details>
+    </header>
     <button className="mobile-nav-toggle" ref={navToggle} type="button" aria-controls="react-main-nav" aria-expanded={mobileNavOpen} onClick={toggleMobileNav}>{mobileNavOpen ? '關閉導覽' : '開啟導覽'}</button>
-    <nav id="react-main-nav" className={`site-nav${mobileNavOpen ? ' open' : ''}`} aria-label="主導覽" onKeyDown={mobileNavKeyDown}><a href="/react/" aria-current={page === 'articles' || page === 'article' ? 'page' : undefined}>所有文章</a>{account ? <><a href="/react/articles/new" aria-current={page === 'article-new' ? 'page' : undefined}>發表文章</a><a href="/react/me/articles" aria-current={page === 'my-articles' ? 'page' : undefined}>我的文章</a><a href="/react/me/comments" aria-current={page === 'my-comments' ? 'page' : undefined}>我的留言</a>{account.role === 'admin' && <details className="admin-nav" open={page.startsWith('managed-') || ['members', 'member', 'lockout-settings'].includes(page)}><summary>管理介面</summary><a href="/react/admin/members" aria-current={page === 'members' || page === 'member' ? 'page' : undefined}>會員管理</a><a href="/react/admin/articles" aria-current={page === 'managed-articles' ? 'page' : undefined}>文章管理</a><a href="/react/admin/comments" aria-current={page === 'managed-comments' ? 'page' : undefined}>留言管理</a><a href="/react/admin/settings/login-lockout" aria-current={page === 'lockout-settings' ? 'page' : undefined}>鎖定設定</a></details>}<span className="account-name">{account.nickname}</span><button className="nav-button" type="button" disabled={busy} onClick={logout}>{busy ? '登出中…' : '登出'}</button></> : authStatus === 'checking' ? <span>驗證登入中…</span> : <><a href="/react/login" aria-current={page === 'login' ? 'page' : undefined}>登入</a><a href="/react/register" aria-current={page === 'register' ? 'page' : undefined}>註冊</a></>}<button className="nav-close" type="button" onClick={closeMobileNav}>關閉導覽</button></nav>
+    <nav id="react-main-nav" className={`site-nav${mobileNavOpen ? ' open' : ''}`} aria-label="主導覽" onKeyDown={mobileNavKeyDown}>
+      <a href="/react/" aria-current={page === 'articles' || page === 'article' ? 'page' : undefined}>所有文章</a>
+      {account ? <>
+        <a href="/react/articles/new" aria-current={page === 'article-new' ? 'page' : undefined}>發表文章</a>
+        <a href="/react/me/articles" aria-current={page === 'my-articles' ? 'page' : undefined}>我的文章</a>
+        <a href="/react/me/comments" aria-current={page === 'my-comments' ? 'page' : undefined}>我的留言</a>
+        {account.role === 'admin' && (
+          <details className="admin-nav" open={page.startsWith('managed-') || ['members', 'member', 'lockout-settings'].includes(page)}>
+            <summary>管理介面</summary>
+            <a href="/react/admin/members" aria-current={page === 'members' || page === 'member' ? 'page' : undefined}>會員管理</a>
+            <a href="/react/admin/articles" aria-current={page === 'managed-articles' ? 'page' : undefined}>文章管理</a>
+            <a href="/react/admin/comments" aria-current={page === 'managed-comments' ? 'page' : undefined}>留言管理</a>
+            <a href="/react/admin/settings/login-lockout" aria-current={page === 'lockout-settings' ? 'page' : undefined}>鎖定設定</a>
+          </details>
+        )}
+        <span className="account-name">{account.nickname}</span>
+        <button className="nav-button" type="button" disabled={busy} onClick={logout}>{busy ? '登出中…' : '登出'}</button>
+      </> : authStatus === 'checking' ? <span>驗證登入中…</span> : <>
+        <a href="/react/login" aria-current={page === 'login' ? 'page' : undefined}>登入</a>
+        <a href="/react/register" aria-current={page === 'register' ? 'page' : undefined}>註冊</a>
+      </>}
+      <button className="nav-close" type="button" onClick={closeMobileNav}>關閉導覽</button>
+    </nav>
     {logoutError && <div className="shell-error"><ErrorNotice error={logoutError} /></div>}
   </>
 }
@@ -809,9 +1003,15 @@ function Header({ backend, onBackend, account, authStatus, credential, onLogout,
 // 入口只信任本分頁 schema，重新載入時請目前後端 /api/me 確認帳號。
 export default function App() {
   // 初始值只讀同分頁儲存，避免渲染過程反覆解析已損壞的 session。
-  const [backend, setBackend] = useState(() => readBackend(sessionStorage))
+  const [backend, setBackend] = useState(
+    // 延遲讀取只在掛載時發生，固定目前分頁的後端來源。
+    () => readBackend(sessionStorage),
+  )
   // 跨前端僅傳 JWT、後端與原期限；帳號資料必須重新驗證。
-  const [credential, setCredential] = useState(() => readSession(sessionStorage))
+  const [credential, setCredential] = useState(
+    // 只還原共享三欄憑證；帳號與授權另外向後端確認。
+    () => readSession(sessionStorage),
+  )
   const [account, setAccount] = useState(null)
   const [authStatus, setAuthStatus] = useState(credential ? 'checking' : 'guest')
   const [authError, setAuthError] = useState(null)
@@ -825,8 +1025,14 @@ export default function App() {
   // 一般連結、上一頁與重新整理同樣保護本機草稿；已送出的寫入可能仍完成。
   useEffect(() => {
     // beforeunload 的文字由瀏覽器顯示；只有真要離頁才發出提示。
-    function confirmUnload(event) { if (draftRef.current.dirty && !approvedNavigation.current) { event.preventDefault(); event.returnValue = '' } }
+    function confirmUnload(event) {
+      if (draftRef.current.dirty && !approvedNavigation.current) {
+        event.preventDefault()
+        event.returnValue = ''
+      }
+    }
     window.addEventListener('beforeunload', confirmUnload)
+    // 卸載時移除離頁保護，避免後續頁面繼承舊表單監聽。
     return () => window.removeEventListener('beforeunload', confirmUnload)
   }, [])
 
@@ -839,7 +1045,10 @@ export default function App() {
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('pageshow', onPageShow)
     // 卸載時移除監聽，避免重複註冊造成多次重載。
-    return () => { window.removeEventListener('pagehide', onPageHide); window.removeEventListener('pageshow', onPageShow) }
+    return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
+    }
   }, [])
 
   // 依目前後端驗證本分頁憑證，並清理切換前的請求。
@@ -864,16 +1073,35 @@ export default function App() {
         if (!ownsCurrent()) return
         if (status === 200 && body?.success === true && body.message === 'OK' && validAccount(body.data)) {
           // 重登後仍以 /api/me 確認原帳號，避免登入回應與實際 JWT 身分不一致。
-          if (ownerId.current && ownerId.current !== body.data.id) { clearSessionIfOwned(sessionStorage, backend, credential); setCredential(null); setAuthStatus('expired'); setAuthError({ message: '登入身分與原草稿作者不同；請使用原帳號重新登入。' }); return }
-          ownerId.current = body.data.id; setAccount(body.data); setAuthError(null); setAuthStatus('ready'); return
+          if (ownerId.current && ownerId.current !== body.data.id) {
+            clearSessionIfOwned(sessionStorage, backend, credential)
+            setCredential(null)
+            setAuthStatus('expired')
+            setAuthError({ message: '登入身分與原草稿作者不同；請使用原帳號重新登入。' })
+            return
+          }
+          ownerId.current = body.data.id
+          setAccount(body.data)
+          setAuthError(null)
+          setAuthStatus('ready')
+          return
         }
         const problem = failure(body)
-        if (problem.code === 'E0002' || problem.code === 'E0102') { if (!clearSessionIfOwned(sessionStorage, backend, credential)) return; setCredential(null); setAccount(null); setAuthStatus(problem.code === 'E0102' ? 'disabled' : 'expired') }
-        else setAuthStatus('unverified')
+        if (problem.code === 'E0002' || problem.code === 'E0102') {
+          if (!clearSessionIfOwned(sessionStorage, backend, credential)) return
+          setCredential(null)
+          setAccount(null)
+          setAuthStatus(problem.code === 'E0102' ? 'disabled' : 'expired')
+        } else setAuthStatus('unverified')
         setAuthError(problem)
       },
       // 暫時故障不清除憑證，亦不先顯示受保護帳號資料。
-      () => { if (ownsCurrent()) { setAuthStatus('unverified'); setAuthError({ message: '目前無法驗證登入；請稍後重新載入。' }) } },
+      () => {
+        if (ownsCurrent()) {
+          setAuthStatus('unverified')
+          setAuthError({ message: '目前無法驗證登入；請稍後重新載入。' })
+        }
+      },
     )
     // 憑證或後端變更時舊 me 結果沒有權力更新新身份。
     return () => controller.abort()
@@ -883,11 +1111,20 @@ export default function App() {
   function changeBackend(next) {
     if (next === backend) return false
     const hadCredential = Boolean(credential)
-    try { if (!selectBackend(sessionStorage, next)) return false } catch { setAuthError({ message: '無法儲存後端選擇，請檢查瀏覽器設定。' }); return false }
+    try {
+      if (!selectBackend(sessionStorage, next)) return false
+    } catch {
+      setAuthError({ message: '無法儲存後端選擇，請檢查瀏覽器設定。' })
+      return false
+    }
     // 儲存後端選擇成功才同步撤銷舊表單回應的擁有權；取消切換則保留。
     switchEpoch.current++
     ownerId.current = null
-    setBackend(next); setCredential(null); setAccount(null); setAuthStatus('guest'); setAuthError({ message: '已切換後端，請重新登入。' })
+    setBackend(next)
+    setCredential(null)
+    setAccount(null)
+    setAuthStatus('guest')
+    setAuthError({ message: '已切換後端，請重新登入。' })
     if (hadCredential && page !== 'login' && page !== 'register') window.location.assign(`/react/login?return_to=${encodeURIComponent(validReturn(pathname) ? pathname : '/react/')}`)
     else approvedNavigation.current = false
     return true
@@ -898,23 +1135,36 @@ export default function App() {
     // 即使後端重簽得到相同字串，較早請求也不得繼承這次登入的寫入資格。
     switchEpoch.current++
     const current = readSession(sessionStorage)
-    setCredential(current); setAccount(null); setAuthStatus(current ? 'checking' : 'guest'); setAuthError(null)
+    setCredential(current)
+    setAccount(null)
+    setAuthStatus(current ? 'checking' : 'guest')
+    setAuthError(null)
   }
 
   // 登出成功或已知失效才清除憑證，保留目前後端選擇。
   function completeLogout(problem, sourceBackend, sourceCredential) {
     if (!clearSessionIfOwned(sessionStorage, sourceBackend, sourceCredential)) return
     // 已確認登出後結束這個帳號的草稿生命週期，不讓新帳號接收舊內容。
-    if (draftRef.current.dirty) { changeDraft(false, false); approvedNavigation.current = true; window.location.assign('/react/'); return }
+    if (draftRef.current.dirty) {
+      changeDraft(false, false)
+      approvedNavigation.current = true
+      window.location.assign('/react/')
+      return
+    }
     ownerId.current = null
-    setCredential(null); setAccount(null); setAuthStatus(problem?.code === 'E0102' ? 'disabled' : 'guest'); setAuthError(problem || { message: '已登出。' })
+    setCredential(null)
+    setAccount(null)
+    setAuthStatus(problem?.code === 'E0102' ? 'disabled' : 'guest')
+    setAuthError(problem || { message: '已登出。' })
   }
 
   // 公開讀取若遇憑證失效也立即停止授權狀態，不降級為訪客後暗中重試。
   const invalidateSession = useCallback((problem, sourceBackend, sourceCredential) => {
     if (!clearSessionIfOwned(sessionStorage, sourceBackend, sourceCredential)) return
-    setCredential(null); setAccount(null)
-    setAuthStatus(problem.code === 'E0102' ? 'disabled' : 'expired'); setAuthError(problem)
+    setCredential(null)
+    setAccount(null)
+    setAuthStatus(problem.code === 'E0102' ? 'disabled' : 'expired')
+    setAuthError(problem)
   }, [])
 
   // 只追蹤目前帳號表單是否有草稿或在途寫入，供前後端切換確認。
@@ -923,7 +1173,16 @@ export default function App() {
     if (dirty || pending) draftSources.current.set(source, { dirty, pending })
     else draftSources.current.delete(source)
     const values = [...draftSources.current.values()]
-    draftRef.current = { dirty: values.some((item) => item.dirty), pending: values.some((item) => item.pending) }
+    draftRef.current = {
+      dirty: values.some(
+        // 任一表單仍有草稿，就保留全頁離頁提示。
+        (item) => item.dirty,
+      ),
+      pending: values.some(
+        // 在途操作會改用已送出仍可能完成的提示。
+        (item) => item.pending,
+      ),
+    }
     setDraft(draftRef.current)
   }, [])
   // 原頁重登表單不擁有作者草稿；其帳密輸入不得清掉離頁保護。
@@ -937,23 +1196,39 @@ export default function App() {
   const authorPage = ['article-new', 'article-edit', 'my-articles', 'my-comments', 'comment', 'comment-edit', 'members', 'member', 'managed-articles', 'managed-comments', 'lockout-settings'].includes(page)
   const inlineLogin = (authorPage || page === 'article' && draft.dirty) && (authStatus === 'guest' || authStatus === 'expired')
   const adminEnabled = authStatus === 'ready' && account?.role === 'admin'
-  return <div className="app-shell"><Header key={backend} backend={backend} onBackend={changeBackend} account={account} authStatus={authStatus} credential={credential} onLogout={completeLogout} draft={draft} switchEpoch={switchEpoch} approvedNavigation={approvedNavigation} /><main>
-    {authError && <div className="auth-notice"><ErrorNotice error={authError} />{authStatus === 'expired' && !inlineLogin && <a href={`/react/login?return_to=${encodeURIComponent(validReturn(pathname) ? pathname : '/react/')}`}>重新登入</a>}{authStatus === 'unverified' && <button className="secondary" type="button" onClick={reloadPage}>重新驗證</button>}</div>}
-    {inlineLogin && <AccountForm key={`inline-${backend}`} mode="login" backend={backend} onLogin={acceptLogin} onDraftChange={ignoreInlineDraft} switchEpoch={switchEpoch} inline expectedOwnerId={ownerId.current} />}
-    {page === 'articles' && (authStatus === 'checking' ? <p role="status">正在驗證登入…</p> : <Articles key={backend} backend={backend} credential={credential} enabled={enabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />)}
-    {page === 'article' && <Article key={backend} backend={backend} credential={credential} account={account} enabled={enabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {page === 'article-new' && <AuthorEditor key={backend} kind="article" backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {page === 'article-edit' && <AuthorEditor key={backend} kind="article" resourceId={editingArticleId} backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {page === 'my-articles' && <MyContent key={backend} kind="article" backend={backend} credential={credential} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
-    {page === 'my-comments' && <MyContent key={backend} kind="comment" backend={backend} credential={credential} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
-    {page === 'comment' && <CommentDetail key={backend} backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {page === 'comment-edit' && <AuthorEditor key={backend} kind="comment" resourceId={editingCommentId} backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {page === 'members' && <Members key={backend} backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
-    {page === 'member' && <Member key={backend} backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {page === 'managed-articles' && <ManagedContent key={backend} kind="article" backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
-    {page === 'managed-comments' && <ManagedContent key={backend} kind="comment" backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
-    {page === 'lockout-settings' && <LockoutSettings key={backend} backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
-    {(page === 'login' || page === 'register') && <AccountForm key={`${page}-${backend}`} mode={page} backend={backend} onLogin={acceptLogin} onDraftChange={changeDraft} switchEpoch={switchEpoch} />}
-    {page === 'missing' && <section className="content"><h1>找不到頁面</h1><p>這個 React 頁面目前不存在。</p><a href="/react/">返回文章列表</a></section>}
-  </main><footer>文章集　·　React＋Vite　·　公開閱讀、作者與管理頁</footer></div>
+  return <div className="app-shell">
+    <Header key={backend} backend={backend} onBackend={changeBackend} account={account} authStatus={authStatus} credential={credential} onLogout={completeLogout} draft={draft} switchEpoch={switchEpoch} approvedNavigation={approvedNavigation} />
+    <main>
+      {authError && (
+        <div className="auth-notice">
+          <ErrorNotice error={authError} />
+          {authStatus === 'expired' && !inlineLogin && <a href={`/react/login?return_to=${encodeURIComponent(validReturn(pathname) ? pathname : '/react/')}`}>重新登入</a>}
+          {authStatus === 'unverified' && <button className="secondary" type="button" onClick={reloadPage}>重新驗證</button>}
+        </div>
+      )}
+      {inlineLogin && <AccountForm key={`inline-${backend}`} mode="login" backend={backend} onLogin={acceptLogin} onDraftChange={ignoreInlineDraft} switchEpoch={switchEpoch} inline expectedOwnerId={ownerId.current} />}
+      {page === 'articles' && (authStatus === 'checking' ? <p role="status">正在驗證登入…</p> : <Articles key={backend} backend={backend} credential={credential} enabled={enabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />)}
+      {page === 'article' && <Article key={backend} backend={backend} credential={credential} account={account} enabled={enabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {page === 'article-new' && <AuthorEditor key={backend} kind="article" backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {page === 'article-edit' && <AuthorEditor key={backend} kind="article" resourceId={editingArticleId} backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {page === 'my-articles' && <MyContent key={backend} kind="article" backend={backend} credential={credential} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
+      {page === 'my-comments' && <MyContent key={backend} kind="comment" backend={backend} credential={credential} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
+      {page === 'comment' && <CommentDetail key={backend} backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {page === 'comment-edit' && <AuthorEditor key={backend} kind="comment" resourceId={editingCommentId} backend={backend} credential={credential} account={account} enabled={authorEnabled} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {page === 'members' && <Members key={backend} backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
+      {page === 'member' && <Member key={backend} backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {page === 'managed-articles' && <ManagedContent key={backend} kind="article" backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
+      {page === 'managed-comments' && <ManagedContent key={backend} kind="comment" backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} />}
+      {page === 'lockout-settings' && <LockoutSettings key={backend} backend={backend} credential={credential} enabled={adminEnabled} status={authStatus} account={account} onAuthFailure={invalidateSession} switchEpoch={switchEpoch} onDraftChange={changeDraft} />}
+      {(page === 'login' || page === 'register') && <AccountForm key={`${page}-${backend}`} mode={page} backend={backend} onLogin={acceptLogin} onDraftChange={changeDraft} switchEpoch={switchEpoch} />}
+      {page === 'missing' && (
+        <section className="content">
+          <h1>找不到頁面</h1>
+          <p>這個 React 頁面目前不存在。</p>
+          <a className="back" href="/react/">返回文章列表</a>
+        </section>
+      )}
+    </main>
+    <footer>文章集　·　React＋Vite　·　公開閱讀、作者與管理頁</footer>
+  </div>
 }

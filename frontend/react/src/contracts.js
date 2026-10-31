@@ -44,7 +44,7 @@ export function readSession(storage) {
 
 // 保存後端簽發的原到期時間；跨前端載入與 me 驗證不會延長它。
 export function saveSession(storage, backend, accessToken, expiresAt) {
-  if (!bases.includes(backend) || typeof accessToken !== 'string' || !accessToken || !timestamp.test(expiresAt)) return false
+  if (!bases.includes(backend) || typeof accessToken !== 'string' || !accessToken || typeof expiresAt !== 'string' || !timestamp.test(expiresAt)) return false
   storage.setItem(BACKEND_KEY, backend)
   storage.setItem(SESSION_KEY, JSON.stringify({ backend, accessToken, expiresAt }))
   return true
