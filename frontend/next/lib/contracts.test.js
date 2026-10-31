@@ -304,3 +304,14 @@ test('account and reading responses reject coerced timestamps and invalid text',
   for (const field of ['title', 'body']) assert.equal(successData(200, envelope({ ...article, [field]: '含\0字元' }), 'article', 7), null, field)
   assert.equal(successData(200, envelope({ ...article, author: { ...article.author, nickname: '含\0字元' } }), 'article', 7), null)
 })
+
+// JSON 陣列可被 RegExp 隱式轉成字串，但管理 API 的時間必須真的是 string。
+test('member readback rejects timestamp arrays rather than accepting coerced text', () => {
+  assert.equal(validMember({ ...member, created_at: [member.created_at] }), false)
+  assert.equal(successData(200, { success: true, message: 'OK', data: { ...member, created_at: [member.created_at] } }, 'member', 2), null)
+})
+
+// 已核准的暱稱不能含 U+0000；損壞的管理讀回必須先拒絕再讓使用者重讀。
+test('member readback rejects forbidden nickname code point', () => {
+  assert.equal(validMember({ ...member, nickname: '會員\0' }), false)
+})

@@ -90,26 +90,50 @@ function ArticleMeta({ item }) {
   return <div className="meta"><span>作者 <strong>{item.author.nickname}</strong></span><span>發佈日期 {item.created_at.slice(0, 10)}</span><span>建立於 <b>{BACKENDS[item.created_backend][0]}</b></span></div>
 }
 
+// 瀏覽器可能在 await 期間拒絕 storage getter；寫入與查證須安全保留未知結果。
+function ownsWriteSession(backend, credential) {
+  try { return ownsSession(sessionStorage, backend, credential) }
+  catch { return false }
+}
+
 // 每個作者寫入各自追蹤請求與草稿，切換時作廢回應但不聲稱取消伺服器寫入。
 function useAuthorWrite(backend, credential, account, onAuthFailure, formNavigation, formKey) {
   const [state, setState] = useState({ pending: false, error: null, uncertain: false, conflict: false })
   const request = useRef(null)
+  const readbackRequest = useRef(null)
   const sequence = useRef(0)
   const failedAuth = useRef(null)
   const stateRef = useRef(state)
+  const ownerId = useRef(null)
   stateRef.current = state
+  // 同一操作記住首次登入者；換帳號不能繼承前人的待查證結果。
+  useEffect(() => { if (account && ownerId.current === null) ownerId.current = account.id }, [account])
+  const sameAccount = Boolean(account && (ownerId.current === null || ownerId.current === account.id))
   // 登記每份表單的生命週期，文章頁的留言與可見性操作可同時受離頁保護。
   useEffect(() => {
-    const entry = { dirty: false, pending: false, cancel: () => { sequence.current += 1; request.current?.abort() } }
+    const entry = {
+      dirty: false,
+      pending: false,
+      unresolved: false,
+      // 接受離頁後同時作廢寫入與人工讀回；中止不代表伺服器回滾。
+      cancel() { sequence.current += 1; request.current?.abort(); readbackRequest.current?.abort() },
+    }
     formNavigation.current.authorForms.set(formKey, entry)
+    // 只有真正離頁才清除操作狀態，父頁重讀及暫時失權仍保留此元件。
     return () => { entry.cancel(); formNavigation.current.authorForms.delete(formKey) }
   }, [formNavigation, formKey])
+  // 新憑證或後端不能沿用舊查證回應；寫入仍等原請求決定已知／未知結果。
+  useEffect(() => {
+    // 讀回清理與寫入各自獨立，避免取消讀取就遺失已送出的寫入。
+    return () => { readbackRequest.current?.abort(); readbackRequest.current = null }
+  }, [backend, credential?.accessToken])
   // 只在原帳號取得新憑證後移除舊認證提示；草稿、版本及其他恢復鎖維持原狀。
   useEffect(() => {
     const failed = failedAuth.current
     if (!failed || !account || account.id !== failed.accountId || backend !== failed.backend || !credential
-      || credential.accessToken === failed.accessToken || !ownsSession(sessionStorage, backend, credential)) return
+      || credential.accessToken === failed.accessToken || !ownsWriteSession(backend, credential)) return
     failedAuth.current = null
+    // 只清舊認證錯誤，不用重登事件解除未知結果或版本衝突。
     setState((current) => ['E0002', 'E0102'].includes(current.error?.code) ? { ...current, error: null } : current)
   }, [account, backend, credential])
   // 同步標記目前草稿，讓選單在 React 下一次 render 前仍能阻止誤切換。
@@ -119,100 +143,138 @@ function useAuthorWrite(backend, credential, account, onAuthFailure, formNavigat
   }
   // 未知結果鎖住自動重送；明確 409 留待人工讀取最新版後才可解鎖。
   async function send(path, method, body, expectedStatus, fields) {
-    if (!backend || !credential || request.current || stateRef.current.uncertain || stateRef.current.conflict) return { obsolete: true }
+    if (!backend || !credential || !sameAccount || request.current || stateRef.current.uncertain || stateRef.current.conflict) return { obsolete: true }
     const controller = new AbortController()
     const turn = ++sequence.current
     request.current = controller
     const entry = formNavigation.current.authorForms.get(formKey)
+    // 同步佔有請求與離頁摘要，避免快速點擊送出兩次。
     if (entry) entry.pending = true
     setState({ pending: true, error: null, uncertain: false, conflict: false })
     try {
       const response = await apiRequest(backend, path, { method, body, token: credential.accessToken, signal: controller.signal })
       if (controller.signal.aborted || turn !== sequence.current) return { obsolete: true }
-      if (!ownsSession(sessionStorage, backend, credential)) {
+      if (!ownsWriteSession(backend, credential)) {
         // 另一個 401 可能已清除原 JWT；已送出的寫入仍可能完成，必須人工讀回確認。
         const error = { message: '寫入結果尚未確認；請重新登入並讀回查證後，才決定是否手動再送。' }
+        if (entry) entry.unresolved = true
         setState({ pending: false, error, uncertain: true, conflict: false })
         return { error, uncertain: true }
       }
-      if (emptySuccess(response.status, response.body, expectedStatus)) { setState({ pending: false, error: null, uncertain: false, conflict: false }); return { ok: true } }
+      // 空 data 的完整封套才可觸發成功導頁或清稿。
+      if (emptySuccess(response.status, response.body, expectedStatus)) {
+        setState({ pending: false, error: null, uncertain: false, conflict: false })
+        return { ok: true }
+      }
       const error = apiFailure(response.status, response.body, fields)
       if (response.status === 401 && error.code === 'E0002' || response.status === 403 && error.code === 'E0102') {
         failedAuth.current = { backend, accessToken: credential.accessToken, accountId: account?.id }
         onAuthFailure(backend, credential, error)
       }
       const conflict = response.status === 409 && error.code === 'E0201'
-      const uncertain = response.status >= 500 || response.status === expectedStatus
+      // 所有無法確認的 2xx 都可能已寫入，錯誤成功狀態也必須查證。
+      const uncertain = response.status >= 500 || response.status >= 200 && response.status < 300
+      if (entry) entry.unresolved = uncertain || conflict
       setState({ pending: false, error, uncertain, conflict })
       return { error, conflict, uncertain }
     } catch {
       if (controller.signal.aborted || turn !== sequence.current) return { obsolete: true }
-      const error = { message: !ownsSession(sessionStorage, backend, credential)
+      const error = { message: !ownsWriteSession(backend, credential)
         ? '寫入結果尚未確認；請重新登入並讀回查證後，才決定是否手動再送。'
         : '寫入結果尚未確認；請先重讀查證，不會自動重送。' }
+      if (entry) entry.unresolved = true
       setState({ pending: false, error, uncertain: true, conflict: false })
       return { error, uncertain: true }
     } finally {
-      if (request.current === controller) { request.current = null; if (entry) entry.pending = false }
+      // 只釋放本請求的 pending，未知結果留在 unresolved，仍需離頁確認。
+      if (request.current === controller) {
+        request.current = null
+        if (entry) entry.pending = false
+      }
     }
   }
   // 只能在使用者明確比較或查證後解除送出鎖，不自動再次呼叫 API。
-  function checked() { setState({ pending: false, error: null, uncertain: false, conflict: false }) }
+  function checked() {
+    const entry = formNavigation.current.authorForms.get(formKey)
+    if (entry) entry.unresolved = false
+    setState({ pending: false, error: null, uncertain: false, conflict: false })
+  }
   // 使用者修改欄位時移除已過期的 422 提示，保留衝突或未知結果鎖。
-  function clearError() { setState((current) => ({ ...current, error: null })) }
-  return { ...state, markDirty, send, checked, clearError }
+  function clearError() {
+    // 欄位修正不代表已查證寫入，保留其他狀態。
+    setState((current) => ({ ...current, error: null }))
+  }
+  return { ...state, sameAccount, markDirty, send, checked, clearError, readbackRequest }
 }
 
 // 下架與恢復共用版本寫入，衝突或結果不明時要求重新讀取目前資源。
-function VisibilityAction({ item, kind, account, backend, credential, onAuthFailure, formNavigation, onRefresh }) {
+function VisibilityAction({ item, kind, account, backend, credential, active, onAuthFailure, formNavigation, onRefresh }) {
   const write = useAuthorWrite(backend, credential, account, onAuthFailure, formNavigation, `${kind}-visibility-${item.id}`)
   const [readback, setReadback] = useState({ loading: false, data: null, error: null })
-  const readbackRequest = useRef(null)
+  const readbackRequest = write.readbackRequest
+  const readbackKey = `${backend}|${credential?.accessToken || ''}`
+  const currentReadback = readback.key === readbackKey ? readback : { loading: false, data: null, error: null }
   const canHide = canHideContent(item, account)
   const canRestore = canRestoreContent(item, account)
-  // 切頁或切換來源時中止查證，過時回應不能解鎖目前帳號的操作。
-  useEffect(() => () => readbackRequest.current?.abort(), [])
   // 後端再次判定權限與版本；成功只讀回已知 ID，絕不猜測更新後內容。
   async function change() {
-    if (!canHide && !canRestore || write.pending || write.conflict || write.uncertain) return
+    if (!active || !canHide && !canRestore || write.pending || write.conflict || write.uncertain) return
     const visibility = canRestore ? 'visible' : 'hidden'
     if (!window.confirm(`確定${visibility === 'hidden' ? '下架' : '恢復'}這筆${kind === 'article' ? '文章' : '留言'}嗎？`)) return
+    setReadback({ loading: false, data: null, error: null })
     const result = await write.send(`/api/${kind === 'article' ? 'articles' : 'comments'}/${item.id}/visibility`, 'PUT', { visibility, version: item.version }, 200, ['visibility', 'version'])
     if (result.ok) onRefresh()
   }
   // 衝突與未知結果單獨讀回已知 ID；讀取失敗或換帳號不解除寫入鎖。
   async function check() {
-    if (readbackRequest.current || !credential) return
+    if (!active || readbackRequest.current || !credential) return
     const controller = new AbortController()
     readbackRequest.current = controller
-    setReadback({ loading: true, data: null, error: null })
+    setReadback({ key: readbackKey, loading: true, data: null, error: null })
     try {
       const response = await apiRequest(backend, `/api/${kind === 'article' ? 'articles' : 'comments'}/${item.id}`, { token: credential.accessToken, signal: controller.signal })
-      if (controller.signal.aborted || !ownsSession(sessionStorage, backend, credential)) return
+      if (controller.signal.aborted) return
+      if (!ownsWriteSession(backend, credential)) {
+        setReadback({ key: readbackKey, loading: false, data: null, error: { message: '目前無法確認登入，請重新驗證後再查證。' } })
+        return
+      }
       const data = successData(response.status, response.body, kind, item.id)
-      if (data) { setReadback({ loading: false, data, error: null }); return }
+      if (data) { setReadback({ key: readbackKey, loading: false, data, error: null }); return }
       const error = apiFailure(response.status, response.body)
       if (response.status === 401 && error.code === 'E0002' || response.status === 403 && error.code === 'E0102') onAuthFailure(backend, credential, error)
-      setReadback({ loading: false, data: null, error })
+      setReadback({ key: readbackKey, loading: false, data: null, error })
     } catch {
-      if (!controller.signal.aborted && ownsSession(sessionStorage, backend, credential)) setReadback({ loading: false, data: null, error: { message: '查證失敗，請確認目前後端後手動重試。' } })
+      if (!controller.signal.aborted) setReadback({ key: readbackKey, loading: false, data: null, error: { message: '查證失敗，請確認目前後端後手動重試。' } })
     } finally {
       if (readbackRequest.current === controller) readbackRequest.current = null
     }
   }
   // 看過新版本與可見性後再重讀父頁；下一次操作仍由使用者按下並經後端重驗。
   function acceptReadback() {
-    if (!readback.data || readback.loading || readback.error || !ownsSession(sessionStorage, backend, credential)) return
+    if (!active || !currentReadback.data || currentReadback.loading || currentReadback.error || !ownsWriteSession(backend, credential)) return
+    write.checked()
+    setReadback({ loading: false, data: null, error: null })
     onRefresh()
   }
-  if (!canHide && !canRestore && !write.error) return null
-  return <div className="author-actions"><ErrorNotice error={write.error} />
-    {(write.conflict || write.uncertain) && <div className="notice"><p>{write.conflict ? '版本已變更，請重讀並重新確認操作。' : '結果尚未確認，請重讀查證目前狀態。'}</p>
-      <button className="outline-button" type="button" disabled={readback.loading} onClick={check}>{readback.loading ? '查證中…' : '重讀目前狀態'}</button>
-      <ErrorNotice error={readback.error} />
-      {readback.data && <div><p>最新版本 {readback.data.version} · {readback.data.visibility === 'hidden' ? '已下架' : '公開'} · {readback.data.can_restore ? '可恢復' : '目前不可恢復'}</p><button className="outline-button" type="button" onClick={acceptReadback}>已比對，使用最新狀態</button></div>}
+  if (!write.sameAccount) return <p className="notice">登入帳號已變更，請重新開啟此頁再操作內容狀態。</p>
+  if (!canHide && !canRestore && !write.error && !write.uncertain && !write.conflict) return null
+  return <div className="author-actions">
+    <ErrorNotice error={write.error} />
+    {(write.conflict || write.uncertain) && <div className="notice">
+      <p>{write.conflict ? '版本已變更，請重讀並重新確認操作。' : '結果尚未確認，請重讀查證目前狀態。'}</p>
+      <button className="outline-button" type="button" disabled={currentReadback.loading} onClick={check}>
+        {currentReadback.loading ? '查證中…' : '重讀目前狀態'}
+      </button>
+      <ErrorNotice error={currentReadback.error} />
+      {currentReadback.data && <div>
+        <p>最新版本 {currentReadback.data.version} · {currentReadback.data.visibility === 'hidden' ? '已下架' : '公開'} · {currentReadback.data.can_restore ? '可恢復' : '目前不可恢復'}</p>
+        <button className="outline-button" type="button" onClick={acceptReadback}>已比對，使用最新狀態</button>
+      </div>}
     </div>}
-    {(canHide || canRestore) && <button className="outline-button" type="button" disabled={write.pending || write.conflict || write.uncertain} onClick={change}>{write.pending ? '處理中…' : canRestore ? '恢復' : '下架'}</button>}
+    {(canHide || canRestore) && <button className="outline-button" type="button"
+      disabled={!active || write.pending || write.conflict || write.uncertain} onClick={change}>
+      {write.pending ? '處理中…' : canRestore ? '恢復' : '下架'}
+    </button>}
   </div>
 }
 
@@ -270,7 +332,12 @@ function ContentEditor({ kind, id, backend, credential, account, ready, onAuthFa
   // 初讀填入伺服器內容；之後的重讀保留輸入，讓衝突可逐字比較。
   useEffect(() => {
     if (account && owner.current === null && creating) owner.current = account.id
-    if (read.data && !initialized.current) { owner.current = read.data.author.id; setFields({ title: read.data.title || '', body: read.data.body }); setVersion(read.data.version); initialized.current = true }
+    if (read.data && !initialized.current) {
+      owner.current = read.data.author.id
+      setFields({ title: read.data.title || '', body: read.data.body })
+      setVersion(read.data.version)
+      initialized.current = true
+    }
   }, [read.data, account, creating])
   // 錯誤摘要取得鍵盤焦點，欄位連結可前往精確輸入。
   useEffect(() => { if (write.error || Object.keys(errors).length) summary.current?.focus() }, [write.error, errors])
@@ -278,13 +345,34 @@ function ContentEditor({ kind, id, backend, credential, account, ready, onAuthFa
   const allowed = ready && sameAccount && (creating || Boolean(read.data && canEditContent(read.data, account)))
   const parentVisible = article || parent.data?.visibility === 'visible'
   // 保留使用者輸入原文，清除已過期的欄位提示並更新離頁標記。
-  function change(event) { setFields((current) => ({ ...current, [event.target.name]: event.target.value })); setErrors({}); write.clearError(); write.markDirty(true) }
+  function change(event) {
+    const { name, value } = event.target
+    // 合併最新欄位值，連續輸入不覆蓋另一欄草稿。
+    setFields((current) => ({ ...current, [name]: value }))
+    setErrors({})
+    write.clearError()
+    write.markDirty(true)
+  }
   // 人工重讀可處理衝突或未知結果，需明確採用新版本才可再次送出。
-  function checkLatest() { setChecking(true); if (creating) verification.reload(); else read.reload(); if (!article) parent.reload() }
+  function checkLatest() {
+    setChecking(true)
+    if (creating) verification.reload()
+    else read.reload()
+    if (!article) parent.reload()
+  }
   // 最新資料不會覆蓋草稿；按鈕只更新送出用版本。
-  function acceptLatest() { if (!read.data || read.loading || read.error) return; setVersion(read.data.version); setChecking(false); write.checked() }
+  function acceptLatest() {
+    if (!read.data || read.loading || read.error || !sameAccount) return
+    setVersion(read.data.version)
+    setChecking(false)
+    write.checked()
+  }
   // 建立沒有回傳 ID，列表只供人工查證，不把第一筆當作剛建立的內容。
-  function acceptCreatedCheck() { if (!verification.data || verification.loading || verification.error) return; write.checked(); setChecking(false) }
+  function acceptCreatedCheck() {
+    if (!verification.data || verification.loading || verification.error || !sameAccount) return
+    write.checked()
+    setChecking(false)
+  }
   // 送出前做共同文字驗證與目前作者檢查，後端仍原子檢查權限及版本。
   async function submit(event) {
     event.preventDefault()
@@ -305,25 +393,71 @@ function ContentEditor({ kind, id, backend, credential, account, ready, onAuthFa
     }
     if (result.error?.errors) setErrors(result.error.errors)
   }
-  return <div className="editorial-layout"><ArticleRail /><main className="article-column editor-page"><a className="back-link" href={creating ? '/next/me/articles' : `/next/${article ? 'articles' : 'comments'}/${id}`}>← 返回{creating ? '我的文章' : '詳情'}</a><div className="section-heading"><h1>{creating ? '發表文章' : article ? '編輯文章' : '編輯留言'}</h1></div>
-    {creating && <p>文章發表後立即公開，由目前後端記錄建立來源。</p>}
-    {!creating && ready && read.loading && <p role="status" className="notice">正在讀取內容…</p>}{!creating && <ErrorNotice error={read.error} retry={read.reload} />}
-    {!article && read.data && <section className="related"><h2>所屬文章</h2>{parent.loading && <p role="status">正在確認文章…</p>}{parent.data && <p><a href={`/next/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}</p>}{parent.error && <><p className="notice">所屬文章目前無法讀取。</p><button className="outline-button" type="button" onClick={parent.reload}>單獨重試文章讀取</button></>}</section>}
-    {account && !sameAccount && <p className="notice error" role="alert">目前登入帳號不同，這份草稿不能交給新帳號。</p>}
-    {read.data && sameAccount && !creating && !canEditContent(read.data, account) && <p className="notice error">只有內容作者可編修。</p>}
-    {allowed && <><ErrorNotice error={write.error || (Object.keys(errors).length ? { message: '請修正標示欄位後再送出。', errors } : null)} focusRef={summary} />
-      {(write.conflict || write.uncertain) && <div className="notice"><p>{write.conflict ? '內容版本已變更，請比較最新內容後自行整合。' : '寫入結果尚未確認，請查證後自行決定是否再送。'}</p><button className="outline-button" type="button" onClick={checkLatest}>{creating ? '查證我的文章第一頁' : '讀取最新內容'}</button></div>}
-      {checking && !creating && read.data && !read.loading && !read.error && <div className="comparison"><h2>最新伺服器內容（供比較）</h2>{article && <p className="body-text">{read.data.title}</p>}<p className="body-text">{read.data.body}</p><p>版本 {read.data.version}</p><button className="outline-button" type="button" onClick={acceptLatest}>已比較，採用最新版本號</button></div>}
-      {checking && creating && verification.loading && <p role="status" className="notice">正在查證我的文章…</p>}{checking && creating && <ErrorNotice error={verification.error} retry={verification.reload} />}
-      {checking && creating && verification.data && !verification.loading && !verification.error && <div className="comparison"><p>請自行核對是否已建立；第一筆不一定是本次文章。</p><ul>{verification.data.list.map(
-        // 顯示伺服器資料供核對，不推測本次建立的 ID。
-        (item) => <li key={item.id}><a href={`/next/articles/${item.id}`}>{item.title}</a> · {item.created_at}</li>,
-      )}</ul><button className="outline-button" type="button" onClick={acceptCreatedCheck}>已查證，允許手動送出</button></div>}
-      <form className="account-form" noValidate onSubmit={submit}>{article && <><label htmlFor="title">標題</label><input id="title" name="title" value={fields.title} onChange={change} disabled={write.pending} aria-invalid={Boolean(errors.title)} />{errors.title && <small className="field-error">{errors.title.join('；')}</small>}</>}
-        <label htmlFor="body">{article ? '文章內文' : '留言內容'}</label><textarea id="body" name="body" rows={10} value={fields.body} onChange={change} disabled={write.pending} aria-invalid={Boolean(errors.body)} />{errors.body && <small className="field-error">{errors.body.join('；')}</small>}
-        {!parentVisible && !article && <p className="notice">確認所屬文章公開後才能送出留言編修。</p>}
-        <button className="red-button" type="submit" disabled={write.pending || write.conflict || write.uncertain || !parentVisible}>{write.pending ? '處理中…' : creating ? '發表文章' : '儲存修改'}</button></form></>}
-  </main></div>
+  return <div className="editorial-layout">
+    <ArticleRail />
+    <main className="article-column editor-page">
+      <a className="back-link" href={creating ? '/next/me/articles' : `/next/${article ? 'articles' : 'comments'}/${id}`}>
+        ← 返回{creating ? '我的文章' : '詳情'}
+      </a>
+      <div className="section-heading"><h1>{creating ? '發表文章' : article ? '編輯文章' : '編輯留言'}</h1></div>
+      {creating && <p>文章發表後立即公開，由目前後端記錄建立來源。</p>}
+      {!creating && ready && read.loading && <p role="status" className="notice">正在讀取內容…</p>}
+      {!creating && <ErrorNotice error={read.error} retry={read.reload} />}
+      {!article && read.data && <section className="related">
+        <h2>所屬文章</h2>
+        {parent.loading && <p role="status">正在確認文章…</p>}
+        {parent.data && <p>
+          <a href={`/next/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}
+        </p>}
+        {parent.error && <>
+          <p className="notice">所屬文章目前無法讀取。</p>
+          <button className="outline-button" type="button" onClick={parent.reload}>單獨重試文章讀取</button>
+        </>}
+      </section>}
+      {account && !sameAccount && <p className="notice error" role="alert">目前登入帳號不同，這份草稿不能交給新帳號。</p>}
+      {read.data && sameAccount && !creating && !canEditContent(read.data, account) && <p className="notice error">只有內容作者可編修。</p>}
+      {allowed && <>
+        <ErrorNotice error={write.error || (Object.keys(errors).length ? { message: '請修正標示欄位後再送出。', errors } : null)} focusRef={summary} />
+        {(write.conflict || write.uncertain) && <div className="notice">
+          <p>{write.conflict ? '內容版本已變更，請比較最新內容後自行整合。' : '寫入結果尚未確認，請查證後自行決定是否再送。'}</p>
+          <button className="outline-button" type="button" onClick={checkLatest}>{creating ? '查證我的文章第一頁' : '讀取最新內容'}</button>
+        </div>}
+        {checking && !creating && read.data && !read.loading && !read.error && <div className="comparison">
+          <h2>最新伺服器內容（供比較）</h2>
+          {article && <p className="body-text">{read.data.title}</p>}
+          <p className="body-text">{read.data.body}</p>
+          <p>版本 {read.data.version}</p>
+          <button className="outline-button" type="button" onClick={acceptLatest}>已比較，採用最新版本號</button>
+        </div>}
+        {checking && creating && verification.loading && <p role="status" className="notice">正在查證我的文章…</p>}
+        {checking && creating && <ErrorNotice error={verification.error} retry={verification.reload} />}
+        {checking && creating && verification.data && !verification.loading && !verification.error && <div className="comparison">
+          <p>請自行核對是否已建立；第一筆不一定是本次文章。</p>
+          <ul>{verification.data.list.map(
+            // 顯示伺服器資料供核對，不推測本次建立的 ID。
+            (item) => <li key={item.id}><a href={`/next/articles/${item.id}`}>{item.title}</a> · {item.created_at}</li>,
+          )}</ul>
+          <button className="outline-button" type="button" onClick={acceptCreatedCheck}>已查證，允許手動送出</button>
+        </div>}
+        <form className="account-form" noValidate onSubmit={submit}>
+          {article && <>
+            <label htmlFor="title">標題</label>
+            <input id="title" name="title" value={fields.title} onChange={change} disabled={write.pending}
+              aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? 'title-error' : undefined} />
+            {errors.title && <small id="title-error" className="field-error">{errors.title.join('；')}</small>}
+          </>}
+          <label htmlFor="body">{article ? '文章內文' : '留言內容'}</label>
+          <textarea id="body" name="body" rows={10} value={fields.body} onChange={change} disabled={write.pending}
+            aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />
+          {errors.body && <small id="body-error" className="field-error">{errors.body.join('；')}</small>}
+          {!parentVisible && !article && <p className="notice">確認所屬文章公開後才能送出留言編修。</p>}
+          <button className="red-button" type="submit" disabled={write.pending || write.conflict || write.uncertain || !parentVisible}>
+            {write.pending ? '處理中…' : creating ? '發表文章' : '儲存修改'}
+          </button>
+        </form>
+      </>}
+    </main>
+  </div>
 }
 
 // 公開文章列表直接用目前後端資料，分別處理載入、真空與超頁。
@@ -393,11 +527,20 @@ function CommentComposer({ article, backend, credential, account, ready, onAuthF
   const sameAccount = Boolean(account && (owner.current === null || owner.current === account.id))
   const allowed = ready && sameAccount && article.visibility === 'visible'
   // 更新輸入後清除舊錯誤，維持換行與純文字原值。
-  function change(event) { setBody(event.target.value); setErrors({}); write.clearError(); write.markDirty(true) }
+  function change(event) {
+    setBody(event.target.value)
+    setErrors({})
+    write.clearError()
+    write.markDirty(true)
+  }
   // 查證只重讀第一頁，不能將列表第一筆認定為這次建立。
   function check() { setChecking(true); reloadComments() }
   // 必須看到已完成的列表讀取，才能自行決定是否再次送出。
-  function acceptCheck() { if (!comments?.data || comments.loading || comments.error) return; setChecking(false); write.checked() }
+  function acceptCheck() {
+    if (!comments?.data || comments.loading || comments.error || !sameAccount) return
+    setChecking(false)
+    write.checked()
+  }
   // 父文章須由目前後端確認公開；成功後清草稿並重讀留言第一頁。
   async function submit(event) {
     event.preventDefault()
@@ -410,10 +553,30 @@ function CommentComposer({ article, backend, credential, account, ready, onAuthF
     if (result.error?.errors) setErrors(result.error.errors)
     if (['E0003', 'E0004'].includes(result.error?.code)) reloadArticle()
   }
-  return <section className="composer"><h3>發表留言</h3>{article.visibility === 'hidden' ? <p className="notice">文章已下架，不能新增留言。</p> : !account ? <p>登入後可以留言。<a href={`/next/login?return_to=${encodeURIComponent(`/next/articles/${article.id}`)}`}>前往登入</a></p> : !sameAccount ? <p className="notice error">目前登入帳號不同，原留言草稿不能交給新帳號。</p> : <>
-    <ErrorNotice error={write.error || (Object.keys(errors).length ? { message: '請修正標示欄位後再送出。', errors } : null)} focusRef={summary} />
-    {write.uncertain && <div className="notice"><p>結果尚未確認；請查證留言第一頁，不會自動重送。</p><button className="outline-button" type="button" onClick={check}>重讀留言第一頁</button>{checking && comments?.data && !comments.loading && !comments.error && <button className="outline-button" type="button" onClick={acceptCheck}>已查證，允許手動送出</button>}</div>}
-    <form className="account-form" noValidate onSubmit={submit}><label htmlFor="comment-body">留言內容</label><textarea id="comment-body" name="body" rows={5} value={body} onChange={change} disabled={!allowed || write.pending} aria-invalid={Boolean(errors.body)} />{errors.body && <small className="field-error">{errors.body.join('；')}</small>}<button className="red-button" type="submit" disabled={!allowed || write.pending || write.uncertain}>{write.pending ? '送出中…' : '發表留言'}</button></form></>}
+  return <section className="composer">
+    <h3>發表留言</h3>
+    {account && sameAccount && <>
+      <ErrorNotice error={write.error || (Object.keys(errors).length ? { message: '請修正標示欄位後再送出。', errors } : null)} focusRef={summary} />
+      {write.uncertain && <div className="notice">
+        <p>結果尚未確認；請查證留言第一頁，不會自動重送。</p>
+        <button className="outline-button" type="button" onClick={check}>重讀留言第一頁</button>
+        {checking && comments?.data && !comments.loading && !comments.error && <button className="outline-button" type="button" onClick={acceptCheck}>已查證，允許手動送出</button>}
+      </div>}
+    </>}
+    {article.visibility === 'hidden' ? <p className="notice">文章已下架，不能新增留言。</p>
+      : !account ? <p>登入後可以留言。<a href={`/next/login?return_to=${encodeURIComponent(`/next/articles/${article.id}`)}`}>前往登入</a></p>
+        : !sameAccount ? <p className="notice error">目前登入帳號不同，原留言草稿不能交給新帳號。</p>
+          : <>
+            <form className="account-form" noValidate onSubmit={submit}>
+              <label htmlFor="comment-body">留言內容</label>
+              <textarea id="comment-body" name="body" rows={5} value={body} onChange={change} disabled={!allowed || write.pending}
+                aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'comment-body-error' : undefined} />
+              {errors.body && <small id="comment-body-error" className="field-error">{errors.body.join('；')}</small>}
+              <button className="red-button" type="submit" disabled={!allowed || write.pending || write.uncertain}>
+                {write.pending ? '送出中…' : '發表留言'}
+              </button>
+            </form>
+          </>}
   </section>
 }
 
@@ -437,25 +600,46 @@ function ArticlePage({ backend, credential, account, ready, id, page, onAuthFail
     else setCommentPage(1)
     if (page !== 1) window.history.replaceState(null, '', `/next/articles/${id}?page=1#comments`)
   }
-  return <div className="editorial-layout"><ArticleRail /><article className="article-column detail">
-    <a className="back-link" href="/next/">← 返回文章列表</a>
-    {account?.role === 'admin' && <a className="back-link admin-return" href="/next/admin/articles">← 返回文章管理</a>}
-    {read.loading && <p className="notice" role="status">正在載入文章…</p>}
-    <ErrorNotice error={read.error} retry={read.reload} />
-    {read.data && <><header><p className="eyebrow">ARTICLE / 文章閱讀</p><h1>{read.data.title}</h1><ArticleMeta item={read.data} /><p>{read.data.visibility === 'hidden' ? '已下架' : '公開'}</p></header>
-      <div className="article-body body-text">{read.data.body}</div>
-      {canEditContent(read.data, account) && <a className="back-link" href={`/next/articles/${id}/edit`}>編輯文章</a>}
-      {account && <VisibilityAction item={read.data} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} formNavigation={formNavigation} onRefresh={read.reload} />}
-      <CommentList backend={backend} credential={credential} account={account} ready={ready} articleId={numericId} page={commentPage} onAuthFailure={onAuthFailure} onRead={setComments} firstPage={commentRevision} />
+  return <div className="editorial-layout">
+    <ArticleRail />
+    <article className="article-column detail">
+      <a className="back-link" href="/next/">← 返回文章列表</a>
+      {account?.role === 'admin' && <a className="back-link admin-return" href="/next/admin/articles">← 返回文章管理</a>}
+      {read.loading && <p className="notice" role="status">正在載入文章…</p>}
+      <ErrorNotice error={read.error} retry={read.reload} />
+      {read.data && <>
+        <header>
+          <p className="eyebrow">ARTICLE / 文章閱讀</p>
+          <h1>{read.data.title}</h1>
+          <ArticleMeta item={read.data} />
+          <p>{read.data.visibility === 'hidden' ? '已下架' : '公開'}</p>
+        </header>
+        <div className="article-body body-text">{read.data.body}</div>
+        {canEditContent(read.data, account) && <a className="back-link" href={`/next/articles/${id}/edit`}>編輯文章</a>}
       </>}
-    {snapshot && <div hidden={!read.data}><CommentComposer article={read.data || snapshot} backend={backend} credential={credential} account={account} ready={ready && Boolean(read.data)} onAuthFailure={onAuthFailure} formNavigation={formNavigation} comments={comments} reloadComments={reloadComments} reloadArticle={read.reload} /></div>}
-  </article></div>
+      {snapshot && <div hidden={!read.data || !account}>
+        <VisibilityAction item={read.data || snapshot} kind="article" account={account} backend={backend}
+          credential={credential} active={Boolean(read.data && account)} onAuthFailure={onAuthFailure}
+          formNavigation={formNavigation} onRefresh={read.reload} />
+      </div>}
+      {read.data && <CommentList backend={backend} credential={credential} account={account} ready={ready}
+        articleId={numericId} page={commentPage} onAuthFailure={onAuthFailure} onRead={setComments} firstPage={commentRevision} />}
+      {snapshot && <div hidden={!read.data}>
+        <CommentComposer article={read.data || snapshot} backend={backend} credential={credential} account={account}
+          ready={ready && Boolean(read.data)} onAuthFailure={onAuthFailure} formNavigation={formNavigation}
+          comments={comments} reloadComments={reloadComments} reloadArticle={read.reload} />
+      </div>}
+    </article>
+  </div>
 }
 
 // 留言先獨立授權讀取，再嘗試父文章；父文章 404 不洩漏其標題或原因。
 function CommentDetail({ id, backend, credential, account, ready, onAuthFailure, formNavigation }) {
   const read = useApiRead(backend, credential, `/api/comments/${id}`, 'comment', positiveId(id), null, ready, onAuthFailure)
   const parent = useApiRead(backend, credential, `/api/articles/${read.data?.article_id || 0}`, 'article', read.data?.article_id, null, ready && Boolean(read.data), onAuthFailure)
+  const [snapshot, setSnapshot] = useState(null)
+  // 暫時失權或重讀時保留可見性操作，舊內容只留記憶體且隱藏。
+  useEffect(() => { if (read.data) setSnapshot(read.data) }, [read.data])
   return <div className="editorial-layout">
     <ArticleRail />
     <main className="article-column detail">
@@ -481,27 +665,61 @@ function CommentDetail({ id, backend, credential, account, ready, onAuthFailure,
           </>}
         </section>
         {canEditContent(read.data, account, parent.data?.visibility === 'visible') && <a className="back-link" href={`/next/comments/${id}/edit`}>編輯留言</a>}
-        {account && <VisibilityAction item={read.data} kind="comment" account={account} backend={backend}
-          credential={credential} onAuthFailure={onAuthFailure} formNavigation={formNavigation} onRefresh={read.reload} />}
       </>}
+      {snapshot && <div hidden={!read.data || !account}>
+        <VisibilityAction item={read.data || snapshot} kind="comment" account={account} backend={backend}
+          credential={credential} active={ready && Boolean(read.data && account)} onAuthFailure={onAuthFailure}
+          formNavigation={formNavigation} onRefresh={read.reload} />
+      </div>}
     </main>
   </div>
 }
 
 // 管理入口沿用同一組語意頁，避免在窄螢幕塞入過長的單列導覽。
 function AdminMenu() {
-  return <details className="admin-menu"><summary>管理</summary><nav aria-label="管理導覽"><a href="/next/admin/members">會員</a><a href="/next/admin/articles">文章</a><a href="/next/admin/comments">留言</a><a href="/next/admin/settings/login-lockout">鎖定設定</a></nav></details>
+  return <details className="admin-menu">
+    <summary>管理</summary>
+    <nav aria-label="管理導覽">
+      <a href="/next/admin/members">會員</a>
+      <a href="/next/admin/articles">文章</a>
+      <a href="/next/admin/comments">留言</a>
+      <a href="/next/admin/settings/login-lockout">鎖定設定</a>
+    </nav>
+  </details>
 }
 
 // 瑞士式側欄與清楚的操作區延伸到管理頁，資料仍由各頁獨立讀取。
 function AdminFrame({ title, children }) {
-  return <div className="editorial-layout admin-layout"><aside className="article-rail" aria-label="管理介面"><p className="rail-kicker">THE ARTICLE COLLECTION</p><p className="rail-title">管理<br />中心</p><p className="rail-foot">會員・文章・留言</p></aside><main className="article-column admin-page"><div className="section-heading"><h1>{title}</h1><p className="eyebrow">ADMINISTRATION / 管理</p></div><a className="back-link" href="/next/">← 返回文章列表</a>{children}</main></div>
+  return <div className="editorial-layout admin-layout">
+    <aside className="article-rail" aria-label="管理介面">
+      <p className="rail-kicker">THE ARTICLE COLLECTION</p>
+      <p className="rail-title">管理<br />中心</p>
+      <p className="rail-foot">會員・文章・留言</p>
+    </aside>
+    <main className="article-column admin-page">
+      <div className="section-heading"><h1>{title}</h1><p className="eyebrow">ADMINISTRATION / 管理</p></div>
+      <a className="back-link" href="/next/">← 返回文章列表</a>
+      {children}
+    </main>
+  </div>
 }
 
 // 管理員身分只控制前端顯示與請求時機，實際授權仍由各 API 重驗。
 function AdminAccess({ ready, authStatus, account }) {
   if (ready) return null
-  return <p className="notice" role="status">{account && account.role !== 'admin' ? '沒有權限使用管理功能。' : authStatus === 'checking' ? '正在驗證登入…' : authStatus === 'error' ? '目前無法確認登入，請先重新驗證。' : authStatus === 'disabled' ? '此帳號已停用，不能使用管理功能。' : authStatus === 'expired' ? '請重新登入以繼續管理操作。' : '請先登入以使用管理功能。'}</p>
+  return <p className="notice" role="status">
+    {account && account.role !== 'admin'
+      ? '沒有權限使用管理功能。'
+      : authStatus === 'checking'
+        ? '正在驗證登入…'
+        : authStatus === 'error'
+          ? '目前無法確認登入，請先重新驗證。'
+          : authStatus === 'disabled'
+            ? '此帳號已停用，不能使用管理功能。'
+            : authStatus === 'expired'
+              ? '請重新登入以繼續管理操作。'
+              : '請先登入以使用管理功能。'}
+  </p>
 }
 
 // 會員搜尋只保留核准的 keyword；網址頁碼在搜尋時回第一頁。
@@ -524,17 +742,34 @@ function AdminMembers({ backend, credential, account, authStatus, ready, page, k
   // 搜尋字串變動後移除舊的長度錯誤，保留輸入直到送出。
   function changeSearch(event) { setInput(event.target.value); setSearchError(null) }
   // 指定超頁優先顯示此頁無資料，首頁才區分搜尋無結果與尚無會員。
-  return <AdminFrame title="會員管理"><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
-    <form className="admin-toolbar" onSubmit={search}><label htmlFor="keyword">搜尋暱稱或 Email</label><input id="keyword" value={input} onChange={changeSearch} aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'keyword-error' : undefined} /><button className="outline-button" type="submit">搜尋會員</button>{searchError && <p id="keyword-error" className="field-error">最多 254 個 Unicode 字元</p>}</form>
-    <ErrorNotice error={searchError || (keyword === null ? { message: '網址中的搜尋關鍵字過長，請修正後再搜尋。' } : null)} focusRef={searchRef} />
-    {keyword !== null && <>{read.loading && <p className="notice" role="status">正在載入會員…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <>
-      {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
-        // 列表只連到一般會員詳情，不在前端推測狀態寫入結果。
-        (member) => <li className="admin-row" key={member.id}><div><small>會員 #{member.id}</small><h2><a href={`/next/admin/members/${member.id}`}>{member.nickname}</a></h2></div><p className="break">{member.email}</p><p>{member.status === 'active' ? '啟用' : '停用'}</p><a href={`/next/admin/members/${member.id}`}>查看詳情</a></li>,
-      )}</ol> : <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有會員資料。' : keyword ? '沒有符合搜尋條件的會員。' : '目前尚無會員。'}</p>}
-      <Pagination pagination={read.data.pagination} base="/next/admin/members" query={keyword ? `keyword=${encodeURIComponent(keyword)}` : ''} />
-    </>}</>}
-  </>}</AdminFrame>
+  return <AdminFrame title="會員管理">
+    <AdminAccess ready={ready} authStatus={authStatus} account={account} />
+    {ready && <>
+      <form className="admin-toolbar" onSubmit={search}>
+        <label htmlFor="keyword">搜尋暱稱或 Email</label>
+        <input id="keyword" value={input} onChange={changeSearch} aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'keyword-error' : undefined} />
+        <button className="outline-button" type="submit">搜尋會員</button>
+        {searchError && <p id="keyword-error" className="field-error">最多 254 個 Unicode 字元</p>}
+      </form>
+      <ErrorNotice error={searchError || (keyword === null ? { message: '網址中的搜尋關鍵字過長，請修正後再搜尋。' } : null)} focusRef={searchRef} />
+      {keyword !== null && <>
+        {read.loading && <p className="notice" role="status">正在載入會員…</p>}
+        <ErrorNotice error={read.error} retry={read.reload} />
+        {read.data && <>
+          {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
+            // 列表只連到一般會員詳情，不在前端推測狀態寫入結果。
+            (member) => <li className="admin-row" key={member.id}>
+              <div><small>會員 #{member.id}</small><h2><a href={`/next/admin/members/${member.id}`}>{member.nickname}</a></h2></div>
+              <p className="break"><span className="row-label">Email </span>{member.email}</p>
+              <p><span className="row-label">狀態 </span>{member.status === 'active' ? '啟用' : '停用'}</p>
+              <a href={`/next/admin/members/${member.id}`}>查看詳情</a>
+            </li>,
+          )}</ol> : <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有會員資料。' : keyword ? '沒有符合搜尋條件的會員。' : '目前尚無會員。'}</p>}
+          <Pagination pagination={read.data.pagination} base="/next/admin/members" query={keyword ? `keyword=${encodeURIComponent(keyword)}` : ''} />
+        </>}
+      </>}
+    </>}
+  </AdminFrame>
 }
 
 // 停用／恢復後只相信重新讀取的伺服器狀態；不把空成功回應當成新狀態。
@@ -545,7 +780,7 @@ function AdminMember({ id, backend, credential, account, authStatus, ready, onAu
   const [checking, setChecking] = useState(false)
   // 寫入未確認時須由人重新讀回，不能自動重送同一狀態。
   async function change() {
-    if (!read.data || write.pending || write.uncertain || write.conflict || !window.confirm(`確定${read.data.status === 'active' ? '停用' : '恢復'}這位會員嗎？`)) return
+    if (!write.sameAccount || !read.data || write.pending || write.uncertain || write.conflict || !window.confirm(`確定${read.data.status === 'active' ? '停用' : '恢復'}這位會員嗎？`)) return
     const status = read.data.status === 'active' ? 'disabled' : 'active'
     const result = await write.send(`/api/members/${id}/status`, 'PUT', { status }, 200, ['status'])
     if (result.ok) { setChecking(false); read.reload() }
@@ -553,12 +788,38 @@ function AdminMember({ id, backend, credential, account, authStatus, ready, onAu
   // 查證啟動時清除先前資料，讀取完成後才可解鎖下一次手動操作。
   function check() { setChecking(true); read.reload() }
   // 使用者親自比對最新狀態後解鎖，下一次點擊仍須再次確認。
-  function accept() { if (read.data && !read.loading && !read.error) { write.checked(); setChecking(false) } }
-  return <AdminFrame title="會員詳情"><a className="back-link" href="/next/admin/members">← 返回會員列表</a><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
-    {read.loading && <p className="notice" role="status">正在讀取會員…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <div className="admin-detail"><p><strong>會員 ID</strong><span>{read.data.id}</span></p><p><strong>暱稱</strong><span>{read.data.nickname}</span></p><p><strong>Email</strong><span>{read.data.email}</span></p><p><strong>角色</strong><span>一般會員</span></p><p><strong>狀態</strong><span>{read.data.status === 'active' ? '啟用' : '停用'}</span></p><p><strong>加入時間</strong><span>{read.data.created_at}</span></p></div>}
-    <ErrorNotice error={write.error} />{(write.uncertain || write.conflict) && <div className="notice"><p>結果尚未確認。請重新讀取並核對會員狀態，不會自動重送。</p><button type="button" className="outline-button" onClick={check} disabled={read.loading}>重讀會員狀態</button>{checking && read.data && <button type="button" className="outline-button" onClick={accept}>已核對最新狀態</button>}</div>}
-    {read.data && <button type="button" className="red-button" onClick={change} disabled={write.pending || write.uncertain || write.conflict}>{write.pending ? '處理中…' : read.data.status === 'active' ? '停用會員' : '恢復會員'}</button>}
-  </>}</AdminFrame>
+  function accept() {
+    if (!read.data || read.loading || read.error || !write.sameAccount) return
+    write.checked()
+    setChecking(false)
+  }
+  return <AdminFrame title="會員詳情">
+    <a className="back-link" href="/next/admin/members">← 返回會員列表</a>
+    <AdminAccess ready={ready} authStatus={authStatus} account={account} />
+    {ready && <>
+      {read.loading && <p className="notice" role="status">正在讀取會員…</p>}
+      <ErrorNotice error={read.error} retry={read.reload} />
+      {read.data && <div className="admin-detail">
+        <p><strong>會員 ID</strong><span>{read.data.id}</span></p>
+        <p><strong>暱稱</strong><span>{read.data.nickname}</span></p>
+        <p><strong>Email</strong><span>{read.data.email}</span></p>
+        <p><strong>角色</strong><span>一般會員</span></p>
+        <p><strong>狀態</strong><span>{read.data.status === 'active' ? '啟用' : '停用'}</span></p>
+        <p><strong>加入時間</strong><span>{read.data.created_at}</span></p>
+      </div>}
+      {!write.sameAccount ? <p className="notice">登入帳號已變更，請重新開啟此頁再管理會員。</p> : <>
+        <ErrorNotice error={write.error} />
+        {(write.uncertain || write.conflict) && <div className="notice">
+          <p>結果尚未確認。請重新讀取並核對會員狀態，不會自動重送。</p>
+          <button type="button" className="outline-button" onClick={check} disabled={read.loading}>重讀會員狀態</button>
+          {checking && read.data && <button type="button" className="outline-button" onClick={accept}>已核對最新狀態</button>}
+        </div>}
+        {read.data && <button type="button" className="red-button" onClick={change} disabled={write.pending || write.uncertain || write.conflict}>
+          {write.pending ? '處理中…' : read.data.status === 'active' ? '停用會員' : '恢復會員'}
+        </button>}
+      </>}
+    </>}
+  </AdminFrame>
 }
 
 // 管理列表使用既有內容詳情與可見性控制，避免開放修改其他作者內文。
@@ -568,15 +829,26 @@ function AdminContent({ kind, backend, credential, account, authStatus, ready, p
   const path = article ? `/api/articles?page=${page}&per_page=20&filters%5Bscope%5D=management` : `/api/comments?page=${page}&per_page=20`
   const read = useApiRead(backend, credential, path, article ? 'articles' : 'managed-comments', page, null, ready, onAuthFailure)
   // 零筆超頁仍保留 API 原頁碼與返回第一頁入口，不宣稱整個管理列表為空。
-  return <AdminFrame title={article ? '文章管理' : '留言管理'}><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
-    {read.loading && <p className="notice" role="status">正在載入{article ? '文章' : '留言'}…</p>}<ErrorNotice error={read.error} retry={read.reload} />{read.data && <>
-      {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
-        // 完整內文和版本操作留在已知 ID 詳情，列表只呈現可辨識摘要。
-        (item) => <li className="admin-row" key={item.id}><div><small>{article ? '文章' : '留言'} #{item.id}</small><h2><a href={`/next/${route}/${item.id}`}>{article ? item.title : `留言 #${item.id}`}</a></h2></div><p>作者 {item.author.nickname}<br />建立於 {BACKENDS[item.created_backend][0]}</p><p>{item.visibility === 'hidden' ? '已下架' : '公開'}</p><a href={`/next/${route}/${item.id}`}>查看詳情</a><p className="excerpt">{item.body}</p></li>,
-      )}</ol> : <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : `目前尚無${article ? '文章' : '留言'}。`}</p>}
-      <Pagination pagination={read.data.pagination} base={`/next/admin/${route}`} />
+  return <AdminFrame title={article ? '文章管理' : '留言管理'}>
+    <AdminAccess ready={ready} authStatus={authStatus} account={account} />
+    {ready && <>
+      {read.loading && <p className="notice" role="status">正在載入{article ? '文章' : '留言'}…</p>}
+      <ErrorNotice error={read.error} retry={read.reload} />
+      {read.data && <>
+        {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
+          // 完整內文和版本操作留在已知 ID 詳情，列表保留作者、來源及狀態供辨識。
+          (item) => <li className="admin-row" key={item.id}>
+            <div><small>{article ? '文章' : '留言'} #{item.id}</small><h2><a href={`/next/${route}/${item.id}`}>{article ? item.title : `留言 #${item.id}`}</a></h2></div>
+            <p>作者 {item.author.nickname}<br />建立於 {BACKENDS[item.created_backend][0]}</p>
+            <p><span className="row-label">狀態 </span>{item.visibility === 'hidden' ? '已下架' : '公開'}</p>
+            <a href={`/next/${route}/${item.id}`}>查看詳情</a>
+            <p className="excerpt">{item.body}</p>
+          </li>,
+        )}</ol> : <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : `目前尚無${article ? '文章' : '留言'}。`}</p>}
+        <Pagination pagination={read.data.pagination} base={`/next/admin/${route}`} />
+      </>}
     </>}
-  </>}</AdminFrame>
+  </AdminFrame>
 }
 
 // 設定表單保留未送出的值；PUT 期間停用輸入，成功後才以讀回四欄取代草稿。
@@ -620,24 +892,52 @@ function AdminSettings({ backend, credential, account, authStatus, ready, onAuth
   // 已送出但結果不明時只查證完整設定，不替使用者重送 PUT。
   function check() { setChecking(true); read.reload() }
   // 手動核對伺服器完整值後才解除鎖，保留原草稿讓使用者自行決定。
-  function accept() { if (read.data && !read.loading && !read.error && sameAccount) { write.checked(); setChecking(false) } }
-  return <AdminFrame title="登入鎖定設定"><AdminAccess ready={ready} authStatus={authStatus} account={account} />{ready && <>
-    {read.loading && <p className="notice" role="status">正在讀取設定…</p>}<ErrorNotice error={read.error} retry={read.reload} />{saved && !read.loading && read.data && <p className="notice success" role="status">已儲存；以下數值已重新向伺服器讀取。</p>}
-    {!sameAccount && <p className="notice error">登入帳號已變更，舊帳號的設定草稿不可由目前帳號送出。請重新開啟此頁。</p>}
-    {draft && sameAccount && <form className="account-form settings-form" onSubmit={save}><ErrorNotice error={localError || write.error} focusRef={errorRef} /><label className="setting-toggle"><input id="enabled" type="checkbox" checked={draft.enabled} onChange={changeEnabled} disabled={write.pending} aria-invalid={Boolean((localError || write.error)?.errors?.enabled)} aria-describedby={(localError || write.error)?.errors?.enabled ? 'enabled-error' : undefined} />啟用會員登入錯誤鎖定</label>
-      {(localError || write.error)?.errors?.enabled && <p id="enabled-error" className="field-error">{(localError || write.error).errors.enabled.join('；')}</p>}
-      <p className="hint">停用仍保留以下三個數值；重新啟用時沿用。</p>
-      {[['window_minutes', '累計失敗時間（分鐘）', 60], ['failure_threshold', '觸發鎖定次數', 100], ['lock_seconds', '鎖定秒數', 86400]].map(
-        // 各欄保留可見標籤、上限與 422 明細的焦點目標。
-        ([name, label, max]) => <div className="setting-field" key={name}><label htmlFor={name}>{label}</label><input id={name} inputMode="numeric" value={draft[name]} onChange={changeNumber} disabled={write.pending} aria-invalid={Boolean((localError || write.error)?.errors?.[name])} aria-describedby={(localError || write.error)?.errors?.[name] ? `${name}-error` : undefined} /><p className="hint">1–{max}</p>{(localError || write.error)?.errors?.[name]?.map(
-          // 伺服器欄位錯誤保持在相應輸入旁，同時於摘要可聚焦。
-          (message, index) => <p id={index === 0 ? `${name}-error` : undefined} className="field-error" key={message}>{message}</p>,
-        )}</div>,
-      )}
-      {(write.uncertain || write.conflict) && <div className="notice"><p>結果尚未確認。請重讀並核對目前設定，不會自動重送。</p><button className="outline-button" type="button" onClick={check} disabled={read.loading}>重讀目前設定</button>{checking && read.data && <><p>伺服器目前：{read.data.enabled ? '啟用' : '停用'}，{read.data.window_minutes} 分鐘／{read.data.failure_threshold} 次／{read.data.lock_seconds} 秒。</p><button className="outline-button" type="button" onClick={accept}>已核對目前設定</button></>}</div>}
-      <button className="red-button" type="submit" disabled={write.pending || write.uncertain || write.conflict}>{write.pending ? '儲存中…' : '儲存設定'}</button>
-    </form>}
-  </>}</AdminFrame>
+  function accept() {
+    if (!read.data || read.loading || read.error || !sameAccount) return
+    write.checked()
+    setChecking(false)
+  }
+  return <AdminFrame title="登入鎖定設定">
+    <AdminAccess ready={ready} authStatus={authStatus} account={account} />
+    {ready && <>
+      {read.loading && <p className="notice" role="status">正在讀取設定…</p>}
+      <ErrorNotice error={read.error} retry={read.reload} />
+      {saved && !read.loading && read.data && <p className="notice success" role="status">已儲存；以下數值已重新向伺服器讀取。</p>}
+      {!sameAccount && <p className="notice error">登入帳號已變更，舊帳號的設定草稿不可由目前帳號送出。請重新開啟此頁。</p>}
+      {draft && sameAccount && <form className="account-form settings-form" onSubmit={save}>
+        <ErrorNotice error={localError || write.error} focusRef={errorRef} />
+        <label className="setting-toggle">
+          <input id="enabled" type="checkbox" checked={draft.enabled} onChange={changeEnabled} disabled={write.pending}
+            aria-invalid={Boolean((localError || write.error)?.errors?.enabled)} aria-describedby={(localError || write.error)?.errors?.enabled ? 'enabled-error' : undefined} />
+          啟用會員登入錯誤鎖定
+        </label>
+        {(localError || write.error)?.errors?.enabled && <p id="enabled-error" className="field-error">{(localError || write.error).errors.enabled.join('；')}</p>}
+        <p className="hint">停用仍保留以下三個數值；重新啟用時沿用。</p>
+        {[['window_minutes', '累計失敗時間（分鐘）', 60], ['failure_threshold', '觸發鎖定次數', 100], ['lock_seconds', '鎖定秒數', 86400]].map(
+          // 各欄保留可見標籤、上限與 422 明細的焦點目標。
+          ([name, label, max]) => <div className="setting-field" key={name}>
+            <label htmlFor={name}>{label}</label>
+            <input id={name} inputMode="numeric" value={draft[name]} onChange={changeNumber} disabled={write.pending}
+              aria-invalid={Boolean((localError || write.error)?.errors?.[name])} aria-describedby={(localError || write.error)?.errors?.[name] ? `${name}-error` : undefined} />
+            <p className="hint">1–{max}</p>
+            {(localError || write.error)?.errors?.[name]?.map(
+              // 同欄多個明細仍保留，第一個錯誤供 aria-describedby 定位。
+              (message, index) => <p id={index === 0 ? `${name}-error` : undefined} className="field-error" key={`${index}-${message}`}>{message}</p>,
+            )}
+          </div>,
+        )}
+        {(write.uncertain || write.conflict) && <div className="notice">
+          <p>結果尚未確認。請重讀並核對目前設定，不會自動重送。</p>
+          <button className="outline-button" type="button" onClick={check} disabled={read.loading}>重讀目前設定</button>
+          {checking && read.data && <>
+            <p>伺服器目前：{read.data.enabled ? '啟用' : '停用'}，{read.data.window_minutes} 分鐘／{read.data.failure_threshold} 次／{read.data.lock_seconds} 秒。</p>
+            <button className="outline-button" type="button" onClick={accept}>已核對目前設定</button>
+          </>}
+        </div>}
+        <button className="red-button" type="submit" disabled={write.pending || write.uncertain || write.conflict}>{write.pending ? '儲存中…' : '儲存設定'}</button>
+      </form>}
+    </>}
+  </AdminFrame>
 }
 
 // 註冊與登入使用相同單欄表單；鎖定與伺服器錯誤只套在當次登入。
@@ -847,7 +1147,7 @@ export default function Site({ path, query }) {
     function beforeUnload(event) {
       if (!formNavigation.current.dirty && !formNavigation.current.pending && ![...formNavigation.current.authorForms.values()].some(
         // 文章頁可同時有留言與可見性表單，任一未完成都需提示。
-        (entry) => entry.dirty || entry.pending,
+        (entry) => entry.dirty || entry.pending || entry.unresolved,
       )) return
       event.preventDefault()
       event.returnValue = ''
@@ -919,7 +1219,7 @@ export default function Site({ path, query }) {
     )
     const pending = formNavigation.current.pending || [...formNavigation.current.authorForms.values()].some(
       // 等待中仍可能在後端完成，不承諾切換就回滾。
-      (entry) => entry.pending,
+      (entry) => entry.pending || entry.unresolved,
     )
     if (!dirty && !pending) return true
     const warning = pending
@@ -936,6 +1236,7 @@ export default function Site({ path, query }) {
       entry.cancel()
       entry.dirty = false
       entry.pending = false
+      entry.unresolved = false
     }
   }
   // 只在目前後端更新選擇，舊登入清除後轉登入並保留合法閱讀目的地。

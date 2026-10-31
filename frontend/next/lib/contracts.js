@@ -199,8 +199,9 @@ export function validAccount(value) {
 export function validMember(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Number.isSafeInteger(value.id) && value.id > 0
     && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
-    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30 && !blank.test(value.nickname)
-    && value.role === 'member' && ['active', 'disabled'].includes(value.status) && timestamp.test(value.created_at)
+    && typeof value.nickname === 'string' && [...value.nickname].length >= 1 && [...value.nickname].length <= 30 && !blank.test(value.nickname) && !value.nickname.includes('\0')
+    && value.role === 'member' && ['active', 'disabled'].includes(value.status)
+    && typeof value.created_at === 'string' && timestamp.test(value.created_at)
 }
 
 // 設定讀回只接受四個核准欄位與界限，避免用損壞回應覆蓋表單。

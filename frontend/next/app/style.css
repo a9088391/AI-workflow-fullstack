@@ -139,3 +139,9 @@ button:disabled,select:disabled{cursor:not-allowed;opacity:.58}
 @media(max-width:767px){.article-column>.back-link+.back-link{display:flex;width:fit-content;margin-top:8px}}
 @media(max-width:390px){.header-controls{grid-template-columns:1fr}.current-labels{display:grid;grid-template-columns:1fr 1fr}.select-wrap select{width:100%}.account-name,.logout{grid-column:auto}.admin-row{grid-template-columns:1fr}.admin-row .excerpt{grid-column:1}.admin-toolbar input,.admin-toolbar button{width:100%}.meta{display:grid;gap:4px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.red-button{transition:none}}
+/* 管理列的完整標題可觸控且可換行；窄版保留欄位標籤以辨識堆疊資料。 */
+.admin-row h2 a{display:inline-flex;align-items:center;min-width:44px;min-height:44px;max-width:100%;overflow-wrap:anywhere}
+.row-label{display:none}
+@media(max-width:1023px){.row-label{display:inline;font-weight:800}}
+/* 管理選單的兩字摘要在桌面仍需有 44px 寬，不只補高度。 */
+.admin-menu summary{min-width:44px}
