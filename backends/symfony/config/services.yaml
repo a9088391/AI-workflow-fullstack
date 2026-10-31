@@ -1,6 +1,9 @@
 services:
     App\Database: ~
-    App\ApiController:
+    App\MemberController:
+        public: true
+        autowire: true
+    App\LoginLockoutSettingsController:
         public: true
         autowire: true
     App\AccountController:

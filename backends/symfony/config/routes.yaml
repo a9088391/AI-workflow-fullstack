@@ -64,15 +64,15 @@ comment_visibility:
     methods: [PUT]
 members:
     path: /api/members
-    controller: App\ApiController::members
+    controller: App\MemberController::members
     methods: [GET]
 member:
     path: /api/members/{member_id}
-    controller: App\ApiController::member
+    controller: App\MemberController::member
     methods: [GET]
 member_status:
     path: /api/members/{member_id}/status
-    controller: App\ApiController::memberStatus
+    controller: App\MemberController::memberStatus
     methods: [PUT]
 admin_comments:
     path: /api/comments
@@ -80,9 +80,9 @@ admin_comments:
     methods: [GET]
 login_lockout_settings:
     path: /api/settings/login-lockout
-    controller: App\ApiController::loginLockoutSettings
+    controller: App\LoginLockoutSettingsController::loginLockoutSettings
     methods: [GET]
 login_lockout_settings_update:
     path: /api/settings/login-lockout
-    controller: App\ApiController::updateLoginLockoutSettings
+    controller: App\LoginLockoutSettingsController::updateLoginLockoutSettings
     methods: [PUT]
