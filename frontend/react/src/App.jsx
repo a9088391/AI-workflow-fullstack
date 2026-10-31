@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { BACKENDS, FRONTENDS, canEditContent, canHideContent, canRestoreContent, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, request, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsAngularRoute, supportsNextRoute, validAccount, validContent, validList, validLockout, validMember, validReturn, validateAccount, validateContent, validateLockout } from './contracts.js'
+import { BACKENDS, FRONTENDS, canEditContent, canHideContent, canRestoreContent, clearSessionIfOwned, emptyCommentMessage, failure, formatCountdown, frontendTarget, ownsAttempt, ownsRead, ownsSession, positiveId, readBackend, readSession, remainingSeconds, request, retryAfterSeconds, saveSession, selectBackend, showCommentPagination, supportsAngularRoute, supportsNextRoute, validAccount, validContent, validList, validLockout, validMember, validReturn, validWriteSuccess, validateAccount, validateContent, validateLockout } from './contracts.js'
 
 const pathname = window.location.pathname
 const params = new URLSearchParams(window.location.search)
@@ -147,7 +147,11 @@ function useWrite(backend, credential, onAuthFailure, switchEpoch, onDraftChange
   // 卸載時撤銷 UI 更新資格；伺服器可能已收到寫入，不能當作未送出。
   useEffect(() => {
     // 卸載的舊元件只中止自己的請求，不更新即將重建的畫面。
-    return () => { active.current?.controller.abort(); active.current = null; pendingRef.current = false }
+    return () => {
+      active.current?.controller.abort()
+      active.current = null
+      pendingRef.current = false
+    }
   }, [])
   // 只替目前這筆寫入收尾；舊 POST 不得清除新 POST 的等待狀態。
   const markUnknown = useCallback((operation) => {
@@ -169,6 +173,7 @@ function useWrite(backend, credential, onAuthFailure, switchEpoch, onDraftChange
   // 呼叫者只有收到完整成功 envelope 才能導覽或重讀，其他結果保留表單。
   async function send(path, method, payload, successStatus) {
     if (!credential || pendingRef.current || state.uncertain) return { ok: false }
+    // 同步鎖住同一操作，避免 React 下一次渲染前重複送出。
     pendingRef.current = true
     const controller = new AbortController()
     const startedEpoch = switchEpoch.current
@@ -179,8 +184,14 @@ function useWrite(backend, credential, onAuthFailure, switchEpoch, onDraftChange
       const { status, body } = await request(backend, path, { method, signal: controller.signal, headers: { Authorization: `Bearer ${credential.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       // 已撤銷的原請求即使晚到 2xx，也不能當作新登入後的寫入成功。
       if (active.current !== operation) return { ok: false, uncertain: true, obsolete: true }
-      if (controller.signal.aborted || startedEpoch !== switchEpoch.current || !ownsSession(sessionStorage, backend, credential)) { markUnknown(operation); return { ok: false, uncertain: true, obsolete: true } }
-      if (status === successStatus && body?.success === true && body.message === 'OK' && body.data && !Array.isArray(body.data) && Object.keys(body.data).length === 0) { setState({ pending: false, error: null, uncertain: false }); return { ok: true } }
+      if (controller.signal.aborted || startedEpoch !== switchEpoch.current || !ownsSession(sessionStorage, backend, credential)) {
+        markUnknown(operation)
+        return { ok: false, uncertain: true, obsolete: true }
+      }
+      if (validWriteSuccess(status, body, successStatus)) {
+        setState({ pending: false, error: null, uncertain: false })
+        return { ok: true }
+      }
       const problem = failure(body)
       if (problem.code === 'E0002' || problem.code === 'E0102') onAuthFailure(problem, backend, credential)
       // 已發送的 5xx 或損壞成功回應不證明未寫入；鎖住重送直到手動查證。
@@ -190,7 +201,13 @@ function useWrite(backend, credential, onAuthFailure, switchEpoch, onDraftChange
     } catch {
       const settled = markUnknown(operation)
       return { ok: false, uncertain: true, obsolete: !settled }
-    } finally { if (active.current === operation) { active.current = null; pendingRef.current = false } }
+    } finally {
+      // 新請求可能已接替舊請求，只有相同操作才能解除同步送出鎖。
+      if (active.current === operation) {
+        active.current = null
+        pendingRef.current = false
+      }
+    }
   }
   // 只有使用者查證後才能解鎖未知結果；重讀本身不會重送寫入。
   const checked = useCallback(() => { setState({ pending: false, error: null, uncertain: false }) }, [])
@@ -198,40 +215,69 @@ function useWrite(backend, credential, onAuthFailure, switchEpoch, onDraftChange
 }
 
 // 下架／恢復共用版本比對與查證規則；權限提示只供 UI，後端再次判定。
-function VisibilityActions({ item, kind, account, backend, credential, onAuthFailure, switchEpoch, onRefresh, enabled, onDraftChange }) {
+function VisibilityActions({ item, read, kind, account, backend, credential, onAuthFailure, switchEpoch, onRefresh, enabled, onDraftChange }) {
   const write = useWrite(backend, credential, onAuthFailure, switchEpoch, onDraftChange)
   const [conflict, setConflict] = useState(false)
+  const [checking, setChecking] = useState(false)
   // 離頁撤銷目前操作的離頁標記，不影響同頁留言草稿。
-  useEffect(() => () => onDraftChange(false, false), [onDraftChange])
+  useEffect(() => {
+    // 僅清理這個元件擁有的草稿來源，其他操作仍保留自己的保護。
+    return () => onDraftChange(false, false)
+  }, [onDraftChange])
   const canHide = canHideContent(item, account)
   const canRestore = canRestoreContent(item, account)
   // 操作前再次確認動作，避免無意下架；成功後僅採信重新讀取的狀態。
   async function change(visibility) {
-    if (!enabled || conflict || write.uncertain || !(visibility === 'hidden' ? canHide : canRestore)) return
+    if (!enabled || checking || write.pending || conflict || write.uncertain || !(visibility === 'hidden' ? canHide : canRestore)) return
     const action = visibility === 'hidden' ? item.visibility === 'hidden' ? '再次下架並接管恢復權' : '下架' : '恢復'
     if (!window.confirm(`確定要${action}嗎？`)) return
+    // 確認後固定這次資源版本並標記在途；取消請求不代表伺服器回滾。
     onDraftChange(true, true)
     const result = await write.send(`/api/${kind}s/${item.id}/visibility`, 'PUT', { visibility, version: item.version }, 200)
+    // 舊憑證或舊世代沒有收尾資格，避免清掉重登後的新操作。
     if (result.obsolete) return
     onDraftChange(Boolean(result.uncertain), false)
+    // 成功重新讀取目前狀態；衝突與未知結果保留人工確認入口。
     if (result.ok) onRefresh()
     else if (result.problem?.code === 'E0201') setConflict(true)
     else if (result.problem?.code === 'E0004') onRefresh()
   }
-  // 父層重讀會卸載本元件；只在同 ID 詳情重新驗證成功後顯示新操作。
-  function checkLatest() { onRefresh() }
-  // 明確按鈕避免匿名事件處理器缺乏用途說明。
+  // 重讀只更新同一資源的查證資料；請求失敗時仍保留未知結果與重送鎖。
+  function checkLatest() { setChecking(true); onRefresh() }
+  // 原操作的查證由使用者確認；同頁留言成功不能替這筆狀態寫入解鎖。
+  function finishCheck() {
+    if (!enabled || !checking || !read.data || read.loading || read.error) return
+    write.checked()
+    setConflict(false)
+    setChecking(false)
+    onDraftChange(false, false)
+  }
+  // 下架仍走同一次確認與版本檢查，避免另一路徑漏掉保護。
   function hide() { change('hidden') }
   // 恢復操作由最新 can_restore 及後端再次判斷。
   function restore() { change('visible') }
-  return <div className="content-actions">
-    {canHide && <button type="button" className="secondary" disabled={!enabled || write.pending || write.uncertain || conflict} onClick={hide}>{item.visibility === 'hidden' ? '再次下架並接管恢復權' : '下架'}</button>}
-    {canRestore && <button type="button" className="secondary" disabled={!enabled || write.pending || write.uncertain || conflict} onClick={restore}>恢復</button>}
-    {item.visibility === 'hidden' && !canRestore && <p>目前無恢復資格。</p>}
-    {write.pending && <p role="status">正在處理狀態…</p>}
-    <ErrorNotice error={write.error} />
-    {(conflict || write.uncertain) && <div className="notice"><p>{conflict ? '內容版本已變更；請讀取最新狀態並重新確認操作。' : '結果尚未確認；請先查證目前狀態。'}</p><button type="button" className="secondary" onClick={checkLatest}>讀取最新狀態</button></div>}
-  </div>
+  return (
+    <div className="content-actions">
+      {canHide && (
+        <button type="button" className="secondary" disabled={!enabled || write.pending || write.uncertain || conflict || checking} onClick={hide}>
+          {item.visibility === 'hidden' ? '再次下架並接管恢復權' : '下架'}
+        </button>
+      )}
+      {canRestore && <button type="button" className="secondary" disabled={!enabled || write.pending || write.uncertain || conflict || checking} onClick={restore}>恢復</button>}
+      {item.visibility === 'hidden' && !canRestore && <p>目前無恢復資格。</p>}
+      {write.pending && <p role="status">正在處理狀態…</p>}
+      <ErrorNotice error={write.error} />
+      {(conflict || write.uncertain) && (
+        <div className="notice">
+          <p>{conflict ? '內容版本已變更；請讀取最新狀態並重新確認操作。' : '結果尚未確認；請先查證目前狀態。'}</p>
+          <button type="button" className="secondary" onClick={checkLatest}>讀取最新狀態</button>
+          {checking && read.data && !read.loading && !read.error && (
+            <button type="button" className="secondary" onClick={finishCheck}>已查證狀態</button>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // 我的內容以既有完整資源列表呈現，隱藏項也保留詳情入口供重新驗權。
@@ -296,13 +342,23 @@ function AuthorEditor({ kind, resourceId, backend, credential, account, enabled,
   // 第一次讀取填入原文；後續重讀只供比較，不能覆蓋使用者草稿。
   useEffect(() => {
     if (read.data) verifiedCredential.current = credential
-    if (read.data && !initial.current) { original.current = read.data; if (isArticle) setTitle(read.data.title); setBody(read.data.body); setVersion(read.data.version); initial.current = true }
+    // 初次快照只初始化一次；後續查證不覆蓋輸入或自動採用新版本。
+    if (read.data && !initial.current) {
+      original.current = read.data
+      if (isArticle) setTitle(read.data.title)
+      setBody(read.data.body)
+      setVersion(read.data.version)
+      initial.current = true
+    }
     if (read.data && blocked) setBlocked(false)
   }, [read.data, isArticle, credential, blocked])
   // 錯誤摘要取得焦點，讓鍵盤使用者能立即前往欄位修正。
   useEffect(() => { if (notice) summary.current?.focus() }, [notice])
   // 卸載後清除本頁草稿標記，不讓其他頁面誤繼承確認對話。
-  useEffect(() => () => onDraftChange(false, false), [onDraftChange])
+  useEffect(() => {
+    // 僅清理這個元件擁有的草稿來源，其他操作仍保留自己的保護。
+    return () => onDraftChange(false, false)
+  }, [onDraftChange])
   const allowed = Boolean(account && !unreadable && !blocked && (creating || canEditContent(sourceItem, account) && (read.data || verifiedCredential.current === credential)))
   const parentVisible = isArticle || parent.data?.visibility === 'visible'
   // 文字變動使舊錯誤失效，但不靜默更換版本或重送內容。
@@ -316,47 +372,113 @@ function AuthorEditor({ kind, resourceId, backend, credential, account, enabled,
   // 完成可見資料查證後才解除重送鎖，是否再送由使用者決定。
   function acceptCreatedCheck() { write.checked(); setCheckingUnknown(false); setNotice(null) }
   // 看過最新內容才允許用新版本手動提交，不會自動取代草稿。
-  function acceptLatest() { if (!read.data || read.loading || read.error) return; setVersion(read.data.version); setConflict(false); setChecked(false); write.checked(); setNotice(null) }
+  function acceptLatest() {
+    if (!read.data || read.loading || read.error) return
+    setVersion(read.data.version)
+    setConflict(false)
+    setChecked(false)
+    write.checked()
+    setNotice(null)
+  }
   // 送出前先驗證本地欄位與目前身份；後端仍執行授權及版本原子比對。
   async function submit(event) {
     event.preventDefault()
+    // 目前身分、父文章與版本恢復狀態都允許後，才驗證本地純文字。
     if (!enabled || !allowed || !parentVisible || write.pending || write.uncertain || conflict) return
     const input = isArticle ? { title, body } : { body }
     const nextErrors = validateContent(input, kind)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) { setNotice({ message: '請修正標示欄位後再送出。', errors: nextErrors }); return }
+    // 只提交本次文字與使用者採用的版本，不因衝突或連線失敗自動再送。
     onDraftChange(true, true)
     const result = await write.send(creating ? '/api/articles' : resourcePath, creating ? 'POST' : 'PUT', creating ? input : { ...input, version }, creating ? 201 : 200)
+    // 新登入或切換已接管畫面時，不讓舊回應清稿或導覽。
     if (result.obsolete) return
+    // 完整成功先解除離頁保護再導覽，其餘分支保留輸入供修正或查證。
     if (result.ok) { onDraftChange(false, false); window.location.assign(creating ? '/react/me/articles' : `/react/${isArticle ? 'articles' : 'comments'}/${resourceId}`); return }
     onDraftChange(true, false)
     if (result.problem) { setNotice(result.problem); setErrors(result.problem.errors || {}) }
+    // 版本衝突必須手動比較；失去可讀性則隱藏快照並重新驗權。
     if (result.problem?.code === 'E0201') setConflict(true)
     if (result.problem?.code === 'E0003' || result.problem?.code === 'E0004') { setBlocked(true); read.retry(); if (!isArticle) parent.retry() }
   }
-  return <section className="content editor"><p className="eyebrow">AUTHOR / REACT</p><h1>{creating ? '發表文章' : isArticle ? '編輯文章' : '編輯留言'}</h1>
-    {creating && <p className="intro">文章會公開發表，建立來源由目前後端記錄。</p>}
-    {!creating && read.loading && enabled && <p role="status">正在讀取內容…</p>}
-    {!creating && <ErrorNotice error={read.error} retry={read.retry} />}
-    {!isArticle && sourceItem && <section className="related"><h2>所屬文章</h2>{parent.loading && <p role="status">正在確認文章可見性…</p>}{parent.data && <p><a href={`/react/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}</p>}{parent.error && <><ErrorNotice error={{ ...parent.error, message: parent.error.code === 'E0004' ? '所屬文章目前無法讀取。' : parent.error.message }} /><button type="button" className="secondary" onClick={parent.retry}>單獨重試文章讀取</button></>}</section>}
-    {!creating && read.data && !allowed && <p className="notice error">只有內容作者可編修；管理員自己的內容也依作者規則。</p>}
-    {notice && <ErrorNotice error={notice} focusRef={summary} />}
-    {(creating || initial.current) && allowed && <>
-      {creating ? <p>發表後由目前後端記錄建立來源、作者與時間。</p> : <Metadata item={sourceItem} />}
-      {write.uncertain && <div className="notice"><p>結果尚未確認；請先查證資料，不會自動重送。</p><a href={creating ? '/react/me/articles' : `/react/${isArticle ? 'articles' : 'comments'}/${resourceId}`}>前往查證</a>{!creating && <button type="button" className="secondary" onClick={checkLatest}>在此重讀</button>}</div>}
-      {creating && write.uncertain && <div className="related"><button type="button" className="secondary" onClick={checkCreated}>查證我的文章第一頁</button>{checkingUnknown && verification.loading && <p role="status">正在讀取我的文章…</p>}{checkingUnknown && <ErrorNotice error={verification.error} retry={verification.retry} />}{checkingUnknown && verification.data && <><p>此列表供人工查證，不能只憑第一頁判定這次是否建立成功。</p><ul>{verification.data.list.map(
-        // 顯示資源 ID 與時間協助人工比較，不替使用者推定建立結果。
-        (item) => <li key={item.id}><a href={`/react/articles/${item.id}`}>{item.title}</a> · {item.created_at}</li>,
-      )}</ul><button type="button" className="secondary" onClick={acceptCreatedCheck}>已查證，允許手動再送</button></>}</div>}
-      {conflict && <div className="notice"><p>版本衝突。請先讀取最新內容，比較後自行整合；不會自動重送。</p><button type="button" className="secondary" onClick={checkLatest}>讀取最新版本</button></div>}
-      {checked && read.data && !read.loading && !read.error && <div className="comparison"><h2>最新版本（僅供比較）</h2>{isArticle && <p className="prose">{read.data.title}</p>}<p className="prose">{read.data.body}</p><p>版本 {read.data.version}</p><button type="button" className="secondary" onClick={acceptLatest}>已比較，採用最新版本號</button></div>}
-      <form noValidate onSubmit={submit}>{isArticle && <><label htmlFor="title">標題</label><input id="title" value={title} onChange={editTitle} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? 'title-error' : undefined} />{errors.title && <p className="field-error" id="title-error">{errors.title.join('；')}</p>}</>}
-        <label htmlFor="body">{isArticle ? '文章內文' : '留言內容'}</label><textarea id="body" rows={10} value={body} onChange={editBody} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />{errors.body && <p className="field-error" id="body-error">{errors.body.join('；')}</p>}
-        {!parentVisible && !isArticle && <p className="notice">確認所屬文章公開後才能送出留言編修。</p>}
-        <button className="primary" type="submit" disabled={!enabled || write.pending || write.uncertain || conflict || !parentVisible}>{write.pending ? '處理中…' : creating ? '發表文章' : '儲存修改'}</button>
-      </form></>}
-    <a className="back" href={creating ? '/react/me/articles' : isArticle ? `/react/articles/${resourceId}` : `/react/comments/${resourceId}`}>返回{creating ? '我的文章' : '詳情'}</a>
-  </section>
+  return (
+    <section className="content editor">
+      <p className="eyebrow">AUTHOR / REACT</p>
+      <h1>{creating ? '發表文章' : isArticle ? '編輯文章' : '編輯留言'}</h1>
+      {creating && <p className="intro">文章會公開發表，建立來源由目前後端記錄。</p>}
+      {!creating && read.loading && enabled && <p role="status">正在讀取內容…</p>}
+      {!creating && <ErrorNotice error={read.error} retry={read.retry} />}
+      {!isArticle && sourceItem && (
+        <section className="related">
+          <h2>所屬文章</h2>
+          {parent.loading && <p role="status">正在確認文章可見性…</p>}
+          {parent.data && <p><a href={`/react/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}</p>}
+          {parent.error && <>
+            <ErrorNotice error={{ ...parent.error, message: parent.error.code === 'E0004' ? '所屬文章目前無法讀取。' : parent.error.message }} />
+            <button type="button" className="secondary" onClick={parent.retry}>單獨重試文章讀取</button>
+          </>}
+        </section>
+      )}
+      {!creating && read.data && !allowed && <p className="notice error">只有內容作者可編修；管理員自己的內容也依作者規則。</p>}
+      {notice && <ErrorNotice error={notice} focusRef={summary} />}
+      {(creating || initial.current) && allowed && <>
+        {creating ? <p>發表後由目前後端記錄建立來源、作者與時間。</p> : <Metadata item={sourceItem} />}
+        {write.uncertain && (
+          <div className="notice">
+            <p>結果尚未確認；請先查證資料，不會自動重送。</p>
+            <a href={creating ? '/react/me/articles' : `/react/${isArticle ? 'articles' : 'comments'}/${resourceId}`}>前往查證</a>
+            {!creating && <button type="button" className="secondary" onClick={checkLatest}>在此重讀</button>}
+          </div>
+        )}
+        {creating && write.uncertain && (
+          <div className="related">
+            <button type="button" className="secondary" onClick={checkCreated}>查證我的文章第一頁</button>
+            {checkingUnknown && verification.loading && <p role="status">正在讀取我的文章…</p>}
+            {checkingUnknown && <ErrorNotice error={verification.error} retry={verification.retry} />}
+            {checkingUnknown && verification.data && <>
+              <p>此列表供人工查證，不能只憑第一頁判定這次是否建立成功。</p>
+              <ul>{verification.data.list.map(
+                // 顯示資源 ID 與時間協助人工比較，不替使用者推定建立結果。
+                (item) => <li key={item.id}><a href={`/react/articles/${item.id}`}>{item.title}</a> · {item.created_at}</li>,
+              )}</ul>
+              <button type="button" className="secondary" onClick={acceptCreatedCheck}>已查證，允許手動再送</button>
+            </>}
+          </div>
+        )}
+        {conflict && (
+          <div className="notice">
+            <p>版本衝突。請先讀取最新內容，比較後自行整合；不會自動重送。</p>
+            <button type="button" className="secondary" onClick={checkLatest}>讀取最新版本</button>
+          </div>
+        )}
+        {checked && read.data && !read.loading && !read.error && (
+          <div className="comparison">
+            <h2>最新版本（僅供比較）</h2>
+            {isArticle && <p className="prose">{read.data.title}</p>}
+            <p className="prose">{read.data.body}</p>
+            <p>版本 {read.data.version}</p>
+            <button type="button" className="secondary" onClick={acceptLatest}>已比較，採用最新版本號</button>
+          </div>
+        )}
+        <form noValidate onSubmit={submit}>
+          {isArticle && <>
+            <label htmlFor="title">標題</label>
+            <input id="title" value={title} onChange={editTitle} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? 'title-error' : undefined} />
+            {errors.title && <p className="field-error" id="title-error">{errors.title.join('；')}</p>}
+          </>}
+          <label htmlFor="body">{isArticle ? '文章內文' : '留言內容'}</label>
+          <textarea id="body" rows={10} value={body} onChange={editBody} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />
+          {errors.body && <p className="field-error" id="body-error">{errors.body.join('；')}</p>}
+          {!parentVisible && !isArticle && <p className="notice">確認所屬文章公開後才能送出留言編修。</p>}
+          <button className="primary" type="submit" disabled={!enabled || write.pending || write.uncertain || conflict || !parentVisible}>
+            {write.pending ? '處理中…' : creating ? '發表文章' : '儲存修改'}
+          </button>
+        </form>
+      </>}
+      <a className="back" href={creating ? '/react/me/articles' : isArticle ? `/react/articles/${resourceId}` : `/react/comments/${resourceId}`}>返回{creating ? '我的文章' : '詳情'}</a>
+    </section>
+  )
 }
 
 // 公開列表只顯示已核准欄位，保留空資料、超頁與載入失敗區別。
@@ -394,7 +516,10 @@ function CommentComposer({ article, backend, credential, account, enabled, onAut
   // 欄位錯誤時將焦點移至摘要，方便鍵盤使用者修正。
   useEffect(() => { if (notice) summary.current?.focus() }, [notice])
   // 離頁清除本表單的草稿標記，避免阻擋下一頁。
-  useEffect(() => () => onDraftChange(false, false), [onDraftChange])
+  useEffect(() => {
+    // 僅清理這個元件擁有的草稿來源，其他操作仍保留自己的保護。
+    return () => onDraftChange(false, false)
+  }, [onDraftChange])
   // 保留純文字原值，僅清理這次輸入的錯誤顯示。
   function edit(event) { setBody(event.target.value); setNotice(null); setErrors({}); onDraftChange(true, false) }
   // 新留言沒有 ID；只讀文章留言第一頁供人工查證，不猜最新留言就是本次新增。
@@ -404,25 +529,47 @@ function CommentComposer({ article, backend, credential, account, enabled, onAut
   // 新留言沒有回傳 ID；成功留在文章頁並從第一頁重讀，不猜新資源。
   async function submit(event) {
     event.preventDefault()
+    // 公開文章與目前帳號都確認後才驗證文字，避免在失權期間送出。
     if (!allowed || write.pending || write.uncertain) return
     const found = validateContent({ body }, 'comment')
     setErrors(found)
     if (Object.keys(found).length) { setNotice({ message: '請修正標示欄位後再送出。', errors: found }); return }
+    // 送出後獨立追蹤這筆新增，其他可見性操作不能替它解除未知結果。
     onDraftChange(true, true)
     const result = await write.send(`/api/articles/${article.id}/comments`, 'POST', { body }, 201)
+    // 舊回應不得清掉重新登入後的草稿或新請求；只有完整成功清稿並重讀。
     if (result.obsolete) return
     if (result.ok) { setBody(''); onDraftChange(false, false); setNotice({ message: '留言已送出，正在重讀第一頁。' }); onCreated(); return }
+    // 拒絕與未知結果都保留文字；權限改變時由文章 GET 再決定可讀範圍。
     onDraftChange(true, false)
     if (result.problem) { setNotice(result.problem); setErrors(result.problem.errors || {}) }
     if (result.problem?.code === 'E0003' || result.problem?.code === 'E0004') onArticleRefresh()
   }
-  return <section className="comment-composer" aria-labelledby="comment-compose-title"><h3 id="comment-compose-title">發表留言</h3>
-    {article.visibility === 'hidden' ? <p>文章已下架，暫時無法新增留言。</p> : !account ? <p>登入後可以留言。<a href={`/react/login?return_to=${encodeURIComponent(pathname)}`}>前往登入</a></p> : <>
-      {notice && <ErrorNotice error={notice} focusRef={summary} />}
-      {write.uncertain && <div className="notice">結果尚未確認，請先查看留言第一頁，確認後才決定是否重送。<button type="button" className="secondary" onClick={checkCreated}>重讀留言第一頁</button>{checkingUnknown && commentsRead.data && !commentsRead.loading && !commentsRead.error && <button type="button" className="secondary" onClick={acceptCreatedCheck}>已查證，允許手動再送</button>}</div>}
-      <form noValidate onSubmit={submit}><label htmlFor="body">留言內容</label><textarea id="body" rows={5} value={body} onChange={edit} disabled={!allowed || write.pending} aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />{errors.body && <p id="body-error" className="field-error">{errors.body.join('；')}</p>}<button className="primary" type="submit" disabled={!allowed || write.pending || write.uncertain}>{write.pending ? '送出中…' : '發表留言'}</button></form>
-    </>}
-  </section>
+  return (
+    <section className="comment-composer" aria-labelledby="comment-compose-title">
+      <h3 id="comment-compose-title">發表留言</h3>
+      {article.visibility === 'hidden' ? <p>文章已下架，暫時無法新增留言。</p> : !account ? (
+        <p>登入後可以留言。<a href={`/react/login?return_to=${encodeURIComponent(pathname)}`}>前往登入</a></p>
+      ) : <>
+        {notice && <ErrorNotice error={notice} focusRef={summary} />}
+        {write.uncertain && (
+          <div className="notice">
+            結果尚未確認，請先查看留言第一頁，確認後才決定是否重送。
+            <button type="button" className="secondary" onClick={checkCreated}>重讀留言第一頁</button>
+            {checkingUnknown && commentsRead.data && !commentsRead.loading && !commentsRead.error && (
+              <button type="button" className="secondary" onClick={acceptCreatedCheck}>已查證，允許手動再送</button>
+            )}
+          </div>
+        )}
+        <form noValidate onSubmit={submit}>
+          <label htmlFor="body">留言內容</label>
+          <textarea id="body" rows={5} value={body} onChange={edit} disabled={!allowed || write.pending} aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />
+          {errors.body && <p id="body-error" className="field-error">{errors.body.join('；')}</p>}
+          <button className="primary" type="submit" disabled={!allowed || write.pending || write.uncertain}>{write.pending ? '送出中…' : '發表留言'}</button>
+        </form>
+      </>}
+    </section>
+  )
 }
 
 // 文章本體與留言各自有載入／錯誤狀態，作者動作仍以目前後端授權為準。
@@ -435,7 +582,7 @@ function Article({ backend, credential, account, enabled, onAuthFailure, switchE
   const changeCommentDraft = useCallback((dirty, pending) => onDraftChange(dirty, pending, 'comment'), [onDraftChange])
   // 短暫的下架請求不會把尚未送出的留言當作已儲存。
   const changeVisibilityDraft = useCallback((dirty, pending) => onDraftChange(dirty, pending, 'visibility'), [onDraftChange])
-  // 舊文章只供維持尚未送出的留言元件生命週期；失去授權時不再顯示內容。
+  // 快照維持留言草稿與可見性寫入的生命週期；重讀或失權時不顯示舊內容。
   useEffect(() => { if (article.data) setSnapshot(article.data) }, [article.data])
   // 留言分頁只影響留言讀取，不搬移文章或其他列表狀態。
   function previousComments() { setCommentPage(commentPage - 1) }
@@ -459,7 +606,12 @@ function Article({ backend, credential, account, enabled, onAuthFailure, switchE
           <div className="prose">{article.data.body}</div>
         </article>
         {canEditContent(article.data, account) && <a className="back" href={`/react/articles/${article.data.id}/edit`}>編輯文章</a>}
-        {account && <VisibilityActions item={article.data} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={article.retry} enabled={enabled} onDraftChange={changeVisibilityDraft} />}
+      </>}
+      {/* 操作留在留言列表之前，重讀只隱藏，不卸載各自的寫入狀態。 */}
+      {snapshot && <div hidden={!article.data || !account}>
+        <VisibilityActions item={article.data || snapshot} read={article} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={article.retry} enabled={enabled && Boolean(article.data) && Boolean(account)} onDraftChange={changeVisibilityDraft} />
+      </div>}
+      {article.data && <>
         <section className="comments" aria-labelledby="comments-title">
           <h2 id="comments-title">留言</h2>
           {comments.loading && <p role="status">正在載入留言…</p>}
@@ -490,6 +642,7 @@ function Article({ backend, credential, account, enabled, onAuthFailure, switchE
           </>}
         </section>
       </>}
+      {/* 保留各寫入元件的生命週期；重讀或失權時隱藏快照，成功重驗後才恢復操作。 */}
       {snapshot && (
         <div hidden={!article.data}>
           <CommentComposer article={article.data || snapshot} backend={backend} credential={credential} account={account} enabled={enabled && Boolean(article.data)} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onDraftChange={changeCommentDraft} onCreated={reloadFirstComments} onArticleRefresh={article.retry} commentsRead={comments} />
@@ -502,6 +655,9 @@ function Article({ backend, credential, account, enabled, onAuthFailure, switchE
 // 留言詳情先依留言權限讀取；父文章獨立讀取，404 不推測其隱藏原因。
 function CommentDetail({ backend, credential, account, enabled, onAuthFailure, switchEpoch, onDraftChange }) {
   const comment = useRead(backend, credential, `/api/comments/${commentId}`, null, enabled, onAuthFailure, switchEpoch, 'comment', commentId)
+  const [snapshot, setSnapshot] = useState(null)
+  // 快照只讓狀態寫入元件跨重讀存活；未驗證資料仍由 hidden 隔離。
+  useEffect(() => { if (comment.data) setSnapshot(comment.data) }, [comment.data])
   const parent = useRead(backend, credential, `/api/articles/${comment.data?.article_id || 0}`, null, enabled && Boolean(comment.data), onAuthFailure, switchEpoch, 'article', comment.data?.article_id)
   return (
     <section className="content reading">
@@ -526,15 +682,26 @@ function CommentDetail({ backend, credential, account, enabled, onAuthFailure, s
           </>}
         </section>
         {canEditContent(comment.data, account, parent.data?.visibility === 'visible') && <a className="back" href={`/react/comments/${comment.data.id}/edit`}>編輯留言</a>}
-        {account && <VisibilityActions item={comment.data} kind="comment" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={comment.retry} enabled={enabled} onDraftChange={onDraftChange} />}
       </>}
+      {snapshot && <div hidden={!comment.data || !account}>
+        <VisibilityActions item={comment.data || snapshot} read={comment} kind="comment" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={comment.retry} enabled={enabled && Boolean(comment.data) && Boolean(account)} onDraftChange={onDraftChange} />
+      </div>}
     </section>
   )
 }
 
 // 管理頁在 /api/me 確認角色前不送私有請求，也不呈現上次登入的資料。
 function AdminGate({ status, account }) {
-  return <section className="content"><h1>管理介面</h1>{status === 'ready' && account?.role !== 'admin' ? <p className="notice error" role="alert">沒有權限使用此功能（403）。</p> : status === 'checking' ? <p role="status">正在驗證管理員身分…</p> : status === 'unverified' ? <p>目前無法驗證登入，請使用上方重新驗證。</p> : status === 'disabled' ? <p>此帳號已停用，請聯絡系統管理員。</p> : <p>請在原頁重新登入管理員帳號。</p>}</section>
+  return (
+    <section className="content">
+      <h1>管理介面</h1>
+      {status === 'ready' && account?.role !== 'admin' ? <p className="notice error" role="alert">沒有權限使用此功能（403）。</p>
+        : status === 'checking' ? <p role="status">正在驗證管理員身分…</p>
+        : status === 'unverified' ? <p>目前無法驗證登入，請使用上方重新驗證。</p>
+        : status === 'disabled' ? <p>此帳號已停用，請聯絡系統管理員。</p>
+        : <p>請在原頁重新登入管理員帳號。</p>}
+    </section>
+  )
 }
 
 // 會員列表只送已核准的字面 keyword 與分頁參數；網址只保存本頁搜尋與頁碼。
@@ -560,18 +727,49 @@ function Members({ backend, credential, enabled, status, account, onAuthFailure,
   }
   if (!enabled) return <AdminGate status={status} account={account} />
   if (accountChanged) return <section className="content"><p role="status">正在載入會員管理…</p></section>
-  const pagination = read.data?.pagination
-  return <section className="content admin-page"><p className="eyebrow">ADMIN / MEMBERS</p><h1>會員管理</h1><p className="intro">查詢一般會員並管理帳號狀態。</p>
-    <form className="admin-toolbar" onSubmit={submit}><label htmlFor="member-keyword">暱稱或 Email 關鍵字</label><input id="member-keyword" value={keyword} onChange={editKeyword} aria-invalid={Boolean(keywordError)} aria-describedby={keywordError ? 'member-keyword-error' : undefined} /><button type="submit" className="secondary">搜尋</button>{keywordError && <p className="field-error" id="member-keyword-error">{keywordError}</p>}</form>
-    {read.loading && <p role="status">正在載入會員…</p>}<ErrorNotice error={read.error} retry={read.retry} />
-    {read.data && <>{read.data.list.length === 0 ? <p className="notice">{listPage > 1 || pagination.total > 0 ? '此頁沒有會員。' : search ? '找不到符合關鍵字的會員。' : '目前尚無會員。'}</p> : <div className="admin-list">{read.data.list.map(
-      // 每筆會員使用後端 ID 作穩定鍵，狀態以當次讀取為準。
-      (item) => <article className="admin-row" key={item.id}><div><span className="admin-label">會員</span><h2><a href={`/react/admin/members/${item.id}`}>{item.nickname}</a></h2></div><p><span className="admin-label">Email</span>{item.email}</p><p><span className="admin-label">狀態</span>{item.status === 'active' ? '啟用' : '停用'}</p><p><span className="admin-label">建立時間</span>{item.created_at}</p></article>,
-    )}</div>}
-      {(pagination.total_pages > 1 || listPage > 1) && <nav className="pagination" aria-label="會員分頁"><span>第 {listPage} 頁／共 {pagination.total_pages} 頁，{pagination.total} 筆</span>{listPage > 1 && <a href={`/react/admin/members?page=${listPage - 1}${query}`}>上一頁</a>}{listPage < pagination.total_pages && <a href={`/react/admin/members?page=${listPage + 1}${query}`}>下一頁</a>}{listPage > pagination.total_pages && <a href={`/react/admin/members?page=1${query}`}>返回第一頁</a>}</nav>}</>}
-  </section>
   // 搜尋輸入不在每個按鍵發出 API 請求，亦保留原字供使用者修正。
   function editKeyword(event) { setKeyword(event.target.value); setKeywordError(null) }
+  const pagination = read.data?.pagination
+  return (
+    <section className="content admin-page">
+      <p className="eyebrow">ADMIN / MEMBERS</p>
+      <h1>會員管理</h1>
+      <p className="intro">查詢一般會員並管理帳號狀態。</p>
+      <form className="admin-toolbar" onSubmit={submit}>
+        <label htmlFor="member-keyword">暱稱或 Email 關鍵字</label>
+        <input id="member-keyword" value={keyword} onChange={editKeyword} aria-invalid={Boolean(keywordError)} aria-describedby={keywordError ? 'member-keyword-error' : undefined} />
+        <button type="submit" className="secondary">搜尋</button>
+        {keywordError && <p className="field-error" id="member-keyword-error">{keywordError}</p>}
+      </form>
+      {read.loading && <p role="status">正在載入會員…</p>}
+      <ErrorNotice error={read.error} retry={read.retry} />
+      {read.data && <>
+        {read.data.list.length === 0 ? (
+          <p className="notice">{listPage > 1 || pagination.total > 0 ? '此頁沒有會員。' : search ? '找不到符合關鍵字的會員。' : '目前尚無會員。'}</p>
+        ) : (
+          <div className="admin-list">{read.data.list.map(
+            // 每筆會員使用後端 ID 作穩定鍵，狀態以當次讀取為準。
+            (item) => (
+              <article className="admin-row" key={item.id}>
+                <div><span className="admin-label">會員</span><h2><a href={`/react/admin/members/${item.id}`}>{item.nickname}</a></h2></div>
+                <p><span className="admin-label">Email</span>{item.email}</p>
+                <p><span className="admin-label">狀態</span>{item.status === 'active' ? '啟用' : '停用'}</p>
+                <p><span className="admin-label">建立時間</span>{item.created_at}</p>
+              </article>
+            ),
+          )}</div>
+        )}
+        {(pagination.total_pages > 1 || listPage > 1) && (
+          <nav className="pagination" aria-label="會員分頁">
+            <span>第 {listPage} 頁／共 {pagination.total_pages} 頁，{pagination.total} 筆</span>
+            {listPage > 1 && <a href={`/react/admin/members?page=${listPage - 1}${query}`}>上一頁</a>}
+            {listPage < pagination.total_pages && <a href={`/react/admin/members?page=${listPage + 1}${query}`}>下一頁</a>}
+            {listPage > pagination.total_pages && <a href={`/react/admin/members?page=1${query}`}>返回第一頁</a>}
+          </nav>
+        )}
+      </>}
+    </section>
+  )
 }
 
 // 會員狀態更新後只採信重新 GET 的結果；未知結果須由管理員手動查證。
@@ -583,7 +781,10 @@ function Member({ backend, credential, enabled, status, account, onAuthFailure, 
   // 已完成的伺服器重讀才解除成功後的等待；未知結果仍由人決定。
   useEffect(() => { if (saved && read.data) { setSaved(false); onDraftChange(false, false) } }, [saved, read.data, onDraftChange])
   // 離頁時清掉本管理操作的保護標記。
-  useEffect(() => () => onDraftChange(false, false), [onDraftChange])
+  useEffect(() => {
+    // 僅清理這個元件擁有的草稿來源，其他操作仍保留自己的保護。
+    return () => onDraftChange(false, false)
+  }, [onDraftChange])
   // 只對目前讀到的一般會員提出狀態變更，後端仍重驗目標與權限。
   async function change() {
     if (!enabled || !read.data || write.pending || write.uncertain || checking) return
@@ -600,14 +801,41 @@ function Member({ backend, credential, enabled, status, account, onAuthFailure, 
   // 未知結果只重讀會員，不會再次送出 PUT。
   function checkLatest() { setChecking(true); read.retry() }
   // 看到同一會員最新狀態後才解除未知寫入的重送鎖。
-  function finishCheck() { if (!read.data || read.loading || read.error) return; write.checked(); setChecking(false); onDraftChange(false, false) }
+  function finishCheck() {
+    if (!read.data || read.loading || read.error) return
+    write.checked()
+    setChecking(false)
+    onDraftChange(false, false)
+  }
   if (!enabled) return <AdminGate status={status} account={account} />
-  return <section className="content admin-page"><a className="back" href="/react/admin/members">← 返回會員管理</a><p className="eyebrow">ADMIN / MEMBER</p><h1>會員詳情</h1>
-    {read.loading && <p role="status">正在讀取會員…</p>}<ErrorNotice error={read.error} retry={read.retry} />
-    {read.data && <div className="admin-detail"><p><strong>暱稱</strong>{read.data.nickname}</p><p><strong>Email</strong>{read.data.email}</p><p><strong>狀態</strong>{read.data.status === 'active' ? '啟用' : '停用'}</p><p><strong>建立時間</strong>{read.data.created_at}</p><button type="button" className="secondary" onClick={change} disabled={write.pending || write.uncertain || checking || saved}>{read.data.status === 'active' ? '停用會員' : '恢復會員'}</button></div>}
-    {write.pending && <p role="status">正在更新狀態…</p>}{saved && <p role="status">已提交，正在重讀會員狀態…</p>}<ErrorNotice error={write.error} />
-    {write.uncertain && <div className="notice"><p>寫入結果尚未確認。請重讀目前狀態，再決定是否手動操作。</p><button type="button" className="secondary" onClick={checkLatest}>讀取最新狀態</button>{checking && read.data && !read.loading && !read.error && <button type="button" className="secondary" onClick={finishCheck}>已查證狀態</button>}</div>}
-  </section>
+  return (
+    <section className="content admin-page">
+      <a className="back" href="/react/admin/members">← 返回會員管理</a>
+      <p className="eyebrow">ADMIN / MEMBER</p>
+      <h1>會員詳情</h1>
+      {read.loading && <p role="status">正在讀取會員…</p>}
+      <ErrorNotice error={read.error} retry={read.retry} />
+      {read.data && (
+        <div className="admin-detail">
+          <p><strong>暱稱</strong>{read.data.nickname}</p>
+          <p><strong>Email</strong>{read.data.email}</p>
+          <p><strong>狀態</strong>{read.data.status === 'active' ? '啟用' : '停用'}</p>
+          <p><strong>建立時間</strong>{read.data.created_at}</p>
+          <button type="button" className="secondary" onClick={change} disabled={write.pending || write.uncertain || checking || saved}>{read.data.status === 'active' ? '停用會員' : '恢復會員'}</button>
+        </div>
+      )}
+      {write.pending && <p role="status">正在更新狀態…</p>}
+      {saved && <p role="status">已提交，正在重讀會員狀態…</p>}
+      <ErrorNotice error={write.error} />
+      {write.uncertain && (
+        <div className="notice">
+          <p>寫入結果尚未確認。請重讀目前狀態，再決定是否手動操作。</p>
+          <button type="button" className="secondary" onClick={checkLatest}>讀取最新狀態</button>
+          {checking && read.data && !read.loading && !read.error && <button type="button" className="secondary" onClick={finishCheck}>已查證狀態</button>}
+        </div>
+      )}
+    </section>
+  )
 }
 
 // 管理內容清單沿用完整資源和既有詳情／可見性操作，不提供他人內文編修。
@@ -616,13 +844,33 @@ function ManagedContent({ kind, backend, credential, enabled, status, account, o
   const path = isArticle ? `/api/articles?page=${listPage}&per_page=20&filters%5Bscope%5D=management` : `/api/comments?page=${listPage}&per_page=20`
   const read = useRead(backend, credential, path, listPage, enabled, onAuthFailure, switchEpoch, kind)
   if (!enabled) return <AdminGate status={status} account={account} />
-  return <section className="content admin-page"><p className="eyebrow">ADMIN / {isArticle ? 'ARTICLES' : 'COMMENTS'}</p><h1>{isArticle ? '文章管理' : '留言管理'}</h1>
-    {read.loading && <p role="status">正在載入內容…</p>}<ErrorNotice error={read.error} retry={read.retry} />
-    {read.data && <>{read.data.list.length === 0 ? <p className="notice">{listPage > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無內容。'}</p> : <div className="admin-list">{read.data.list.map(
-      // 詳情會再次驗權並讀取最新版；清單只提供入口與當次狀態。
-      (item) => <article className="admin-row" key={item.id}><div><span className="admin-label">{isArticle ? '文章' : '留言'}</span><h2><a href={`/react/${isArticle ? 'articles' : 'comments'}/${item.id}`}>{isArticle ? item.title : `留言 #${item.id}`}</a></h2></div><p className="excerpt">{item.body}</p><p><span className="admin-label">作者</span>{item.author.nickname}</p><p><span className="admin-label">狀態</span>{item.visibility === 'visible' ? '公開' : '已下架'}</p><p><span className="admin-label">建立來源</span>{BACKENDS[item.created_backend]?.[0]}</p></article>,
-    )}</div>}<Pagination pagination={read.data.pagination} base={`/react/admin/${isArticle ? 'articles' : 'comments'}`} /></>}
-  </section>
+  return (
+    <section className="content admin-page">
+      <p className="eyebrow">ADMIN / {isArticle ? 'ARTICLES' : 'COMMENTS'}</p>
+      <h1>{isArticle ? '文章管理' : '留言管理'}</h1>
+      {read.loading && <p role="status">正在載入內容…</p>}
+      <ErrorNotice error={read.error} retry={read.retry} />
+      {read.data && <>
+        {read.data.list.length === 0 ? (
+          <p className="notice">{listPage > 1 || read.data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無內容。'}</p>
+        ) : (
+          <div className="admin-list">{read.data.list.map(
+            // 詳情會再次驗權並讀取最新版；清單只提供入口與當次狀態。
+            (item) => (
+              <article className="admin-row" key={item.id}>
+                <div><span className="admin-label">{isArticle ? '文章' : '留言'}</span><h2><a href={`/react/${isArticle ? 'articles' : 'comments'}/${item.id}`}>{isArticle ? item.title : `留言 #${item.id}`}</a></h2></div>
+                <p className="excerpt">{item.body}</p>
+                <p><span className="admin-label">作者</span>{item.author.nickname}</p>
+                <p><span className="admin-label">狀態</span>{item.visibility === 'visible' ? '公開' : '已下架'}</p>
+                <p><span className="admin-label">建立來源</span>{BACKENDS[item.created_backend]?.[0]}</p>
+              </article>
+            ),
+          )}</div>
+        )}
+        <Pagination pagination={read.data.pagination} base={`/react/admin/${isArticle ? 'articles' : 'comments'}`} />
+      </>}
+    </section>
+  )
 }
 
 // 設定保留本頁草稿；成功後重讀四欄，未知寫入只允許人工讀回確認。
@@ -654,19 +902,31 @@ function LockoutSettings({ backend, credential, enabled, status, account, onAuth
   // 驗證摘要出現時給鍵盤焦點，修正後再儲存不保留舊錯誤。
   useEffect(() => { if (notice?.errors) summary.current?.focus() }, [notice])
   // 離頁解除本設定頁的草稿標記。
-  useEffect(() => () => onDraftChange(false, false), [onDraftChange])
+  useEffect(() => {
+    // 僅清理這個元件擁有的草稿來源，其他操作仍保留自己的保護。
+    return () => onDraftChange(false, false)
+  }, [onDraftChange])
   // 布林開關與數值欄位只更新本地草稿，失效登入時仍不外送。
-  function edit(event) { const { name, type, checked, value } = event.target; setDraft({ ...draft, [name]: type === 'checkbox' ? checked : value }); setErrors({}); setNotice(null); onDraftChange(true, false) }
+  function edit(event) {
+    const { name, type, checked, value } = event.target
+    setDraft({ ...draft, [name]: type === 'checkbox' ? checked : value })
+    setErrors({})
+    setNotice(null)
+    onDraftChange(true, false)
+  }
   // 本地邊界先提示；後端仍完整驗證並原子更新四欄。
   async function submit(event) {
     event.preventDefault()
+    // 先確認管理資格與恢復狀態，再檢查四欄完整值，避免只送局部設定。
     if (!enabled || !draft || write.pending || write.uncertain || saved || checking) return
     const found = validateLockout(draft)
     setErrors(found)
     if (Object.keys(found).length) { setNotice({ message: '請修正標示欄位後再送出。', errors: found }); return }
+    // 表單保留字串方便修正，只有這次合法 payload 轉成共同 API 的數值型態。
     onDraftChange(true, true)
     const payload = { enabled: draft.enabled, window_minutes: Number(draft.window_minutes), failure_threshold: Number(draft.failure_threshold), lock_seconds: Number(draft.lock_seconds) }
     const result = await write.send('/api/settings/login-lockout', 'PUT', payload, 200)
+    // 舊身分的回應不能清草稿；成功仍等待 GET 四欄，失敗則保留輸入與明細。
     if (result.obsolete) return
     onDraftChange(true, false)
     if (result.ok) { setSaved(true); read.retry() }
@@ -675,23 +935,55 @@ function LockoutSettings({ backend, credential, enabled, status, account, onAuth
   // 寫入結果不明時只讀伺服器目前完整設定，不自動再次提交。
   function checkLatest() { setChecking(true); read.retry() }
   // 顯示伺服器四欄後才讓管理員自行選擇是否重新送出保留草稿。
-  function finishCheck() { if (!read.data || read.loading || read.error) return; write.checked(); setChecking(false); setNotice(null) }
+  function finishCheck() {
+    if (!read.data || read.loading || read.error) return
+    write.checked()
+    setChecking(false)
+    setNotice(null)
+  }
   if (!enabled) return <AdminGate status={status} account={account} />
   if (accountChanged) return <section className="content"><p role="status">正在載入管理設定…</p></section>
-  return <section className="content admin-page settings"><p className="eyebrow">ADMIN / SECURITY</p><h1>登入鎖定設定</h1><p className="intro">四項設定一併儲存，請以重讀結果確認生效值。</p>
-    {read.loading && <p role="status">正在讀取設定…</p>}<ErrorNotice error={read.error} retry={read.retry} />
-    {draft && <form noValidate onSubmit={submit}>
-      {notice && <ErrorNotice error={notice} focusRef={summary} />}
-      <label className="check-row" htmlFor="enabled"><input id="enabled" name="enabled" type="checkbox" checked={draft.enabled} onChange={edit} disabled={write.pending || saved} />啟用會員登入錯誤鎖定</label>
-      {[["window_minutes", "累計失敗時間（分鐘）", 60], ["failure_threshold", "觸發鎖定失敗次數", 100], ["lock_seconds", "鎖定時間（秒）", 86400]].map(
-        // 各欄保留可見標籤與錯誤，手機也能逐欄操作。
-        ([name, label, max]) => <div className="setting-field" key={name}><label htmlFor={name}>{label}</label><input id={name} name={name} type="number" min="1" max={max} step="1" inputMode="numeric" value={draft[name]} onChange={edit} disabled={write.pending || saved} aria-invalid={Boolean(errors[name])} aria-describedby={errors[name] ? `${name}-error` : undefined} />{errors[name] && <p className="field-error" id={`${name}-error`}>{errors[name].join('；')}</p>}</div>,
+  return (
+    <section className="content admin-page settings">
+      <p className="eyebrow">ADMIN / SECURITY</p>
+      <h1>登入鎖定設定</h1>
+      <p className="intro">四項設定一併儲存，請以重讀結果確認生效值。</p>
+      {read.loading && <p role="status">正在讀取設定…</p>}
+      <ErrorNotice error={read.error} retry={read.retry} />
+      {draft && (
+        <form noValidate onSubmit={submit}>
+          {notice && <ErrorNotice error={notice} focusRef={summary} />}
+          <label className="check-row" htmlFor="enabled">
+            <input id="enabled" name="enabled" type="checkbox" checked={draft.enabled} onChange={edit} disabled={write.pending || saved} />
+            啟用會員登入錯誤鎖定
+          </label>
+          {[["window_minutes", "累計失敗時間（分鐘）", 60], ["failure_threshold", "觸發鎖定失敗次數", 100], ["lock_seconds", "鎖定時間（秒）", 86400]].map(
+            // 各欄保留可見標籤與錯誤，手機也能逐欄操作。
+            ([name, label, max]) => (
+              <div className="setting-field" key={name}>
+                <label htmlFor={name}>{label}</label>
+                <input id={name} name={name} type="number" min="1" max={max} step="1" inputMode="numeric" value={draft[name]} onChange={edit} disabled={write.pending || saved} aria-invalid={Boolean(errors[name])} aria-describedby={errors[name] ? `${name}-error` : undefined} />
+                {errors[name] && <p className="field-error" id={`${name}-error`}>{errors[name].join('；')}</p>}
+              </div>
+            ),
+          )}
+          <button className="primary" type="submit" disabled={write.pending || write.uncertain || saved || checking}>{write.pending ? '儲存中…' : '儲存設定'}</button>
+        </form>
       )}
-      <button className="primary" type="submit" disabled={write.pending || write.uncertain || saved || checking}>{write.pending ? '儲存中…' : '儲存設定'}</button>
-    </form>}
-    {saved && <p role="status">已提交，正在重讀設定…</p>}{write.uncertain && write.error && !notice && <ErrorNotice error={write.error} />}
-    {write.uncertain && <div className="notice"><p>寫入結果尚未確認。草稿已保留；請先讀取目前伺服器設定，人工比較後再決定是否送出。</p><button type="button" className="secondary" onClick={checkLatest}>讀取目前設定</button>{checking && read.data && !read.loading && !read.error && <><div className="admin-detail"><p>伺服器目前值：{read.data.enabled ? '啟用' : '停用'}；{read.data.window_minutes} 分鐘；{read.data.failure_threshold} 次；{read.data.lock_seconds} 秒。</p></div><button type="button" className="secondary" onClick={finishCheck}>已比較，允許手動再送</button></>}</div>}
-  </section>
+      {saved && <p role="status">已提交，正在重讀設定…</p>}
+      {write.uncertain && write.error && !notice && <ErrorNotice error={write.error} />}
+      {write.uncertain && (
+        <div className="notice">
+          <p>寫入結果尚未確認。草稿已保留；請先讀取目前伺服器設定，人工比較後再決定是否送出。</p>
+          <button type="button" className="secondary" onClick={checkLatest}>讀取目前設定</button>
+          {checking && read.data && !read.loading && !read.error && <>
+            <div className="admin-detail"><p>伺服器目前值：{read.data.enabled ? '啟用' : '停用'}；{read.data.window_minutes} 分鐘；{read.data.failure_threshold} 次；{read.data.lock_seconds} 秒。</p></div>
+            <button type="button" className="secondary" onClick={finishCheck}>已比較，允許手動再送</button>
+          </>}
+        </div>
+      )}
+    </section>
+  )
 }
 
 // 帳號表單只在本機記憶體保存輸入；送出時先檢查欄位再呼叫目前後端。

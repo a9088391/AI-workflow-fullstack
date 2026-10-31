@@ -74,6 +74,8 @@ h2 { line-height: 1.35; }
 .comment-composer { margin-top: 1.5rem; }
 .comment-composer h3 { color: #8cd3ff; font-size: 1.3rem; }
 .editor .secondary, .comment-composer .secondary, .content-actions .secondary { margin-right: .6rem; }
+/* 未知結果的查證入口也是主要恢復操作，短連結仍保留完整觸控範圍。 */
+.editor .notice a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; }
 .text-button { color: #8cd3ff; border: 0; background: none; padding: 0; }
 .admin-page { overflow-wrap: anywhere; }
 .admin-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: .7rem 1rem; margin: 1.5rem 0; }

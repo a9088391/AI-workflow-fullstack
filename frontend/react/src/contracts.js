@@ -281,6 +281,13 @@ export function formatCountdown(seconds) {
   return hours ? `${two(hours)}:${two(Math.floor(seconds % 3600 / 60))}:${two(seconds % 60)}` : `${two(Math.floor(seconds / 60))}:${two(seconds % 60)}`
 }
 
+// 寫入沒有回傳資源；只接受契約指定狀態及空物件，scalar 不能冒充成功。
+export function validWriteSuccess(status, body, expectedStatus) {
+  return status === expectedStatus && body?.success === true && body.message === 'OK'
+    && body.data !== null && typeof body.data === 'object' && !Array.isArray(body.data)
+    && Object.keys(body.data).length === 0
+}
+
 // 從共同錯誤 envelope 擷取可顯示資料，不把 debug 或非文字注入畫面。
 export function failure(body) {
   const code = body?.success === false && typeof body.error_code === 'string' ? body.error_code : ''
