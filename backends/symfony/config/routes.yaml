@@ -16,51 +16,51 @@ me:
     methods: [GET]
 articles:
     path: /api/articles
-    controller: App\ApiController::articles
+    controller: App\ArticleController::articles
     methods: [GET]
 article_create:
     path: /api/articles
-    controller: App\ApiController::createArticle
+    controller: App\ArticleController::createArticle
     methods: [POST]
 my_articles:
     path: /api/me/articles
-    controller: App\ApiController::myArticles
+    controller: App\ArticleController::myArticles
     methods: [GET]
 my_comments:
     path: /api/me/comments
-    controller: App\ApiController::myComments
+    controller: App\CommentController::myComments
     methods: [GET]
 article:
     path: /api/articles/{article_id}
-    controller: App\ApiController::article
+    controller: App\ArticleController::article
     methods: [GET]
 article_update:
     path: /api/articles/{article_id}
-    controller: App\ApiController::updateArticle
+    controller: App\ArticleController::updateArticle
     methods: [PUT]
 article_visibility:
     path: /api/articles/{article_id}/visibility
-    controller: App\ApiController::articleVisibility
+    controller: App\ArticleController::articleVisibility
     methods: [PUT]
 comments:
     path: /api/articles/{article_id}/comments
-    controller: App\ApiController::comments
+    controller: App\CommentController::comments
     methods: [GET]
 comment_create:
     path: /api/articles/{article_id}/comments
-    controller: App\ApiController::createComment
+    controller: App\CommentController::createComment
     methods: [POST]
 comment:
     path: /api/comments/{comment_id}
-    controller: App\ApiController::comment
+    controller: App\CommentController::comment
     methods: [GET]
 comment_update:
     path: /api/comments/{comment_id}
-    controller: App\ApiController::updateComment
+    controller: App\CommentController::updateComment
     methods: [PUT]
 comment_visibility:
     path: /api/comments/{comment_id}/visibility
-    controller: App\ApiController::commentVisibility
+    controller: App\CommentController::commentVisibility
     methods: [PUT]
 members:
     path: /api/members
@@ -76,7 +76,7 @@ member_status:
     methods: [PUT]
 admin_comments:
     path: /api/comments
-    controller: App\ApiController::adminComments
+    controller: App\CommentController::adminComments
     methods: [GET]
 login_lockout_settings:
     path: /api/settings/login-lockout

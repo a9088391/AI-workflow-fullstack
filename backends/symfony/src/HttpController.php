@@ -4,12 +4,13 @@ namespace App;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use JsonException;
 use PDO;
 use stdClass;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 
-/** 集中帳號與其他端點實際共用的認證、輸入邊界與回應，避免各自偏離契約。 */
+/** 集中端點實際共用的認證、輸入邊界、分頁與回應，避免各自偏離契約。 */
 abstract class HttpController
 {
     /** 注入既有連線與交易包裝，讓所有端點沿用同一套提交與回滾行為。 */
@@ -82,6 +83,181 @@ abstract class HttpController
         if ($request->getContent() !== '') {
             throw new ApiFailure('E0001', ['_body' => ['此 API 不接受 Request Body']]);
         }
+    }
+
+    /** 共同 Body 驗證保留欄位順序及逐欄第一個錯誤，嚴格檢查版本整數。 */
+    protected function contentBody(Request $request, array $fields): stdClass
+    {
+        $raw = $request->getContent();
+        if (
+            $raw === ''
+            || ! str_starts_with(strtolower($request->headers->get('Content-Type', '')), 'application/json')
+        ) {
+            throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
+        }
+        try {
+            $body = json_decode($raw, false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new ApiFailure('E0005');
+        }
+        if (! is_object($body)) {
+            throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
+        }
+        // 必填、null、型態、格式順序固定；未知與唯讀欄位最後加入明細。
+        $errors = [];
+        foreach ($fields as $name => $rule) {
+            if (! property_exists($body, $name)) {
+                $errors[$name] = ['此欄位為必填'];
+            } elseif ($body->$name === null) {
+                $errors[$name] = ['此欄位不可為 null'];
+            } elseif (
+                ($rule === 'version' && ! is_int($body->$name))
+                || ($rule !== 'version' && ! is_string($body->$name))
+            ) {
+                $errors[$name] = ['欄位型態不正確'];
+            } elseif (
+                ($rule === 'version' && ($body->$name < 1 || $body->$name > 9007199254740991))
+                || ($rule === 'visibility' && ! in_array($body->$name, ['visible', 'hidden'], true))
+                || ($rule === 'status' && ! in_array($body->$name, ['active', 'disabled'], true))
+                || (is_int($rule) && ! Rules::validContent($body->$name, $rule))
+            ) {
+                $errors[$name] = ['欄位格式或範圍不正確'];
+            }
+        }
+        foreach ($body as $name => $_) {
+            if (! array_key_exists($name, $fields)) {
+                $errors[$name] = ['不支援此欄位'];
+            }
+        }
+        $this->rejectErrors($errors);
+
+        return $body;
+    }
+
+    /** 逐一解碼原始 Query，驗證重複、陣列、必填分頁及限定的篩選欄位。 */
+    protected function listQuery(Request $request, bool $scopeAllowed, bool $keywordAllowed = false): array
+    {
+        $this->noGetBody($request);
+        $values = [];
+        $errors = [];
+        $allowed = [
+            'page',
+            'per_page',
+            ...($scopeAllowed ? ['filters[scope]'] : []),
+            ...($keywordAllowed ? ['filters[keyword]'] : []),
+        ];
+        // 直接解析原始 Query，保留重複名稱及單值被包成陣列時的錯誤資訊。
+        $raw = $request->server->get('QUERY_STRING', '');
+        if ($raw !== '') {
+            foreach (explode('&', $raw) as $pair) {
+                [$name, $value] = array_pad(explode('=', $pair, 2), 2, '');
+                $name = urldecode($name);
+                $name = mb_check_encoding($name, 'UTF-8') ? $name : rawurlencode($name);
+                $arrayValue = preg_match('/\A(page|per_page|filters\[(?:scope|keyword)\])\[/', $name, $parts) === 1;
+                $canonical = $arrayValue ? $parts[1] : $name;
+                $errorName = preg_replace('/\Afilters\[([^\]]+)\]\z/', 'filters.$1', $canonical);
+                if (array_key_exists($canonical, $values)) {
+                    $errors[$errorName] = ['此參數不可重複'];
+                } elseif ($arrayValue && in_array($canonical, $allowed, true)) {
+                    $errors[$errorName] = ['欄位型態不正確'];
+                } elseif (! in_array($canonical, $allowed, true)) {
+                    $errors[$errorName] = ['不支援此欄位'];
+                }
+                $values[$canonical] = urldecode($value);
+            }
+        }
+        // 分頁先驗必填及範圍，再驗端點明確允許的篩選值。
+        foreach (['page', 'per_page'] as $name) {
+            if (! array_key_exists($name, $values)) {
+                $errors[$name] = ['此欄位為必填'];
+            } elseif (
+                ! isset($errors[$name])
+                && (($number = $this->positiveInteger($values[$name])) === null
+                    || ($name === 'per_page' && $number > 100))
+            ) {
+                $errors[$name] = ['欄位格式或範圍不正確'];
+            }
+        }
+        if (
+            $scopeAllowed && isset($values['filters[scope]'])
+            && ! isset($errors['filters.scope']) && $values['filters[scope]'] !== 'management'
+        ) {
+            $errors['filters.scope'] = ['欄位格式或範圍不正確'];
+        }
+        if ($keywordAllowed && isset($values['filters[keyword]']) && ! isset($errors['filters.keyword'])) {
+            // 關鍵字只去除 ASCII 空格；無效 UTF-8 與 NUL 不可送入 PostgreSQL text。
+            $keyword = trim($values['filters[keyword]'], ' ');
+            if (
+                ! mb_check_encoding($keyword, 'UTF-8')
+                || str_contains($keyword, "\0") || mb_strlen($keyword, 'UTF-8') > 254
+            ) {
+                $errors['filters.keyword'] = ['欄位格式或範圍不正確'];
+            }
+        }
+        $this->rejectErrors($errors);
+
+        return ['page' => (int) $values['page'], 'per_page' => (int) $values['per_page'],
+            'scope' => $values['filters[scope]'] ?? null,
+            'keyword' => isset($values['filters[keyword]']) ? trim($values['filters[keyword]'], ' ') : null];
+    }
+
+    /** URL 整數接受前導零，但值須落在 JavaScript 安全整數範圍。 */
+    private function positiveInteger(string $value): ?int
+    {
+        if (preg_match('/\A[0-9]+\z/D', $value) !== 1) {
+            return null;
+        }
+        $digits = ltrim($value, '0');
+        if (
+            $digits === '' || strlen($digits) > 16
+            || (strlen($digits) === 16 && strcmp($digits, '9007199254740991') > 0)
+        ) {
+            return null;
+        }
+
+        return (int) $digits;
+    }
+
+    /** 將 Path ID 的格式錯誤固定回傳對應欄位，不查詢不存在的資源。 */
+    protected function id(string $value, string $field): int
+    {
+        $id = $this->positiveInteger($value);
+        if ($id === null) {
+            throw new ApiFailure('E0001', [$field => ['欄位格式或範圍不正確']]);
+        }
+
+        return $id;
+    }
+
+    /** 精確 count 後使用穩定排序；巨大合法頁碼直接回空頁，避免 offset 溢位。 */
+    protected function pageRows(PDO $db, string $sql, array $input, int $total, array $parameters = []): array
+    {
+        $offset = intdiv(PHP_INT_MAX, $input['per_page']) < $input['page'] - 1
+            ? null
+            : ($input['page'] - 1) * $input['per_page'];
+        if ($offset === null || $offset >= $total) {
+            return [];
+        }
+        $query = $db->prepare($sql . ' LIMIT :limit OFFSET :offset');
+        foreach ($parameters as $name => $value) {
+            $query->bindValue(':' . $name, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $query->bindValue(':limit', $input['per_page'], PDO::PARAM_INT);
+        $query->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $query->execute();
+
+        return $query->fetchAll();
+    }
+
+    /** 分頁保留請求頁碼與範圍內精確總數，空集合的總頁數為零。 */
+    protected function pagination(array $input, int $total): array
+    {
+        return [
+            'page' => $input['page'],
+            'per_page' => $input['per_page'],
+            'total' => $total,
+            'total_pages' => intdiv($total, $input['per_page']) + (int) ($total % $input['per_page'] !== 0),
+        ];
     }
 
     /** 一次回傳呼叫端依優先順序整理的欄位錯誤，空集合則繼續處理。 */
