@@ -1,0 +1,69 @@
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">SETTINGS / 管理</p>
+    <h1>登入鎖定設定</h1>
+    <p class="heading-subtitle">設定由所有後端共用，送出後重讀目前伺服器值。</p>
+  </div>
+  <span class="heading-flower" aria-hidden="true">❀</span>
+</div>
+@if (content.request.loading()) {
+  <p class="notice" role="status">正在讀取設定…</p>
+}
+@if (content.request.error(); as failure) {
+  <div class="notice error" role="alert">
+    <p>{{ failure.message }}</p>
+    @if (failure.logId) {
+      <small>log_id：{{ failure.logId }}</small>
+      <button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button>
+    }
+    <button type="button" (click)="content.read()">重新讀取</button>
+  </div>
+}
+@if (content.settings(); as current) {
+  <form class="content-form settings-form" (submit)="submit($event)" novalidate>
+    <h2>會員登入失敗鎖定</h2>
+    <p>伺服器目前值：{{ current.enabled ? '啟用' : '停用' }}、{{ current.window_minutes }} 分鐘內 {{ current.failure_threshold }} 次、鎖定 {{ current.lock_seconds }} 秒。</p>
+    @if (Object.keys(content.operation.errors()).length) {
+      <div #summary class="field-summary" tabindex="-1" role="alert" aria-labelledby="settings-error-title">
+        <strong id="settings-error-title">請檢查下列欄位</strong>
+        @for (entry of content.errorEntries(); track entry[0]) {
+          <a [href]="path + '#' + entry[0]" (click)="focusField($event, entry[0])">{{ entry[0] }}：{{ entry[1].join('；') }}</a>
+        }
+        @for (message of content.otherErrors(); track message) {
+          <span>{{ message }}</span>
+        }
+      </div>
+    }
+    <label class="check-label" for="enabled">
+      <input id="enabled" name="enabled" type="checkbox" [(ngModel)]="content.draft.enabled"
+        [attr.aria-invalid]="content.operation.errors()['enabled'] ? 'true' : null"
+        (ngModelChange)="content.changed(); edited.emit()"
+        [disabled]="!!content.session.operation() || content.writes.pending()">
+      啟用登入失敗鎖定
+    </label>
+    <small class="field-error">{{ content.operation.errors()['enabled']?.join('；') }}</small>
+    <label for="window_minutes">計算視窗（分鐘）</label>
+    <input id="window_minutes" name="window_minutes" type="number" min="1" max="60" step="1"
+      [(ngModel)]="content.draft.window_minutes" (ngModelChange)="content.changed(); edited.emit()"
+      [disabled]="!!content.session.operation() || content.writes.pending()"
+      [attr.aria-invalid]="content.operation.errors()['window_minutes'] ? 'true' : null">
+    <small class="field-error">{{ content.operation.errors()['window_minutes']?.join('；') }}</small>
+    <label for="failure_threshold">失敗次數</label>
+    <input id="failure_threshold" name="failure_threshold" type="number" min="1" max="100" step="1"
+      [(ngModel)]="content.draft.failure_threshold" (ngModelChange)="content.changed(); edited.emit()"
+      [disabled]="!!content.session.operation() || content.writes.pending()"
+      [attr.aria-invalid]="content.operation.errors()['failure_threshold'] ? 'true' : null">
+    <small class="field-error">{{ content.operation.errors()['failure_threshold']?.join('；') }}</small>
+    <label for="lock_seconds">鎖定秒數</label>
+    <input id="lock_seconds" name="lock_seconds" type="number" min="1" max="86400" step="1"
+      [(ngModel)]="content.draft.lock_seconds" (ngModelChange)="content.changed(); edited.emit()"
+      [disabled]="!!content.session.operation() || content.writes.pending()"
+      [attr.aria-invalid]="content.operation.errors()['lock_seconds'] ? 'true' : null">
+    <small class="field-error">{{ content.operation.errors()['lock_seconds']?.join('；') }}</small>
+    <button class="primary-button" type="submit" [disabled]="content.writes.blocked('settings')">
+      {{ content.writes.pending() ? '儲存中…' : '儲存設定' }}
+    </button>
+    <button type="button" class="text-button" [disabled]="!!content.session.operation() || content.writes.pending()"
+      (click)="content.read()">重讀伺服器值</button>
+  </form>
+}

@@ -1,0 +1,134 @@
+@if (!content.validMemberId) {
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">MEMBERS / 管理</p>
+        <h1>會員管理</h1>
+        <p class="heading-subtitle">依暱稱或 Email 尋找一般會員，狀態以伺服器重讀為準。</p>
+      </div>
+      <span class="heading-flower" aria-hidden="true">❀</span>
+    </div>
+    <form class="admin-search" (submit)="content.search($event)" novalidate>
+      <label for="member-keyword">搜尋會員</label>
+      <div class="inline-actions">
+        <input id="member-keyword" name="keyword" [(ngModel)]="content.keywordDraft" placeholder="暱稱或 Email" [attr.aria-invalid]="content.fieldErrors()['keyword'] ? 'true' : null">
+        <button type="submit">搜尋</button>
+        @if (content.query.has('keyword')) {
+            <a href="/angular/admin/members">清除搜尋</a>
+        }
+      </div>
+      @if (content.fieldErrors()['keyword']) {
+          <small class="field-error" role="alert">{{ content.fieldErrors()['keyword'].join('；') }}</small>
+      }
+    </form>
+    @if (content.request.loading()) {
+        <p class="notice" role="status">正在載入會員…</p>
+    }
+    @if (content.request.error(); as failure) {
+        <div class="notice error" role="alert">
+          <p>{{ failure.message }}</p>
+          @if (failure.logId) {
+              <small>log_id：{{ failure.logId }}</small>
+              <button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button>
+          }
+          <button type="button" (click)="content.read()">重新讀取</button>
+        </div>
+    }
+    <!-- 搜尋首頁零筆顯示無符合結果；超頁保留返回入口。 -->
+    @if (content.members(); as data) {
+        @if (!data.list.length) {
+            <div class="empty-state">
+              <span aria-hidden="true">✿</span>
+              <p>
+                {{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : content.hasKeyword() ? '沒有符合搜尋條件的會員。' : '目前尚無會員。' }}
+              </p>
+              @if (data.pagination.page > 1) {
+                  <a [href]="content.pageHref(1)">回第一頁</a>
+              }
+            </div>
+          }
+          @else {
+            <div class="admin-list" aria-label="會員列表">
+              @for (item of data.list; track item.id) {
+                <article class="admin-row">
+                  <div>
+                    <h2>
+                      <a [href]="'/angular/admin/members/' + item.id">{{ item.nickname }}</a>
+                    </h2>
+                    <p>{{ item.email }}</p>
+                  </div>
+                  <div>
+                    <span class="admin-label">狀態</span>
+                    <strong>{{ item.status === 'active' ? '啟用' : '已停用' }}</strong>
+                  </div>
+                  <div>
+                    <span class="admin-label">加入日期</span>
+                    <time>{{ item.created_at.slice(0, 10) }}</time>
+                  </div>
+                  <div class="inline-actions">
+                    <a [href]="'/angular/admin/members/' + item.id">查看詳情</a>
+                    <button type="button" [disabled]="content.writes.blocked('member-status:' + item.id)" (click)="content.changeStatus(item)">{{ item.status === 'active' ? '停用' : '恢復' }}</button>
+                  </div>
+                </article>
+              }
+            </div>
+        }
+        <nav class="pagination" aria-label="會員分頁">
+          <span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 位</span>
+          @if (data.pagination.page > 1) {
+              <a [href]="content.pageHref(data.pagination.page - 1)">上一頁</a>
+          }
+          @if (data.pagination.page < data.pagination.total_pages) {
+              <a [href]="content.pageHref(data.pagination.page + 1)">下一頁</a>
+          }
+        </nav>
+    }
+  }
+  @else {
+    <a class="back-link" href="/angular/admin/members">← 回會員管理</a>
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">MEMBER / 詳情</p>
+        <h1>會員詳情</h1>
+      </div>
+      <span class="heading-flower" aria-hidden="true">❀</span>
+    </div>
+    @if (content.request.loading()) {
+        <p class="notice" role="status">正在載入會員…</p>
+    }
+    @if (content.request.error(); as failure) {
+        <div class="notice error" role="alert">
+          <p>{{ failure.message }}</p>
+          @if (failure.logId) {
+              <small>log_id：{{ failure.logId }}</small>
+              <button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button>
+          }
+          <button type="button" (click)="content.read()">重新讀取</button>
+        </div>
+    }
+    @if (content.member(); as value) {
+        <article class="member-card">
+          <h2>{{ value.nickname }}</h2>
+          <dl>
+            <div>
+              <dt>會員編號</dt>
+              <dd>{{ value.id }}</dd>
+            </div>
+            <div>
+              <dt>Email</dt>
+              <dd>{{ value.email }}</dd>
+            </div>
+            <div>
+              <dt>狀態</dt>
+              <dd>{{ value.status === 'active' ? '啟用' : '已停用' }}</dd>
+            </div>
+            <div>
+              <dt>加入日期</dt>
+              <dd>{{ value.created_at }}</dd>
+            </div>
+          </dl>
+          <div class="inline-actions">
+            <button type="button" [disabled]="content.writes.blocked('member-status:' + value.id)" (click)="content.changeStatus(value)">{{ value.status === 'active' ? '停用會員' : '恢復會員' }}</button>
+          </div>
+        </article>
+    }
+}

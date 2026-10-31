@@ -86,6 +86,20 @@ export class OrdinaryWrites {
       || Boolean(operation?.unknown() || operation?.conflict());
   }
 
+  // 閱讀與管理共用同一可見性操作規則；成功只通知原頁重讀，不清其他未知結果。
+  changeVisibility(kind: 'article' | 'comment', resource: Article | Comment, refresh: () => void): void {
+    const key = `${kind}-visibility:${resource.id}`;
+    if (this.blocked(key) || resource.visibility === 'hidden' && !resource.can_restore) return;
+    const next = resource.visibility === 'visible' ? 'hidden' : 'visible';
+    if (!window.confirm(`確定要${next === 'hidden' ? '下架' : '恢復'}這${kind === 'article' ? '篇文章' : '則留言'}嗎？`)) return;
+    const operation = this.operation(key, `${kind === 'article' ? '文章' : '留言'} #${resource.id} 可見性`,
+      `/api/${kind === 'article' ? 'articles' : 'comments'}/${resource.id}/visibility`, 'PUT', { kind, id: resource.id });
+    void this.run(operation, { visibility: next, version: resource.version },
+      // 完整成功後才重讀目前版本，另一資源的查證資格仍保持獨立。
+      () => { operation.problem.set({ message: '狀態已更新，正在重新讀取。' }); refresh(); },
+    );
+  }
+
   // 新查證先撤舊資格及資料，序號防止同 JWT 較早的成功在新失敗後復活。
   private revoke(operation: WriteOperation): number {
     operation.verified.set(false); operation.proofCredential = null;

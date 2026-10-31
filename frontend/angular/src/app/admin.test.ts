@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isLockoutSettings, isMember, memberKeyword, settingErrors } from './admin.ts';
-import { frontendTarget, validReturn } from './contracts.ts';
+import { frontendTarget, isReadingPage, validReturn } from './contracts.ts';
 
 // 管理頁只允許已核准的深連結，會員資料不能把管理員或缺欄當成可操作目標。
 test('管理路徑及會員資料', function memberContract() {
@@ -27,4 +27,16 @@ test('鎖定設定與搜尋契約', function settingsContract() {
   assert.equal(isLockoutSettings({ ...current, enabled: 'true' }), false);
   assert.equal(memberKeyword('  陳%_  '), '陳%_');
   assert.equal(memberKeyword('\u3000陳\u3000'), '\u3000陳\u3000');
+});
+
+// 管理列表沿用完整分頁契約；錯頁、重複目標及不可能筆數不能變成可停用會員。
+test('會員管理分頁保留完整性與超頁語意', function memberPageContract() {
+  const member = { id: 9, email: 'a@example.test', nickname: '小草', role: 'member', status: 'active', created_at: '2026-10-18 10:00:00' };
+  const page = { list: [member], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } };
+  assert.equal(isReadingPage(page, 1, isMember), true);
+  assert.equal(isReadingPage(page, 2, isMember), false);
+  assert.equal(isReadingPage({ ...page, list: [member, member] }, 1, isMember), false);
+  assert.equal(isReadingPage({ ...page, list: [{ ...member, role: 'admin' }] }, 1, isMember), false);
+  assert.equal(isReadingPage({ ...page, pagination: { ...page.pagination, total: 0, total_pages: 0 } }, 1, isMember), false);
+  assert.equal(isReadingPage({ list: [], pagination: { ...page.pagination, page: 2 } }, 2, isMember), true);
 });

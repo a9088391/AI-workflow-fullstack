@@ -270,7 +270,7 @@ export function isReadingComment(value: any, expectedId?: number): value is Comm
 }
 
 // 分頁保留原請求與超頁語意；拒絕錯頁、重複 ID 或不可能的筆數，錯誤不能冒充空資料。
-export function isReadingPage<T extends Article | Comment>(value: any, expectedPage: number,
+export function isReadingPage<T extends { id: number }>(value: any, expectedPage: number,
   accepts: (item: unknown) => item is T): value is Page<T> {
   if (!value || !Array.isArray(value.list) || !value.pagination) return false;
   const pagination = value.pagination;

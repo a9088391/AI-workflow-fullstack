@@ -1,0 +1,147 @@
+@if (content.articleList) {
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">STORIES / 文章</p>
+        <h1>文章管理</h1>
+        <p class="heading-subtitle">查看公開與下架的文章，從詳情處理狀態。</p>
+      </div>
+      <span class="heading-flower" aria-hidden="true">❧</span>
+    </div>
+    @if (content.request.loading()) {
+        <p class="notice" role="status">正在載入文章…</p>
+    }
+    @if (content.request.error(); as failure) {
+        <div class="notice error" role="alert">
+          <p>{{ failure.message }}</p>
+          @if (failure.logId) {
+              <small>log_id：{{ failure.logId }}</small>
+              <button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button>
+          }
+          <button type="button" (click)="content.read()">重新讀取</button>
+        </div>
+    }
+    <!-- 列表零筆時先看原頁碼；超頁仍保留總數和回第一頁。 -->
+    @if (content.articles(); as data) {
+        @if (data.list.length === 0) {
+            <div class="empty-state">
+              <span aria-hidden="true">✿</span>
+              <p>
+                {{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無文章。' }}
+              </p>
+              @if (data.pagination.page > 1) {
+                  <a [href]="content.pageHref(1)">回第一頁</a>
+              }
+            </div>
+          }
+          @else {
+            <div class="article-list">
+              <div class="list-head">
+                <span>文章</span>
+                <span>發佈日期</span>
+                <span>建立來源</span>
+              </div>
+              @for (item of data.list; track item.id) {
+                <article class="article-row">
+                  <div>
+                    <h2>
+                      <a [href]="'/angular/articles/' + item.id">{{ item.title }}</a>
+                    </h2>
+                    <p class="excerpt">{{ item.body }}</p>
+                    <p class="byline">
+                      作者　{{ item.author.nickname }}
+                      @if (item.visibility === 'hidden') {
+                          · 已下架
+                      }
+                    </p>
+                    @if (content.articleList) {
+                        <div class="inline-actions">
+                          @if (item.author.id === content.session.account()?.id) {
+                              <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a>
+                          }
+                          @if (item.visibility === 'visible' || item.can_restore) {
+                              <button type="button" [disabled]="content.writes.blocked('article-visibility:' + item.id)" (click)="content.changeVisibility('article', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button>
+                          }
+                        </div>
+                    }
+                  </div>
+                  <time>{{ item.created_at.slice(0, 10) }}</time>
+                  <span>建立於 {{ content.backendLabel(item.created_backend) }}</span>
+                </article>
+              }
+            </div>
+        }
+        <nav class="pagination" aria-label="文章分頁">
+          <span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 篇</span>
+          @if (data.pagination.page > 1) {
+              <a [href]="content.pageHref(data.pagination.page - 1)">上一頁</a>
+          }
+          @if (data.pagination.page < data.pagination.total_pages) {
+              <a [href]="content.pageHref(data.pagination.page + 1)">下一頁</a>
+          }
+        </nav>
+    }
+  }
+  @else {
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">NOTES / 管理</p>
+        <h1>留言管理</h1>
+        <p class="heading-subtitle">包含個別下架與所屬文章下架的留言。</p>
+      </div>
+      <span class="heading-flower" aria-hidden="true">❀</span>
+    </div>
+    @if (content.request.loading()) {
+        <p class="notice" role="status">正在載入留言…</p>
+    }
+    @if (content.request.error(); as failure) {
+        <div class="notice error" role="alert">
+          <p>{{ failure.message }}</p>
+          @if (failure.logId) {
+              <small>log_id：{{ failure.logId }}</small>
+              <button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button>
+          }
+          <button type="button" (click)="content.read()">重新讀取</button>
+        </div>
+    }
+    <!-- 管理留言零筆超頁不代表整體沒有留言。 -->
+    @if (content.comments(); as data) {
+        @if (!data.list.length) {
+            <p class="empty-state">
+              {{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無留言。' }}
+              @if (data.pagination.page > 1) {
+                  <a [href]="content.pageHref(1)">回第一頁</a>
+              }
+            </p>
+        }
+        @for (item of data.list; track item.id) {
+          <article class="comment admin-comment">
+            <div class="comment-meta">
+              <strong>{{ item.author.nickname }}</strong>
+              <span>文章 #{{ item.article_id }}</span>
+              <time>{{ item.created_at.slice(0, 10) }}</time>
+              <span>建立於 {{ content.backendLabel(item.created_backend) }}</span>
+              <span>{{ item.visibility === 'visible' ? '公開' : '已下架' }}</span>
+            </div>
+            <p>{{ item.body }}</p>
+            <div class="inline-actions">
+              <a [href]="'/angular/comments/' + item.id">留言詳情</a>
+              @if (item.author.id === content.session.account()?.id) {
+                  <a [href]="'/angular/comments/' + item.id + '/edit'">編修</a>
+              }
+              @if (item.visibility === 'visible' || item.can_restore) {
+                  <button type="button" [disabled]="content.writes.blocked('comment-visibility:' + item.id)" (click)="content.changeVisibility('comment', item)">{{ item.visibility === 'visible' ? '下架' : '恢復' }}</button>
+              }
+            </div>
+          </article>
+        }
+        <nav class="pagination" aria-label="管理留言分頁">
+          <span>第 {{ data.pagination.page }} 頁 · 共 {{ data.pagination.total }} 則</span>
+          @if (data.pagination.page > 1) {
+              <a [href]="content.pageHref(data.pagination.page - 1)">上一頁</a>
+          }
+          @if (data.pagination.page < data.pagination.total_pages) {
+              <a [href]="content.pageHref(data.pagination.page + 1)">下一頁</a>
+          }
+        </nav>
+    }
+}
