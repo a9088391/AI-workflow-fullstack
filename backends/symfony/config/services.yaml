@@ -3,3 +3,6 @@ services:
     App\ApiController:
         public: true
         autowire: true
+    App\AccountController:
+        public: true
+        autowire: true

@@ -1,18 +1,18 @@
 register:
     path: /api/auth/register
-    controller: App\ApiController::register
+    controller: App\AccountController::register
     methods: [POST]
 login:
     path: /api/auth/login
-    controller: App\ApiController::login
+    controller: App\AccountController::login
     methods: [POST]
 logout:
     path: /api/auth/logout
-    controller: App\ApiController::logout
+    controller: App\AccountController::logout
     methods: [POST]
 me:
     path: /api/me
-    controller: App\ApiController::me
+    controller: App\AccountController::me
     methods: [GET]
 articles:
     path: /api/articles
