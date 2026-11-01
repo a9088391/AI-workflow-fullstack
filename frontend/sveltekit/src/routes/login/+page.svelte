@@ -34,7 +34,7 @@
   onMount(() => {
     void site.initialize();
     // 離頁時取消倒數與晚到回應，避免舊表單更新下一頁的共用狀態。
-    return () => { active = false; attempt++; clearInterval(timer); site.dirty.set(false); site.pending.set(false); };
+    return () => { active = false; attempt++; clearInterval(timer); site.dirty.set(false); site.finishPending(); };
   });
 
   // 修改帳密表示新的一次輸入，先清除舊的可重試提示。
@@ -62,15 +62,16 @@
     if (!active || sentAttempt !== attempt) { processing = false; return; }
     site.pending.set(true);
     const sentBackend = get(site.backend);
-    const sentVersion = site.version();
+    // 本次帳密獨立於舊 JWT；舊憑證失效仍須呈現登入結果，換頁、後端或帳號才隔離舊操作。
+    const sentVersion = site.writeVersion();
     try {
       const data = await site.request('/api/auth/login', { method: 'POST', data: { email: sentEmail, password } });
-      if (!active || sentAttempt !== attempt || site.version() !== sentVersion || get(site.backend) !== sentBackend || normalizeEmail(email) !== sentEmail) return;
-      if (!site.acceptLogin(data)) { error = '登入回應格式或分頁儲存不可用，請確認目前後端後重新登入。'; return; }
-      site.dirty.set(false); site.pending.set(false);
+      if (!active || sentAttempt !== attempt || site.writeVersion() !== sentVersion || get(site.backend) !== sentBackend || normalizeEmail(email) !== sentEmail) return;
+      if (!site.acceptLogin(data, sentEmail)) { error = '登入回應格式或分頁儲存不可用，請確認目前後端後重新登入。'; return; }
+      site.dirty.set(false); site.finishPending();
       window.location.assign(returnTo);
     } catch (failure) {
-      if (!active || sentAttempt !== attempt || site.version() !== sentVersion || get(site.backend) !== sentBackend || normalizeEmail(email) !== sentEmail) return;
+      if (!active || sentAttempt !== attempt || site.writeVersion() !== sentVersion || get(site.backend) !== sentBackend || normalizeEmail(email) !== sentEmail) return;
       fieldErrors = failure?.errors || {};
       error = describeFailure(failure, '登入結果尚未確認，請確認目前後端後再試。');
       if (failure?.code === 'E0102') { lockText = ''; lockDeadline = 0; clearInterval(timer); }
@@ -84,32 +85,50 @@
         } else error += '（後端未提供有效的 Retry-After 秒數）';
       }
       if (Object.keys(fieldErrors).length) { await tick(); summary?.focus(); }
-    } finally { processing = false; if (active && site.version() === sentVersion) site.pending.set(false); }
+    } finally { processing = false; if (active && site.writeVersion() === sentVersion) site.finishPending(); }
   }
 </script>
 
-<svelte:head><title>會員登入｜文章集</title></svelte:head>
+<svelte:head>
+  <title>會員登入｜文章集</title>
+</svelte:head>
 
 <div class="auth-wrap">
-  <div class="auth-intro"><h1>會員登入<span class="title-dot">.</span></h1><p>登入後即可發表文章與留言。</p></div>
+  <div class="auth-intro">
+    <h1>會員登入<span class="title-dot">.</span>
+    </h1>
+    <p>登入後即可發表文章與留言。</p>
+  </div>
   <form class="auth-card" novalidate onsubmit={submit}>
-    {#if error}<div class="form-summary" role="alert" tabindex="-1" bind:this={summary}>
-      <strong>{error}</strong>
-      {#each Object.entries(fieldErrors) as [field, messages]}
-        <a href={`#${field}`}>{field === 'email' ? 'Email' : '密碼'}：{messages.join('、')}</a>
-      {/each}
-    </div>{/if}
-    {#if lockText}<p class="lock-note">登入暫時鎖定，約剩 <span aria-hidden="true">{lockText}</span></p>{/if}
-    {#if lockEnded}<p class="success-note" role="status">可再次嘗試登入</p>{/if}
+    {#if error}
+      <div class="form-summary" role="alert" tabindex="-1" bind:this={summary}>
+        <strong>{error}</strong>
+        {#each Object.entries(fieldErrors) as [field, messages]}
+          <a href={`#${field}`}>{field === 'email' ? 'Email' : '密碼'}：{messages.join('、')}</a>
+        {/each}
+      </div>
+    {/if}
+    {#if lockText}
+      <p class="lock-note">登入暫時鎖定，約剩 <span aria-hidden="true">{lockText}</span>
+      </p>
+    {/if}
+    {#if lockEnded}
+      <p class="success-note" role="status">可再次嘗試登入</p>
+    {/if}
     <label for="email">Email</label>
     <input id="email" name="email" type="text" inputmode="email" autocomplete="username" bind:value={email}
-      disabled={Boolean(lockText) || processing} aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email ? 'email-error' : undefined} oninput={markDirty} />
-    {#if fieldErrors.email}<p id="email-error" class="field-error">{fieldErrors.email.join('、')}</p>{/if}
+    disabled={Boolean(lockText) || processing} aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email ? 'email-error' : undefined} oninput={markDirty} />
+    {#if fieldErrors.email}
+      <p id="email-error" class="field-error">{fieldErrors.email.join('、')}</p>
+    {/if}
     <label for="password">密碼</label>
     <input id="password" name="password" type="password" autocomplete="current-password" bind:value={password}
-      disabled={Boolean(lockText) || processing} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? 'password-error' : undefined} oninput={markDirty} />
-    {#if fieldErrors.password}<p id="password-error" class="field-error">{fieldErrors.password.join('、')}</p>{/if}
+    disabled={Boolean(lockText) || processing} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? 'password-error' : undefined} oninput={markDirty} />
+    {#if fieldErrors.password}
+      <p id="password-error" class="field-error">{fieldErrors.password.join('、')}</p>
+    {/if}
     <button class="button button-primary auth-submit" type="submit" disabled={Boolean(lockText) || processing}>{processing ? '登入中…' : '登入'}</button>
-    <div class="auth-foot">還沒有帳號？ <a href={`${BASE}/register`}>註冊會員</a></div>
+    <div class="auth-foot">還沒有帳號？ <a href={`${BASE}/register`}>註冊會員</a>
+    </div>
   </form>
 </div>

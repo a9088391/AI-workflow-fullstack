@@ -14,11 +14,11 @@
 
   // 站內導覽也須詢問是否捨棄草稿；瀏覽器離頁由 beforeUnload 處理。
   beforeNavigate(({ cancel, to }) => {
-    if (!to || (!get(dirty) && !get(pending))) return;
+    if (!to) return;
     // 欄位錯誤摘要的錨點只移動頁內位置，不會捨棄草稿。
     if (to.url.pathname === window.location.pathname && to.url.search === window.location.search) return;
-    if (!window.confirm('目前輸入或請求可能尚未完成。要捨棄並離開嗎？')) cancel();
-    else site.dirty.set(false);
+    if ((get(dirty) || get(pending)) && !window.confirm('目前輸入或請求可能尚未完成。要捨棄並離開嗎？')) cancel();
+    else { site.dirty.set(false); site.leavePage(); }
   });
 
   // 只在瀏覽器讀取分頁儲存與驗證登入，SSR 不接觸共享的業務狀態。
@@ -28,6 +28,7 @@
     window.addEventListener('pageshow', site.pageshow);
     // 版面卸載時移除瀏覽器事件，避免熱更新或導覽後重複處理。
     return () => {
+      site.dispose();
       window.removeEventListener('beforeunload', site.beforeUnload);
       window.removeEventListener('pageshow', site.pageshow);
     };
@@ -64,7 +65,8 @@
 
 <div class="site-shell">
   <header class="site-header">
-    <a class="wordmark" href={`${BASE}/`}>文章集<span class="wordmark-dot">.</span></a>
+    <a class="wordmark" href={`${BASE}/`}>文章集<span class="wordmark-dot">.</span>
+    </a>
     <nav class="main-nav" aria-label="主要導覽">
       <a aria-current={$page.url.pathname === `${BASE}/` ? 'page' : undefined} href={`${BASE}/`}>所有文章</a>
       {#if $authState === 'active'}
@@ -72,9 +74,12 @@
         <a aria-current={$page.url.pathname === `${BASE}/me/articles` ? 'page' : undefined} href={`${BASE}/me/articles`}>我的文章</a>
         <a aria-current={$page.url.pathname === `${BASE}/me/comments` ? 'page' : undefined} href={`${BASE}/me/comments`}>我的留言</a>
         {#if $account?.role === 'admin'}
-          <details class="admin-nav" open={$page.url.pathname.startsWith(`${BASE}/admin/`)}><summary>管理介面</summary>
-            <a href={`${BASE}/admin/members`}>會員管理</a><a href={`${BASE}/admin/articles`}>文章管理</a>
-            <a href={`${BASE}/admin/comments`}>留言管理</a><a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
+          <details class="admin-nav" open={$page.url.pathname.startsWith(`${BASE}/admin/`)}>
+            <summary>管理介面</summary>
+            <a href={`${BASE}/admin/members`}>會員管理</a>
+            <a href={`${BASE}/admin/articles`}>文章管理</a>
+            <a href={`${BASE}/admin/comments`}>留言管理</a>
+            <a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
           </details>
         {/if}
       {:else}
@@ -94,8 +99,10 @@
           <a href={`${BASE}/me/articles`}>我的文章</a>
           <a href={`${BASE}/me/comments`}>我的留言</a>
           {#if $account?.role === 'admin'}
-            <a href={`${BASE}/admin/members`}>會員管理</a><a href={`${BASE}/admin/articles`}>文章管理</a>
-            <a href={`${BASE}/admin/comments`}>留言管理</a><a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
+            <a href={`${BASE}/admin/members`}>會員管理</a>
+            <a href={`${BASE}/admin/articles`}>文章管理</a>
+            <a href={`${BASE}/admin/comments`}>留言管理</a>
+            <a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
           {/if}
         {/if}
       </nav>
@@ -114,8 +121,10 @@
 
   <div class="switch-bar">
     <div class="current-switches">
-      <span>目前前端 <strong>SvelteKit</strong></span>
-      <span>目前後端 <strong>{backendName($backend)}</strong></span>
+      <span>目前前端 <strong>SvelteKit</strong>
+      </span>
+      <span>目前後端 <strong>{backendName($backend)}</strong>
+      </span>
     </div>
     <details class="switch-panel">
       <summary>切換版本</summary>
@@ -139,10 +148,24 @@
     </details>
   </div>
 
-  {#if $notice}<p class="notice" role="status">{$notice}</p>{/if}
-  {#if $authError}<p class="notice notice-error" role="alert">{$authError} {#if $authState === 'expired'}<a href={`${BASE}/login${validReturn($page.url.pathname) ? `?return_to=${encodeURIComponent($page.url.pathname)}` : ''}`}>重新登入</a>{/if}</p>{/if}
+  {#if $notice}
+    <p class="notice" role="status">{$notice}</p>
+  {/if}
+  {#if $authError}
+    <p class="notice notice-error" role="alert">{$authError}
+      {#if $authState === 'expired'}
+        <a href={`${BASE}/login${validReturn($page.url.pathname) ? `?return_to=${encodeURIComponent($page.url.pathname)}` : ''}`}>重新登入</a>
+      {/if}
+    </p>
+  {/if}
 
   <!-- 頁碼變更須重讀資料；欄位錨點只移動焦點，不可重建並清空表單。 -->
-  <main id="main-content">{#key $page.url.pathname + $page.url.search}{@render children()}{/key}</main>
-  <footer class="site-footer"><span>文章集 / SvelteKit</span><span>閱讀與分享，從一篇文章開始。</span></footer>
+  <main id="main-content">
+    {#key $page.url.pathname + $page.url.search}{@render children()}
+    {/key}
+  </main>
+  <footer class="site-footer">
+    <span>文章集 / SvelteKit</span>
+    <span>閱讀與分享，從一篇文章開始。</span>
+  </footer>
 </div>

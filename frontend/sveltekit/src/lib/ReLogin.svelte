@@ -30,11 +30,12 @@
   // 表單離頁後取消倒數和晚到回應，避免舊頁改寫新頁共用登入。
   onMount(() => {
     // 元件卸載時釋放計時器與本次等待狀態。
-    return () => { active = false; attempt++; clearInterval(timer); site.pending.set(false); };
+    return () => { active = false; attempt++; clearInterval(timer); site.finishPending(); };
   });
 
   // 可編輯時修改帳密代表新的登入輸入，清除前一帳號的錯誤與重試提示。
   function markDirty() {
+    site.dirty.set(true);
     lockEnded = false;
     if (error && !lockText) error = '';
   }
@@ -57,8 +58,8 @@
     try {
       const data = await site.request('/api/auth/login', { method: 'POST', data: { email: checked.email, password } });
       if (!active || sentAttempt !== attempt || generation !== site.version() || backend !== get(site.backend)) return;
-      if (!site.acceptLogin(data)) { error = '登入回應格式或分頁儲存不可用，請重試。'; return; }
-      password = ''; site.pending.set(false);
+      if (!site.acceptLogin(data, checked.email)) { error = '登入回應格式或分頁儲存不可用，請重試。'; return; }
+      password = ''; site.finishPending();
       if (data.user.id === ownerId) onSameAccount();
       else onDifferentAccount();
     } catch (failure) {
@@ -75,7 +76,7 @@
       }
     } finally {
       // 只清理目前表單的等待狀態，不解除仍在倒數的欄位門禁。
-      processing = false; if (active && generation === site.version()) site.pending.set(false);
+      processing = false; if (active && generation === site.version()) site.finishPending();
     }
   }
 </script>
@@ -83,12 +84,21 @@
 <div class="state-panel state-error">
   <h2>重新登入原帳號</h2>
   <p>未送出的文字只留在此頁記憶體。同一帳號重登後仍須手動送出。</p>
-  {#if error}<p role="alert">{error}</p>{/if}
-  {#if lockText}<p class="lock-note">登入暫時鎖定，約剩 <span aria-hidden="true">{lockText}</span></p>{/if}
-  {#if lockEnded}<p class="success-note" role="status">可再次嘗試登入</p>{/if}
+  {#if error}
+    <p role="alert">{error}</p>
+  {/if}
+  {#if lockText}
+    <p class="lock-note">登入暫時鎖定，約剩 <span aria-hidden="true">{lockText}</span>
+    </p>
+  {/if}
+  {#if lockEnded}
+    <p class="success-note" role="status">可再次嘗試登入</p>
+  {/if}
   <form class="author-form" onsubmit={submit}>
-    <label for="relogin-email">Email</label><input id="relogin-email" type="email" bind:value={email} disabled={Boolean(lockText) || processing} autocomplete="username" oninput={markDirty} />
-    <label for="relogin-password">密碼</label><input id="relogin-password" type="password" bind:value={password} disabled={Boolean(lockText) || processing} autocomplete="current-password" oninput={markDirty} />
+    <label for="relogin-email">Email</label>
+    <input id="relogin-email" type="email" bind:value={email} disabled={Boolean(lockText) || processing} autocomplete="username" oninput={markDirty} />
+    <label for="relogin-password">密碼</label>
+    <input id="relogin-password" type="password" bind:value={password} disabled={Boolean(lockText) || processing} autocomplete="current-password" oninput={markDirty} />
     <button class="button" type="submit" disabled={Boolean(lockText) || processing}>{processing ? '驗證中…' : '重新登入'}</button>
   </form>
 </div>

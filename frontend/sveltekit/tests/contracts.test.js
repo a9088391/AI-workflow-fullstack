@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BACKEND_KEY, BACKENDS, SESSION_KEY, clearSessionIfOwned, countdown, describeFailure, expired,
-  frontendTarget, isArticle, isComment, isLockoutSettings, isMember, isPage, readBackend, readSession,
+  BACKEND_KEY, BACKENDS, SESSION_KEY, apiRequest, clearSessionIfOwned, countdown, describeFailure, expired,
+  frontendTarget, isAccount, isArticle, isComment, isLockoutSettings, isMember, isPage, readBackend, readSession,
   retryAfterSeconds, saveSession, uncertainWrite, validReturn, validateAccount, validateContent, validateLockoutSettings
 } from '../src/lib/contracts.js';
 
@@ -73,6 +73,10 @@ test('admin read models and settings validation reject malformed values', () => 
   const member = { id: 8, email: 'reader@example.test', nickname: '讀者', role: 'member', status: 'active', created_at: '2026-10-19 09:00:00' };
   const settings = { enabled: true, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 };
   assert.equal(isMember(member), true);
+  assert.equal(isAccount({ ...member, role: 'admin' }), true);
+  assert.equal(isAccount({ ...member, id: '8' }), false);
+  assert.equal(isAccount({ ...member, nickname: '\0' }), false);
+  assert.equal(isAccount({ ...member, created_at: [member.created_at] }), false);
   assert.equal(isMember({ ...member, role: 'admin' }), false);
   assert.equal(isLockoutSettings(settings), true);
   assert.equal(isLockoutSettings({ ...settings, lock_seconds: 86401 }), false);
@@ -88,10 +92,51 @@ test('content validation and uncertain writes follow author recovery rules', () 
   assert.deepEqual(validateContent('', '😀'.repeat(2000), true), {});
   assert.equal(Boolean(validateContent('', '😀'.repeat(2001), true).body), true);
   assert.equal(Boolean(validateContent('標題', '\0').body), true);
-  assert.equal(uncertainWrite({ code: 'E0201' }), false);
-  assert.equal(uncertainWrite({ code: 'E0002' }), false);
+  assert.equal(uncertainWrite({ status: 409, code: 'E0201' }), false);
+  assert.equal(uncertainWrite({ status: 401, code: 'E0002' }), false);
+  assert.equal(uncertainWrite({ status: 500, code: 'E0001' }), true);
   assert.equal(uncertainWrite({ status: 503, code: 'E9999' }), true);
   assert.equal(uncertainWrite(new TypeError('Failed to fetch')), true);
+});
+
+// 寫入只接受完整空物件成功；破損或狀態不符的回應不能觸發清稿與成功導覽。
+test('API writes reject incomplete success and untrusted rejection codes', async () => {
+  const previousFetch = globalThis.fetch;
+  try {
+    for (const [status, body] of [
+      [201, { success: true }],
+      [201, { success: true, message: 'OK', data: null }],
+      [201, { success: true, message: 'OK', data: [] }],
+      [201, { success: true, message: 'OK', data: { id: 1 } }],
+      [200, { success: true, message: 'OK', data: {} }],
+      [500, { success: false, message: '錯誤', error_code: 'E0001', errors: {} }]
+    ]) {
+      // 每次只替換傳輸回應，保留正式 API 判讀與結果不明分類。
+      globalThis.fetch = async () => Response.json(body, { status });
+      await assert.rejects(apiRequest(BACKENDS.laravel[1], '/api/articles', { method: 'POST', data: {} }),
+        // 不能因回應帶有貌似已知代碼而重新開放重送。
+        (failure) => uncertainWrite(failure) && failure.message === '回應資料格式不正確，請確認目前後端。');
+    }
+    // 合法新增成功才可交回頁面完成動作。
+    globalThis.fetch = async () => Response.json({ success: true, message: 'OK', data: {} }, { status: 201 });
+    assert.deepEqual(await apiRequest(BACKENDS.laravel[1], '/api/articles', { method: 'POST', data: {} }), {});
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+// E0005 的共同文案適用整個 4xx 範圍；合法訊息與可否重送仍須分開判定。
+test('HTTP errors retain E0005 messages only for valid 4xx envelopes', async () => {
+  const previousFetch = globalThis.fetch;
+  try {
+    for (const status of [399, 400, 405, 413, 499, 500]) {
+      // 只替換 HTTP 邊界，正式解析與結果不明邏輯都保持原實作。
+      globalThis.fetch = async () => Response.json({ success: false, message: '系統暫時無法處理，請稍後再試', error_code: 'E0005' }, { status });
+      await assert.rejects(apiRequest(BACKENDS.laravel[1], '/api/articles', { method: 'POST', data: {} }),
+        // 範圍內保留共同文案；範圍外仍是破損回應，兩者都不自動開放重送。
+        (failure) => failure.message === (status >= 400 && status < 500 ? '系統暫時無法處理，請稍後再試' : '回應資料格式不正確，請確認目前後端。') && uncertainWrite(failure));
+    }
+  } finally { globalThis.fetch = previousFetch; }
 });
 
 // 倒數不猜測無效標頭，歸零不保留假的剩餘時間。
@@ -115,11 +160,16 @@ test('registration input validation preserves approved boundaries', () => {
 // 列表與留言的形狀檢查確保錯誤頁碼和別篇留言不當作完整閱讀資料。
 test('read models reject mismatched pagination and parent article', () => {
   const article = { id: 101, title: '標題', body: '內文', author: { id: 1, nickname: '作者' },
-    created_at: '2026-10-18 10:00:00', created_backend: 'laravel', version: 1, visibility: 'visible', can_restore: false };
+    created_at: '2026-10-18 10:00:00', updated_at: '2026-10-18 10:00:00', created_backend: 'laravel', version: 1, visibility: 'visible', can_restore: false };
   const comment = { id: 201, article_id: 101, body: '留言', author: { id: 2, nickname: '讀者' },
-    created_at: '2026-10-18 10:01:00', created_backend: 'gin', version: 1, visibility: 'visible', can_restore: false };
+    created_at: '2026-10-18 10:01:00', updated_at: '2026-10-18 10:01:00', created_backend: 'gin', version: 1, visibility: 'visible', can_restore: false };
   assert.equal(isArticle(article), true);
+  assert.equal(isArticle({ ...article, id: '101' }), false);
+  assert.equal(isArticle({ ...article, updated_at: undefined }), false);
+  assert.equal(isArticle({ ...article, created_backend: 'unknown' }), false);
   assert.equal(isComment(comment, 101), true);
   assert.equal(isComment(comment, 102), false);
+  assert.equal(isComment({ ...comment, article_id: '101' }, 101), false);
+  assert.equal(isPage({ list: [], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }, 1), false);
   assert.equal(isPage({ list: [article], pagination: { page: 2, per_page: 20, total: 1, total_pages: 1 } }, 1), false);
 });

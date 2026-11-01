@@ -133,8 +133,7 @@ export function validateAccount(emailInput, password, nickname) {
   const errors = {};
   if (!validEmail(email)) errors.email = ['請輸入符合格式的 Email'];
   if (!/^[A-Za-z0-9]{4,16}$/.test(password)) errors.password = ['密碼須為 4–16 碼英文字母或數字'];
-  if (nickname !== undefined && ([...nickname].length < 1 || [...nickname].length > 30
-    || blank.test(nickname) || nickname.includes('\0'))) errors.nickname = ['暱稱須為 1–30 個字，且不可全為空白或含不支援字元'];
+  if (nickname !== undefined && !isNickname(nickname)) errors.nickname = ['暱稱須為 1–30 個字，且不可全為空白或含不支援字元'];
   return { email, errors };
 }
 
@@ -161,33 +160,51 @@ export function isPage(value, page) {
   return value && Array.isArray(value.list) && value.pagination
     && value.pagination.page === page && value.pagination.per_page === 20
     && Number.isSafeInteger(value.pagination.total) && value.pagination.total >= 0
-    && value.pagination.total_pages === Math.ceil(value.pagination.total / 20);
+    && value.pagination.total_pages === Math.ceil(value.pagination.total / 20)
+    && value.list.length === Math.max(0, Math.min(20, value.pagination.total - (page - 1) * 20));
 }
 
-// 文章至少須有閱讀與公開作者欄位，才能顯示完整內容。
-export function isArticle(value) {
-  return value && positiveNumber(String(value.id)) !== null && typeof value.title === 'string'
-    && typeof value.body === 'string' && value.author && positiveNumber(String(value.author.id)) !== null
-    && typeof value.author.nickname === 'string' && typeof value.created_at === 'string'
-    && typeof value.created_backend === 'string' && positiveNumber(String(value.version)) !== null
+// 暱稱輸入與讀取共用既定長度及字元規則，避免破損身分繞過畫面門禁。
+function isNickname(value) {
+  return typeof value === 'string' && [...value].length >= 1 && [...value].length <= 30
+    && !blank.test(value) && !value.includes('\0');
+}
+
+// 本人與管理帳號共用完整欄位驗證；破損的身分資料不能開放受保護畫面。
+export function isAccount(value) {
+  return value && Number.isSafeInteger(value.id) && value.id > 0
+    && typeof value.email === 'string' && validEmail(value.email)
+    && isNickname(value.nickname)
+    && ['member', 'admin'].includes(value.role) && ['active', 'disabled'].includes(value.status)
+    && typeof value.created_at === 'string' && timestamp.test(value.created_at);
+}
+
+// 文章與留言都需完整來源、作者、時間與版本，才能作為閱讀及後續更新基準。
+function isContentMetadata(value) {
+  return value && Number.isSafeInteger(value.id) && value.id > 0
+    && value.author && Number.isSafeInteger(value.author.id) && value.author.id > 0
+    && isNickname(value.author.nickname) && typeof value.created_at === 'string' && timestamp.test(value.created_at)
+    && typeof value.updated_at === 'string' && timestamp.test(value.updated_at)
+    && typeof value.created_backend === 'string' && Object.hasOwn(BACKENDS, value.created_backend)
+    && Number.isSafeInteger(value.version) && value.version > 0
     && ['visible', 'hidden'].includes(value.visibility) && typeof value.can_restore === 'boolean';
+}
+
+// 文章內文按既定純文字契約驗證，不讓不完整資料成為可編輯的伺服器基準。
+export function isArticle(value) {
+  return isContentMetadata(value) && Object.keys(validateContent(value.title, value.body)).length === 0;
 }
 
 // 留言需有其所屬文章與公開作者，避免將破損資料混入文章頁。
 export function isComment(value, articleId) {
-  return value && positiveNumber(String(value.id)) !== null && positiveNumber(String(value.article_id)) !== null
+  return isContentMetadata(value) && Number.isSafeInteger(value.article_id) && value.article_id > 0
     && (articleId === undefined || value.article_id === articleId)
-    && typeof value.body === 'string' && value.author && positiveNumber(String(value.author.id)) !== null
-    && typeof value.author.nickname === 'string' && typeof value.created_at === 'string'
-    && typeof value.created_backend === 'string' && positiveNumber(String(value.version)) !== null
-    && ['visible', 'hidden'].includes(value.visibility) && typeof value.can_restore === 'boolean';
+    && Object.keys(validateContent('', value.body, true)).length === 0;
 }
 
 // 管理頁只顯示一般會員的已核准欄位，避免把管理員或破損資料當成可停用目標。
 export function isMember(value) {
-  return value && positiveNumber(String(value.id)) !== null && typeof value.email === 'string'
-    && typeof value.nickname === 'string' && value.role === 'member'
-    && ['active', 'disabled'].includes(value.status) && typeof value.created_at === 'string';
+  return isAccount(value) && value.role === 'member';
 }
 
 // 四個設定值須完整且在後端契約範圍內，才能成為畫面基準或 PUT 草稿。
@@ -224,16 +241,34 @@ export function validateContent(title, body, comment = false) {
 
 // 已送出的寫入若沒有確定拒絕，先查證伺服器值，避免重複建立或覆寫。
 export function uncertainWrite(failure) {
-  return !['E0001', 'E0002', 'E0003', 'E0004', 'E0102', 'E0201'].includes(failure?.code);
+  return !['E0001', 'E0002', 'E0003', 'E0004', 'E0102', 'E0201'].includes(failure?.code)
+    || rejectionStatus[failure.code] !== failure.status;
 }
+
+// 只有契約一致的狀態與代碼能證明拒絕；5xx 或破損回應仍可能已寫入。
+const rejectionStatus = { E0001: 422, E0002: 401, E0003: 403, E0004: 404,
+  E0101: 401, E0102: 403, E0104: 500, E0105: 429, E0201: 409, E9999: 500 };
 
 // 僅回傳 API 已核准的安全錯誤文案與追查碼，網路失敗另由呼叫端處理。
 export function problem(response, body) {
+  const validErrors = body?.errors && typeof body.errors === 'object' && !Array.isArray(body.errors)
+    && Object.values(body.errors).every(
+      // 欄位訊息只接受字串陣列，破損驗證回應不能證明寫入已遭拒絕。
+      (messages) => Array.isArray(messages) && messages.every(
+        // 不將物件強制轉字串，避免表單顯示不可信的欄位結構。
+        (message) => typeof message === 'string'
+      )
+    );
+  // E0005 可搭配任一 4xx；保留合法共同文案，不因此把它當成可直接重送的確定拒絕。
+  const validStatus = body?.error_code === 'E0005' ? response.status >= 400 && response.status < 500
+    : rejectionStatus[body?.error_code] === response.status;
+  const valid = body?.success === false && typeof body.message === 'string' && body.message.trim().length > 0
+    && validStatus && (body.error_code !== 'E0001' || validErrors);
   return {
     status: response.status,
-    code: typeof body?.error_code === 'string' ? body.error_code : '',
-    message: typeof body?.message === 'string' ? body.message : '回應資料格式不正確，請確認目前後端。',
-    errors: body?.errors && typeof body.errors === 'object' ? body.errors : {},
+    code: valid ? body.error_code : '',
+    message: valid ? body.message : '回應資料格式不正確，請確認目前後端。',
+    errors: valid && body.error_code === 'E0001' ? body.errors : {},
     logId: typeof body?.log_id === 'string' ? body.log_id : '',
     retryAfter: response.headers.get('Retry-After')
   };
@@ -259,6 +294,11 @@ export async function apiRequest(backend, path, { token, method = 'GET', data, s
     // 非 JSON 回應仍須呈現為失敗，不能當作成功或空資料。
     () => null
   );
-  if (!response.ok || body?.success !== true) throw problem(response, body);
+  const login = path === '/api/auth/login';
+  const expected = method === 'POST' && !login && path !== '/api/auth/logout' ? 201 : 200;
+  const objectData = body?.data && typeof body.data === 'object' && !Array.isArray(body.data);
+  // 新增與更新只接受空 data；登入與讀取的欄位由各自的既有 validator 檢查。
+  if (response.status !== expected || body?.success !== true || body.message !== 'OK' || !objectData
+    || method !== 'GET' && !login && Object.keys(body.data).length !== 0) throw problem(response, body);
   return body.data;
 }
