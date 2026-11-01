@@ -24,9 +24,10 @@ class AuthController extends Controller
             return $body;
         }
 
-        // ponytail: 核准的設定單列鎖限制登入吞吐量；高流量時再評估按帳號細分。
+        // shortcut: 核准的設定單列鎖限制登入吞吐量；高流量時再評估按帳號細分。
         // 交易只回傳鎖定到期時間；提交後才依新時間產生 Retry-After，避免回報已流逝秒數。
         $outcome = DB::transaction(function () use ($body): JsonResponse|CarbonImmutable {
+            // 固定設定→帳號鎖序，等候完成後才取資料庫時間判定停用與鎖定。
             $settings = DB::table('login_lockout_settings')->where('id', 1)->lockForUpdate()->first();
             if ($settings === null) {
                 throw new AuthFailure('E0104');
@@ -47,19 +48,28 @@ class AuthController extends Controller
                     return $until;
                 }
                 $account->failure_epoch++;
-                DB::table('accounts')->where('id', $account->id)->update(['failure_epoch' => $account->failure_epoch, 'locked_until' => null]);
+                DB::table('accounts')->where('id', $account->id)->update([
+                    'failure_epoch' => $account->failure_epoch, 'locked_until' => null
+                ]);
             }
 
             // 儲存格式異常拋安全設定錯誤，不能當成錯密碼累計。
             if (! AccountRules::verifyPassword($body->password, $account->password_hash)) {
                 if ($settings->enabled && $account->role === 'member') {
-                    DB::table('login_failures')->insert(['account_id' => $account->id, 'failure_epoch' => $account->failure_epoch, 'occurred_at' => $this->timestamp($now)]);
-                    $count = DB::table('login_failures')->where('account_id', $account->id)->where('failure_epoch', $account->failure_epoch)
+                    DB::table('login_failures')->insert([
+                        'account_id' => $account->id,
+                        'failure_epoch' => $account->failure_epoch,
+                        'occurred_at' => $this->timestamp($now)
+                    ]);
+                    $count = DB::table('login_failures')
+                        ->where('account_id', $account->id)->where('failure_epoch', $account->failure_epoch)
                         ->where('occurred_at', '>', $this->timestamp($now->subMinutes($settings->window_minutes)))
                         ->where('occurred_at', '<=', $this->timestamp($now))->count();
                     if ($count >= $settings->failure_threshold) {
                         $until = $now->addSeconds($settings->lock_seconds);
-                        DB::table('accounts')->where('id', $account->id)->update(['locked_until' => $this->timestamp($until)]);
+                        DB::table('accounts')->where('id', $account->id)->update([
+                            'locked_until' => $this->timestamp($until)
+                        ]);
 
                         return $until;
                     }
@@ -73,10 +83,23 @@ class AuthController extends Controller
             $expires = $issued->addHours(8);
             $jti = JwtTokens::encode(random_bytes(16));
             $token = JwtTokens::issue((int) $account->id, $jti, $issued->getTimestamp());
-            DB::table('accounts')->where('id', $account->id)->update(['failure_epoch' => $account->failure_epoch + 1, 'locked_until' => null]);
-            DB::table('login_sessions')->insert(['jti' => $jti, 'account_id' => $account->id, 'backend_id' => 'laravel', 'issued_at' => $this->timestamp($issued), 'expires_at' => $this->timestamp($expires)]);
+            DB::table('accounts')->where('id', $account->id)->update([
+                'failure_epoch' => $account->failure_epoch + 1, 'locked_until' => null
+            ]);
+            DB::table('login_sessions')->insert([
+                'jti' => $jti,
+                'account_id' => $account->id,
+                'backend_id' => 'laravel',
+                'issued_at' => $this->timestamp($issued),
+                'expires_at' => $this->timestamp($expires)
+            ]);
 
-            return $this->success(['access_token' => $token, 'token_type' => 'Bearer', 'expires_at' => $this->displayTime($expires), 'user' => $this->account($account)]);
+            return $this->success([
+                'access_token' => $token,
+                'token_type' => 'Bearer',
+                'expires_at' => $this->displayTime($expires),
+                'user' => $this->account($account)
+            ]);
         });
 
         return $outcome instanceof CarbonImmutable ? $this->locked($outcome) : $outcome;
@@ -105,7 +128,9 @@ class AuthController extends Controller
                 return $input;
             }
             if ($logout) {
-                DB::table('login_sessions')->where('jti', $jti)->update(['revoked_at' => $this->timestamp($this->now())]);
+                DB::table('login_sessions')->where('jti', $jti)->update([
+                    'revoked_at' => $this->timestamp($this->now())
+                ]);
             }
 
             return $this->success($logout ? [] : $this->account($account));
@@ -115,22 +140,38 @@ class AuthController extends Controller
     /** 從原始 Query／JSON 驗證共同格式，不使用框架已 trim 或覆蓋的輸入。 */
     private function input(Request $request, array $fields): stdClass|JsonResponse
     {
+        // 受保護操作由呼叫端先認證；非空 GET Body 須先於 Query 錯誤拒絕，維持共同驗證順序。
+        $raw = $request->getContent();
+        if ($request->isMethod('GET') && $raw !== '') {
+            return $this->invalid(['_body' => ['此 API 不接受 Request Body']]);
+        }
+
+        // 這些端點不接受 Query；逐一辨認原始鍵，避免重複參數被框架覆蓋。
         $query = $request->server('QUERY_STRING', '');
         if ($query !== '') {
+            $seen = [];
             $errors = [];
             foreach (explode('&', $query) as $pair) {
-                $name = urldecode(explode('=', $pair, 2)[0]);
-                $errors[$name] = [isset($errors[$name]) ? '此參數不可重複' : '不支援此欄位'];
+                $rawName = urldecode(explode('=', $pair, 2)[0]);
+                // 原始位元組辨認參數身分；百分號表示只供 JSON 錯誤鍵，不能合併不同名稱。
+                $errorName = mb_check_encoding($rawName, 'UTF-8') ? $rawName : rawurlencode($rawName);
+                if (isset($seen[$rawName])) {
+                    $errors[$errorName] = ['此參數不可重複'];
+                } else {
+                    // 不同名稱可能共用顯示鍵，後來的未知欄位不可覆蓋已確定的重複錯誤。
+                    $errors[$errorName] ??= ['不支援此欄位'];
+                }
+                $seen[$rawName] = true;
             }
 
             return $this->invalid($errors);
         }
-        $raw = $request->getContent();
+        // GET 到此只會有空 Body；登出容許無 Body，其餘寫入仍需 JSON object。
         if ($request->isMethod('GET')) {
-            return $raw === '' ? new stdClass : $this->invalid(['_body' => ['此 API 不接受 Request Body']]);
+            return new stdClass();
         }
         if ($raw === '' && $fields === []) {
-            return new stdClass;
+            return new stdClass();
         }
         if ($raw === '' || ! str_starts_with(strtolower($request->header('Content-Type', '')), 'application/json')) {
             return $this->invalid(['_body' => ['Request Body 必須為 JSON object']]);
@@ -157,7 +198,11 @@ class AuthController extends Controller
                 if ($field === 'email') {
                     $body->email = AccountRules::normalizeEmail($body->email);
                 }
-                if ($field === 'email' ? ! AccountRules::validEmail($body->$field) : ! AccountRules::validPassword($body->$field)) {
+                if (
+                    $field === 'email'
+                        ? ! AccountRules::validEmail($body->$field)
+                        : ! AccountRules::validPassword($body->$field)
+                ) {
                     $errors[$field] = ['欄位格式或範圍不正確'];
                 }
             }
@@ -192,7 +237,14 @@ class AuthController extends Controller
     /** 只輸出共同 Account 欄位，避免 password_hash 或鎖定內部欄位洩漏。 */
     private function account(stdClass $account): array
     {
-        return ['id' => (int) $account->id, 'email' => $account->email, 'nickname' => $account->nickname, 'role' => $account->role, 'status' => $account->status, 'created_at' => $this->displayTime(CarbonImmutable::parse($account->created_at))];
+        return [
+            'id' => (int) $account->id,
+            'email' => $account->email,
+            'nickname' => $account->nickname,
+            'role' => $account->role,
+            'status' => $account->status,
+            'created_at' => $this->displayTime(CarbonImmutable::parse($account->created_at))
+        ];
     }
 
     /** 交易提交後取資料庫新時間計算剩餘秒數，避免將寫入與等待耗時加回倒數。 */

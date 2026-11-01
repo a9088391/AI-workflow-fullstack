@@ -26,21 +26,31 @@ trait ContentContract
             ? 'filters[scope]'
             : ($scope === 'keyword' ? 'filters[keyword]' : null);
         $allowed = $pagination ? ['page', 'per_page', ...($filter === null ? [] : [$filter])] : [];
-        // 原始參數逐一解碼以辨識重複與陣列；無效 UTF-8 名稱改用百分號編碼，讓錯誤鍵可輸出為 JSON。
+        // 身分保留解碼後位元組；只有 JSON 錯誤鍵需要將無效 UTF-8 名稱改用百分號表示。
         if ($raw !== '') {
             foreach (explode('&', $raw) as $pair) {
-                [$name, $value] = array_pad(explode('=', $pair, 2), 2, '');
-                $name = urldecode($name);
-                $name = mb_check_encoding($name, 'UTF-8') ? $name : rawurlencode($name);
-                $arrayValue = preg_match('/\A(page|per_page|filters\[(?:scope|keyword)\])\[/', $name, $parts) === 1;
-                $canonical = $arrayValue ? $parts[1] : $name;
-                $errorName = preg_replace('/\Afilters\[([^\]]+)\]\z/', 'filters.$1', $canonical);
+                [$rawName, $value] = array_pad(explode('=', $pair, 2), 2, '');
+                $rawName = urldecode($rawName);
+                $errorName = mb_check_encoding($rawName, 'UTF-8') ? $rawName : rawurlencode($rawName);
+                // 沿用既有陣列辨識：合法已知陣列合併到欄位名，無效 UTF-8 巢狀名不提前改判。
+                $arrayValue = preg_match(
+                    '/\A(page|per_page|filters\[(?:scope|keyword)\])\[/',
+                    $errorName,
+                    $parts
+                ) === 1;
+                $canonical = $arrayValue ? $parts[1] : $rawName;
+                $errorName = preg_replace(
+                    '/\Afilters\[([^\]]+)\]\z/',
+                    'filters.$1',
+                    $arrayValue ? $parts[1] : $errorName
+                );
                 if (array_key_exists($canonical, $values)) {
                     $errors[$errorName] = ['此參數不可重複'];
                 } elseif ($arrayValue && in_array($canonical, $allowed, true)) {
-                    $errors[$errorName] = ['欄位型態不正確'];
+                    $errors[$errorName] ??= ['欄位型態不正確'];
                 } elseif (! in_array($canonical, $allowed, true)) {
-                    $errors[$errorName] = ['不支援此欄位'];
+                    // 不同身分共用安全顯示鍵時，不降低已確定的重複錯誤優先級。
+                    $errors[$errorName] ??= ['不支援此欄位'];
                 }
                 $values[$canonical] = urldecode($value);
             }

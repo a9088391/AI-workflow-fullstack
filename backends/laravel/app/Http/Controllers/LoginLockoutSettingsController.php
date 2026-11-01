@@ -103,9 +103,10 @@ class LoginLockoutSettingsController extends Controller
         ];
     }
 
-    /** 保留原始 JSON 型態並逐欄驗必填、null、型態、範圍及未知欄位。 */
+    /** 保留原始 JSON 型態逐欄驗證，避免設定被框架轉型或接受未核准欄位。 */
     private function settingsBody(Request $request): stdClass|JsonResponse
     {
+        // 區分媒體型態、JSON 語法與 object 形狀，維持共同 422／400 錯誤分類。
         $raw = $request->getContent();
         if ($raw === '' || ! str_starts_with(strtolower($request->header('Content-Type', '')), 'application/json')) {
             return $this->invalid(['_body' => ['Request Body 必須為 JSON object']]);

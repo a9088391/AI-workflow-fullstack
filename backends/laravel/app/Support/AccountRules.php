@@ -15,7 +15,11 @@ class AccountRules
     /** 採跨語言共用的簡化 ASCII Email 規格，不套用各框架不同的 email 驗證器。 */
     public static function validEmail(string $email): bool
     {
-        return strlen($email) <= 254 && preg_match('/\A(?=.{1,64}@)[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\z/D', $email) === 1;
+        return strlen($email) <= 254 && preg_match(
+            '/\A(?=.{1,64}@)[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@'
+            . '(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\z/D',
+            $email
+        ) === 1;
     }
 
     /** 密碼只接受原始 4–16 碼 ASCII 英數，避免各後端 trim 或隱性轉型。 */
@@ -30,7 +34,11 @@ class AccountRules
         return ! str_contains($nickname, "\0")
             && mb_strlen($nickname, 'UTF-8') >= 1
             && mb_strlen($nickname, 'UTF-8') <= 30
-            && preg_match('/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u', $nickname) === 1;
+            && preg_match(
+                '/[^\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}'
+                . '\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]/u',
+                $nickname
+            ) === 1;
     }
 
     /** 以 PHP 原生 Argon2id 的固定成本產生可供十二後端驗證的 PHC 字串。 */
@@ -42,12 +50,22 @@ class AccountRules
     /** 先確認共用 PHC 格式與成本，再用原生 Argon2id 驗密碼；毀損不是登入失敗事件。 */
     public static function verifyPassword(string $password, string $hash): bool
     {
-        if (preg_match('/\A\$argon2id\$v=19\$m=19456,t=2,p=1\$([A-Za-z0-9+\/]{22})\$([A-Za-z0-9+\/]{43})\z/D', $hash, $parts) !== 1) {
+        if (
+            preg_match(
+                '/\A\$argon2id\$v=19\$m=19456,t=2,p=1\$([A-Za-z0-9+\/]{22})\$([A-Za-z0-9+\/]{43})\z/D',
+                $hash,
+                $parts
+            ) !== 1
+        ) {
             throw new AuthFailure('E0104');
         }
+        // 同時核對 salt 與 hash 的長度和正規 Base64，避免損壞資料被算成密碼錯誤。
         foreach ([1 => 16, 2 => 32] as $index => $length) {
             $bytes = base64_decode($parts[$index], true);
-            if ($bytes === false || strlen($bytes) !== $length || rtrim(base64_encode($bytes), '=') !== $parts[$index]) {
+            if (
+                $bytes === false || strlen($bytes) !== $length
+                || rtrim(base64_encode($bytes), '=') !== $parts[$index]
+            ) {
                 throw new AuthFailure('E0104');
             }
         }

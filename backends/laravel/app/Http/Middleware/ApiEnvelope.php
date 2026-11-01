@@ -20,11 +20,13 @@ class ApiEnvelope
             return $next($request);
         }
 
+        // 先建立追蹤碼供控制器與例外管線共用；不記錄 Query、Body 或 Authorization。
         $logId = (string) Str::uuid();
         $request->attributes->set('log_id', $logId);
         $logger = Log::build(['driver' => 'daily', 'path' => storage_path('logs/api.log'), 'days' => 14]);
         $logger->info('IN', ['log_id' => $logId, 'method' => $request->method(), 'path' => $request->path()]);
 
+        // 捕捉仍穿出框架例外管線的錯誤，對外只保留安全的共同 envelope。
         try {
             $response = $next($request);
         } catch (Throwable $exception) {
@@ -39,6 +41,7 @@ class ApiEnvelope
             }
         }
 
+        // 框架可能已把例外轉為回應；所有結果仍留下同一追蹤碼的 EX／OUT 狀態。
         $logger->info('EX', ['log_id' => $logId, 'status' => $response->getStatusCode()]);
         $logger->info('OUT', ['log_id' => $logId, 'status' => $response->getStatusCode()]);
 

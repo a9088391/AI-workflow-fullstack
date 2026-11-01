@@ -18,7 +18,10 @@ class ResetAdminPassword extends Command
     {
         $emailLine = fgets(STDIN);
         $passwordLine = fgets(STDIN);
-        if ($emailLine === false || $passwordLine === false || ! str_ends_with($emailLine, "\n") || ! str_ends_with($passwordLine, "\n")) {
+        if (
+            $emailLine === false || $passwordLine === false
+            || ! str_ends_with($emailLine, "\n") || ! str_ends_with($passwordLine, "\n")
+        ) {
             $this->error('請以兩行 LF 結尾的 stdin 提供 Email 與新密碼');
 
             return self::FAILURE;
@@ -40,10 +43,14 @@ class ResetAdminPassword extends Command
 
                     return self::FAILURE;
                 }
-                DB::table('login_sessions')->where('account_id', $account->id)->orderBy('jti')->lockForUpdate()->get(['jti']);
+                DB::table('login_sessions')->where('account_id', $account->id)
+                    ->orderBy('jti')->lockForUpdate()->get(['jti']);
                 $now = DB::selectOne('SELECT clock_timestamp() AS now')->now;
-                DB::table('accounts')->where('id', $account->id)->update(['password_hash' => AccountRules::hashPassword($password)]);
-                DB::table('login_sessions')->where('account_id', $account->id)->whereNull('revoked_at')->update(['revoked_at' => $now]);
+                DB::table('accounts')->where('id', $account->id)->update([
+                    'password_hash' => AccountRules::hashPassword($password)
+                ]);
+                DB::table('login_sessions')->where('account_id', $account->id)
+                    ->whereNull('revoked_at')->update(['revoked_at' => $now]);
 
                 return self::SUCCESS;
             });

@@ -29,7 +29,11 @@ class CommentController extends Controller
                 return $this->invalid(['article_id' => ['欄位格式或範圍不正確']]);
             }
             $article = DB::table('articles')->where('id', $id)->first(['author_id', 'visibility']);
-            if ($article === null || ($article->visibility === 'hidden' && $viewer?->role !== 'admin' && $viewer?->id !== $article->author_id)) {
+            if (
+                $article === null
+                || ($article->visibility === 'hidden'
+                    && $viewer?->role !== 'admin' && $viewer?->id !== $article->author_id)
+            ) {
                 return $this->error(404, 'E0004', '找不到指定資料或 API');
             }
 
@@ -64,7 +68,11 @@ class CommentController extends Controller
 
             // 等到文章鎖後才查目前狀態；有預覽權的下架文章仍禁止留言，管理員亦同。
             $article = DB::table('articles')->where('id', $id)->lockForUpdate()->first(['author_id', 'visibility']);
-            if ($article === null || ($article->visibility === 'hidden' && $viewer->role !== 'admin' && $viewer->id !== $article->author_id)) {
+            if (
+                $article === null
+                || ($article->visibility === 'hidden'
+                    && $viewer->role !== 'admin' && $viewer->id !== $article->author_id)
+            ) {
                 return $this->error(404, 'E0004', '找不到指定資料或 API');
             }
             if ($article->visibility === 'hidden') {
@@ -115,26 +123,34 @@ class CommentController extends Controller
             if ($id === null) {
                 return $this->invalid(['comment_id' => ['欄位格式或範圍不正確']]);
             }
-            $body = $this->body($request, $visibility ? ['visibility' => 'visibility', 'version' => 'version'] : ['body' => 2000, 'version' => 'version']);
+            $body = $this->body($request, $visibility
+                ? ['visibility' => 'visibility', 'version' => 'version']
+                : ['body' => 2000, 'version' => 'version']);
             if ($body instanceof JsonResponse) {
                 return $body;
             }
 
             // 探索父 ID 不先鎖留言，固定文章→留言順序；取得鎖後重新核對關聯。
             $parentId = DB::table('comments')->where('id', $id)->value('article_id');
-            $article = $parentId === null ? null : DB::table('articles')->where('id', $parentId)->lockForUpdate()->first();
+            $article = $parentId === null
+                ? null : DB::table('articles')->where('id', $parentId)->lockForUpdate()->first();
             $content = $article === null ? null : DB::table('comments')->where('id', $id)->lockForUpdate()->first();
             // 先隱藏無權閱讀內容的存在，再檢查作者操作資格；版本不得洩漏隱藏資料。
-            if ($content === null || $content->article_id !== $article->id
+            if (
+                $content === null || $content->article_id !== $article->id
                 || ($viewer->role !== 'admin' && $viewer->id !== $content->author_id
-                    && ($content->visibility === 'hidden' || $article->visibility === 'hidden'))) {
+                    && ($content->visibility === 'hidden' || $article->visibility === 'hidden'))
+            ) {
                 return $this->error(404, 'E0004', '找不到指定資料或 API');
             }
-            if (($viewer->id !== $content->author_id && (! $visibility || $viewer->role !== 'admin'))
-                || (! $visibility && $article->visibility !== 'visible')) {
+            if (
+                ($viewer->id !== $content->author_id && (! $visibility || $viewer->role !== 'admin'))
+                || (! $visibility && $article->visibility !== 'visible')
+            ) {
                 return $this->error(403, 'E0003', '沒有權限使用此功能');
             }
-            $changes = $visibility ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['body' => $body->body];
+            $changes = $visibility
+                ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['body' => $body->body];
             if ($changes instanceof JsonResponse) {
                 return $changes;
             }
@@ -211,21 +227,37 @@ class CommentController extends Controller
     private function comments(): Builder
     {
         return DB::table('comments')->join('accounts', 'accounts.id', '=', 'comments.author_id')
-            ->select(['comments.id', 'comments.author_id', 'comments.article_id', 'comments.body', 'comments.visibility', 'comments.restore_control', 'comments.version', 'comments.created_backend', 'comments.created_at', 'comments.updated_at', 'accounts.nickname']);
+            ->select([
+                'comments.id', 'comments.author_id', 'comments.article_id', 'comments.body',
+                'comments.visibility', 'comments.restore_control', 'comments.version',
+                'comments.created_backend', 'comments.created_at', 'comments.updated_at', 'accounts.nickname'
+            ]);
     }
 
     /** 計算權限範圍內總數及穩定排序頁面；巨大合法頁碼回空頁以免 offset 溢位。 */
     private function listing(Builder $comments, array $input, ?stdClass $viewer): JsonResponse
     {
         $total = $comments->count();
-        $offset = intdiv(PHP_INT_MAX, $input['per_page']) < $input['page'] - 1 ? null : ($input['page'] - 1) * $input['per_page'];
-        $rows = $offset === null || $offset >= $total ? [] : $comments->orderByDesc('comments.created_at')->orderByDesc('comments.id')->offset($offset)->limit($input['per_page'])->get();
+        $offset = intdiv(PHP_INT_MAX, $input['per_page']) < $input['page'] - 1
+            ? null : ($input['page'] - 1) * $input['per_page'];
+        $rows = $offset === null || $offset >= $total
+            ? []
+            : $comments->orderByDesc('comments.created_at')->orderByDesc('comments.id')
+                ->offset($offset)->limit($input['per_page'])->get();
         $list = [];
         foreach ($rows as $row) {
             $list[] = $this->resource($row, $viewer);
         }
 
-        return $this->success(['list' => $list, 'pagination' => ['page' => $input['page'], 'per_page' => $input['per_page'], 'total' => $total, 'total_pages' => intdiv($total, $input['per_page']) + (int) ($total % $input['per_page'] !== 0)]]);
+        return $this->success([
+            'list' => $list,
+            'pagination' => [
+                'page' => $input['page'],
+                'per_page' => $input['per_page'],
+                'total' => $total,
+                'total_pages' => intdiv($total, $input['per_page']) + (int) ($total % $input['per_page'] !== 0)
+            ]
+        ]);
     }
 
     /** 恢復權即時計算；article_id 只識別父文章，回應不包含父文章的標題或內文。 */
@@ -233,12 +265,18 @@ class CommentController extends Controller
     {
         $own = $viewer !== null && (int) $viewer->id === (int) $comment->author_id;
 
-        return ['id' => (int) $comment->id, 'body' => $comment->body,
+        return [
+            'id' => (int) $comment->id,
+            'body' => $comment->body,
             'author' => ['id' => (int) $comment->author_id, 'nickname' => $comment->nickname],
-            'article_id' => (int) $comment->article_id, 'version' => (int) $comment->version,
+            'article_id' => (int) $comment->article_id,
+            'version' => (int) $comment->version,
             'created_backend' => $comment->created_backend,
-            'created_at' => $this->displayTime($comment->created_at), 'updated_at' => $this->displayTime($comment->updated_at),
+            'created_at' => $this->displayTime($comment->created_at),
+            'updated_at' => $this->displayTime($comment->updated_at),
             'visibility' => $comment->visibility,
-            'can_restore' => $comment->visibility === 'hidden' && ($viewer?->role === 'admin' || ($own && $comment->restore_control === 'author'))];
+            'can_restore' => $comment->visibility === 'hidden'
+                && ($viewer?->role === 'admin' || ($own && $comment->restore_control === 'author'))
+        ];
     }
 }

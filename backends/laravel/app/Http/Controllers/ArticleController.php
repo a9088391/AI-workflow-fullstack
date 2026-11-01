@@ -89,7 +89,11 @@ class ArticleController extends Controller
                 return $this->invalid(['article_id' => ['欄位格式或範圍不正確']]);
             }
             $article = $this->articles()->where('articles.id', $id)->first();
-            if ($article === null || ($article->visibility === 'hidden' && $viewer?->role !== 'admin' && $viewer?->id !== $article->author_id)) {
+            if (
+                $article === null
+                || ($article->visibility === 'hidden'
+                    && $viewer?->role !== 'admin' && $viewer?->id !== $article->author_id)
+            ) {
                 return $this->error(404, 'E0004', '找不到指定資料或 API');
             }
 
@@ -123,20 +127,28 @@ class ArticleController extends Controller
             if ($id === null) {
                 return $this->invalid(['article_id' => ['欄位格式或範圍不正確']]);
             }
-            $body = $this->body($request, $visibility ? ['visibility' => 'visibility', 'version' => 'version'] : ['title' => 200, 'body' => 20000, 'version' => 'version']);
+            $body = $this->body($request, $visibility
+                ? ['visibility' => 'visibility', 'version' => 'version']
+                : ['title' => 200, 'body' => 20000, 'version' => 'version']);
             if ($body instanceof JsonResponse) {
                 return $body;
             }
 
             $content = DB::table('articles')->where('id', $id)->lockForUpdate()->first();
             // 先隱藏無權閱讀內容的存在，再檢查作者操作資格；版本不得洩漏隱藏資料。
-            if ($content === null || ($content->visibility === 'hidden' && $viewer->role !== 'admin' && $viewer->id !== $content->author_id)) {
+            if (
+                $content === null
+                || ($content->visibility === 'hidden'
+                    && $viewer->role !== 'admin' && $viewer->id !== $content->author_id)
+            ) {
                 return $this->error(404, 'E0004', '找不到指定資料或 API');
             }
             if ($viewer->id !== $content->author_id && (! $visibility || $viewer->role !== 'admin')) {
                 return $this->error(403, 'E0003', '沒有權限使用此功能');
             }
-            $changes = $visibility ? $this->visibilityChanges($content, $viewer, $body->visibility) : ['title' => $body->title, 'body' => $body->body];
+            $changes = $visibility
+                ? $this->visibilityChanges($content, $viewer, $body->visibility)
+                : ['title' => $body->title, 'body' => $body->body];
             if ($changes instanceof JsonResponse) {
                 return $changes;
             }
@@ -177,21 +189,37 @@ class ArticleController extends Controller
     private function articles(): Builder
     {
         return DB::table('articles')->join('accounts', 'accounts.id', '=', 'articles.author_id')
-            ->select(['articles.id', 'articles.author_id', 'articles.title', 'articles.body', 'articles.visibility', 'articles.restore_control', 'articles.version', 'articles.created_backend', 'articles.created_at', 'articles.updated_at', 'accounts.nickname']);
+            ->select([
+                'articles.id', 'articles.author_id', 'articles.title', 'articles.body',
+                'articles.visibility', 'articles.restore_control', 'articles.version',
+                'articles.created_backend', 'articles.created_at', 'articles.updated_at', 'accounts.nickname'
+            ]);
     }
 
     /** 先取得範圍內總數，再取穩定排序頁面；巨大合法頁碼直接回空頁避免 offset 溢位。 */
     private function listing(Builder $articles, array $input, ?stdClass $viewer): JsonResponse
     {
         $total = $articles->count();
-        $offset = intdiv(PHP_INT_MAX, $input['per_page']) < $input['page'] - 1 ? null : ($input['page'] - 1) * $input['per_page'];
-        $rows = $offset === null || $offset >= $total ? [] : $articles->orderByDesc('articles.created_at')->orderByDesc('articles.id')->offset($offset)->limit($input['per_page'])->get();
+        $offset = intdiv(PHP_INT_MAX, $input['per_page']) < $input['page'] - 1
+            ? null : ($input['page'] - 1) * $input['per_page'];
+        $rows = $offset === null || $offset >= $total
+            ? []
+            : $articles->orderByDesc('articles.created_at')->orderByDesc('articles.id')
+                ->offset($offset)->limit($input['per_page'])->get();
         $list = [];
         foreach ($rows as $row) {
             $list[] = $this->resource($row, $viewer);
         }
 
-        return $this->success(['list' => $list, 'pagination' => ['page' => $input['page'], 'per_page' => $input['per_page'], 'total' => $total, 'total_pages' => intdiv($total, $input['per_page']) + (int) ($total % $input['per_page'] !== 0)]]);
+        return $this->success([
+            'list' => $list,
+            'pagination' => [
+                'page' => $input['page'],
+                'per_page' => $input['per_page'],
+                'total' => $total,
+                'total_pages' => intdiv($total, $input['per_page']) + (int) ($total % $input['per_page'] !== 0)
+            ]
+        ]);
     }
 
     /** 文章作者只公開 ID 與暱稱；恢復權依目前讀者與下架控制者即時計算。 */
@@ -199,11 +227,18 @@ class ArticleController extends Controller
     {
         $own = $viewer !== null && (int) $viewer->id === (int) $article->author_id;
 
-        return ['id' => (int) $article->id, 'title' => $article->title, 'body' => $article->body,
+        return [
+            'id' => (int) $article->id,
+            'title' => $article->title,
+            'body' => $article->body,
             'author' => ['id' => (int) $article->author_id, 'nickname' => $article->nickname],
-            'version' => (int) $article->version, 'created_backend' => $article->created_backend,
-            'created_at' => $this->displayTime($article->created_at), 'updated_at' => $this->displayTime($article->updated_at),
+            'version' => (int) $article->version,
+            'created_backend' => $article->created_backend,
+            'created_at' => $this->displayTime($article->created_at),
+            'updated_at' => $this->displayTime($article->updated_at),
             'visibility' => $article->visibility,
-            'can_restore' => $article->visibility === 'hidden' && ($viewer?->role === 'admin' || ($own && $article->restore_control === 'author'))];
+            'can_restore' => $article->visibility === 'hidden'
+                && ($viewer?->role === 'admin' || ($own && $article->restore_control === 'author'))
+        ];
     }
 }

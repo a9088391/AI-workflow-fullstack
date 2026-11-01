@@ -19,7 +19,10 @@ class CreateInitialAdmin extends Command
         $email = AccountRules::normalizeEmail($this->readInputLine());
         $nickname = $this->readInputLine();
         $password = $this->readInputLine();
-        if (! AccountRules::validEmail($email) || ! AccountRules::validNickname($nickname) || ! AccountRules::validPassword($password)) {
+        if (
+            ! AccountRules::validEmail($email) || ! AccountRules::validNickname($nickname)
+            || ! AccountRules::validPassword($password)
+        ) {
             $this->error('管理員 Email、暱稱或密碼不符合共同格式');
 
             return self::FAILURE;

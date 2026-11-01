@@ -9,15 +9,15 @@ use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
-// 只註冊本票的 API 路由；其他操作留待各票加入。
+// 載入共同 22 操作與就緒檢查；API 前綴由 Laravel 統一加入。
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
-        api: __DIR__.'/../routes/api.php',
-        web: __DIR__.'/../routes/web.php',
+        api: __DIR__ . '/../routes/api.php',
+        web: __DIR__ . '/../routes/web.php',
     )
     // API 最外層加追蹤記錄，讓每次錯誤都能用 log_id 查回 IN／EX／OUT。
     ->withMiddleware(function (Middleware $middleware): void {
-        // API 最外層統一追蹤、錯誤格式與日誌，避免框架預設回應洩漏細節。
+        // 讓追蹤碼先於路由與認證建立，錯誤回應才能關聯同次請求。
         $middleware->prepend(ApiEnvelope::class);
     })
     // Laravel 可能在路由管線內先攔住例外，因此在官方 render seam 統一錯誤外觀。
@@ -28,7 +28,9 @@ return Application::configure(basePath: dirname(__DIR__))
                 if (! request()->is('api', 'api/*')) {
                     return null;
                 }
-                logger()->error('API exception', ['log_id' => request()->attributes->get('log_id'), 'exception' => $exception::class]);
+                logger()->error('API exception', [
+                    'log_id' => request()->attributes->get('log_id'), 'exception' => $exception::class
+                ]);
 
                 return false;
             },
