@@ -1,11 +1,11 @@
-"""Flask 讀取與帳號 API，維持共同 HTTP/資料庫契約。"""
+"""Flask 帳號、內容與管理 API，維持共同 HTTP／資料庫契約。"""
 
 import logging
 import re
 import secrets
 import uuid
 from datetime import timedelta
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, unquote_to_bytes
 from functools import wraps
 
 import psycopg
@@ -57,6 +57,7 @@ def api(method):
             except Exception:
                 LOGGER.exception("ERROR log_id=%s code=E9999", log_id)
                 response = failure(ApiError("E9999"), log_id)
+            # 成功與失敗共用來源白名單，讓登入鎖定的 Retry-After 可由前端讀取。
             if origin == "http://localhost:8080":
                 response.headers["Access-Control-Allow-Origin"] = origin
                 response.headers["Vary"] = "Origin"
@@ -149,22 +150,30 @@ def query_values(request, allowed):
     raw = request.query_string.decode("latin1")
     values = {}
     errors = {}
+    seen = set()
     for pair in raw.split("&") if raw else ():
         encoded_name, _, encoded_value = pair.partition("=")
-        decoded = unquote_plus(encoded_name, errors="replace")
-        # 非法 UTF-8 鍵保留原始百分比編碼，避免替代字元與合法欄位撞名。
-        name = decoded if "\ufffd" not in decoded else encoded_name.upper()
-        # 陣列式鍵先對回原欄位，才能回型態錯誤或與單值鍵的重複錯誤。
+        identity = unquote_to_bytes(encoded_name.replace("+", " ").encode("latin1"))
+        # 嚴格解碼才能區分合法 U+FFFD 與非法 bytes；顯示用的百分比標籤不作為參數身分。
+        try:
+            name = identity.decode("utf-8")
+        except UnicodeDecodeError:
+            # callback 只統一百分比 escape 的 hex 大小寫，避免連原欄位 ASCII 名稱也改寫。
+            name = re.sub(r"%[0-9A-Fa-f]{2}", lambda match: match.group().upper(), encoded_name)
+        # 只有本端點支援的單值欄位才合併陣列別名；未知巢狀鍵保留各自的身分與名稱。
         array_match = re.match(r"(page|per_page|filters\[(?:scope|keyword)\])\[", name)
-        canonical = array_match.group(1) if array_match else name
+        canonical = array_match.group(1) if array_match and array_match.group(1) in allowed else name
+        if canonical != name:
+            identity = canonical.encode("utf-8")
         label = re.sub(r"^filters\[([^]]+)\]$", r"filters.\1", canonical)
-        # 重複優先於陣列型態，其後才是未知欄位，維持共用錯誤先後。
-        if canonical in values:
+        # 相同顯示標籤可能來自不同未知鍵；後來的未知錯誤不可覆蓋已找到的真正重複。
+        if identity in seen:
             errors[label] = ["此參數不可重複"]
         elif array_match and canonical in allowed:
-            errors[label] = [TYPE]
+            errors.setdefault(label, [TYPE])
         elif canonical not in allowed:
-            errors[label] = ["不支援此欄位"]
+            errors.setdefault(label, ["不支援此欄位"])
+        seen.add(identity)
         # 值採嚴格 UTF-8；遇到非法位元組保留欄位錯誤，不交給資料庫搜尋。
         try:
             values[canonical] = unquote_plus(encoded_value, errors="strict")
@@ -256,6 +265,7 @@ def json_body(request, fields, empty_allowed=False, content_limits=None, field_t
         raise ApiError("E0005") from None
     if not isinstance(body, dict):
         raise ApiError("E0001", {"_body": ["Request Body 必須為 JSON object"]})
+    # 逐欄先處理必填／null／型態，再彙整格式與未知欄位，避免單一錯誤遮蔽其他欄位。
     errors = {}
     for field in fields:
         if field not in body:
@@ -351,6 +361,7 @@ def pagination(page, per_page, total):
 # 寫入交易依帳號、session 順序鎖列再重驗，與登出及停用明確排序。
 def authenticate_write(request, connection):
     account, claims = authenticate(request, connection)
+    # 等待期間可能已登出或停用，取得相容列鎖後必須重新讀取，不沿用外層結果。
     connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
     connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
     return authenticate(request, connection)[0]
@@ -393,6 +404,7 @@ def register(request):
     with connect() as connection:
         if connection.execute("SELECT 1 FROM accounts WHERE email = %s", (body["email"],)).fetchone():
             raise ApiError("E0001", {"email": ["此 Email 已註冊"]})
+        # 預查可提早回報；真正的並行唯一性仍由 INSERT 的 unique constraint 保證。
         encoded = password_hash(body["password"])
         try:
             connection.execute(
@@ -425,6 +437,7 @@ def login(request):
         account = connection.execute(
             "SELECT * FROM accounts WHERE email = %s FOR UPDATE", (body["email"],)
         ).fetchone()
+        # 鎖等待結束後才取實際 DB 時間，不能用交易開始時間計算鎖定或滑動視窗。
         now = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
         if account is None:
             return failure(ApiError("E0101"), g.api_log_id)
@@ -456,6 +469,7 @@ def login(request):
                     until = now + timedelta(seconds=settings["lock_seconds"])
                     connection.execute("UPDATE accounts SET locked_until = %s WHERE id = %s", (until, account["id"]))
                     return locked_response(connection, until)
+            # 正常離開連線 context 會先提交失敗事件／到期清鎖，再送出 401；不可改成拋例外。
             return failure(ApiError("E0101"), g.api_log_id)
         # 成功時換世代並保存與 JWT 同秒數的登入紀錄；金鑰失敗會回滾。
         issued = int(now.timestamp())
@@ -485,6 +499,7 @@ def logout(request):
         identity = authenticate(request, connection)
         no_query(request)
         json_body(request, (), empty_allowed=True)
+        # 輸入合法後按帳號→session 鎖定並重驗，與停用及受保護寫入互斥。
         account, claims = identity
         connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
         connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
@@ -800,6 +815,7 @@ def member(request, member_id):
 def member_status(request, member_id):
     with connect() as connection:
         manager, claims = management_identity(request, connection)
+    # 初驗角色先於輸入；實際交易內還會在列鎖後重驗，避免等待時權限已失效。
     no_query(request)
     account_id = url_integer(member_id, "member_id")
     body = json_body(request, ("status",))
@@ -811,6 +827,7 @@ def member_status(request, member_id):
         accounts = {row["id"]: row for row in locked}
         connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
         management_identity(request, connection)
+        # 管理員不屬於可操作會員集合；同值不再撤銷 session，恢復只改 status。
         target = accounts.get(account_id)
         if target is None or target["role"] != "member":
             raise ApiError("E0004")
@@ -869,6 +886,7 @@ def login_lockout_settings(request):
             return success({key: row[key] for key in ("enabled", "window_minutes", "failure_threshold", "lock_seconds")})
     with connect() as connection:
         manager, claims = management_identity(request, connection)
+    # 完整四欄先驗證，才開始更新交易；預先驗過角色不能取代鎖後的再次查核。
     no_query(request)
     body = lockout_body(request)
     with connect() as connection:
@@ -886,6 +904,7 @@ def login_lockout_settings(request):
             connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (manager["id"],))
         connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
         management_identity(request, connection)
+        # 四欄以同一 UPDATE 提交；同值不重做清鎖，數值更新不改任何現有鎖定期限。
         if any(settings[key] != body[key] for key in body):
             connection.execute(
                 "UPDATE login_lockout_settings SET enabled = %s, window_minutes = %s, "

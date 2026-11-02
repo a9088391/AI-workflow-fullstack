@@ -29,9 +29,10 @@ LOGIN = "/api/auth/login"
 SETTINGS = "/api/settings/login-lockout"
 RECOVERY = Path(".scratch/code-quality/cq18")
 RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19"),
-              "cq20": Path(".scratch/code-quality/cq20"), "cq21": Path(".scratch/code-quality/cq21")}
+              "cq20": Path(".scratch/code-quality/cq20"), "cq21": Path(".scratch/code-quality/cq21"),
+              "cq22": Path(".scratch/code-quality/cq22")}
 NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}",
-          "cq20": r"cq20[0-9a-f]{8}", "cq21": r"cq21[0-9a-f]{8}"}
+          "cq20": r"cq20[0-9a-f]{8}", "cq21": r"cq21[0-9a-f]{8}", "cq22": r"cq22[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
@@ -51,7 +52,7 @@ def arguments():
 # 保留原始 bytes、Query 與 HEAD 空內容，避免客戶端替框架改寫測資。
 def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_headers=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離 HTTP 目標")
-    shared.check(backend in ("laravel", "aspnet-core", "django"), "未核准的額外 HTTP 後端")
+    shared.check(backend in ("laravel", "aspnet-core", "django", "flask"), "未核准的額外 HTTP 後端")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if origin is not None:
         headers["Origin"] = origin
@@ -264,8 +265,8 @@ def restore_baseline(packet, path, *, ticket="cq18", mark_restored=True):
 
 
 # 唯一帳號隔離已確認的輸入缺陷；每次拒絕後比較完整快照，避免錯誤優先修正造成寫入。
-def regression_cases(nonce):
-    actor = shared.user(BACKEND, nonce + "r", "member")
+def regression_cases(nonce, *, backend=BACKEND):
+    actor = shared.user(backend, nonce + "r", "member")
     before = state(actor["id"])
     observed = []
     body_error = {"_body": ["此 API 不接受 Request Body"]}
@@ -275,16 +276,16 @@ def regression_cases(nonce):
         for body in (b"{}", b"{"):
             for token, status in ((actor["token"], 422), (None, 401), ("invalid", 401)):
                 path = "/api/me?" + query
-                result = decoded(raw_request("GET", path, body, token))
+                result = decoded(raw_request("GET", path, body, token, backend=backend))
                 shared.expect(result, status, "E0001" if status == 422 else "E0002",
                               body_error if status == 422 else None)
                 observed.append((result[1]["log_id"], "GET", "/api/me", status))
                 shared.check(state(actor["id"]) == before, "GET Body／Query 拒絕改變帳號或 session")
             control = decoded(raw_request("GET", "/api/articles?page=bad&per_page=20&" + query,
-                                          body, actor["token"]))
+                                          body, actor["token"], backend=backend))
             shared.expect(control, 422, "E0001", body_error)
         for body in (None, b""):
-            shared.expect(decoded(raw_request("GET", "/api/me?" + query, body, actor["token"])),
+            shared.expect(decoded(raw_request("GET", "/api/me?" + query, body, actor["token"], backend=backend)),
                           422, "E0001", query_error)
 
     # 未知 Query 一律拒絕；非法 UTF-8 key 僅採已確認的百分比表示，不延伸到搜尋字元政策。
@@ -304,7 +305,7 @@ def regression_cases(nonce):
             fields = {key: ["此參數不可重複" if duplicate else "不支援此欄位"]}
             for method, path, body, token in endpoints:
                 full_path = path + ("&" if "?" in path else "?") + query
-                result = decoded(raw_request(method, full_path, body, token))
+                result = decoded(raw_request(method, full_path, body, token, backend=backend))
                 shared.expect(result, 422, "E0001", fields)
                 observed.append((result[1]["log_id"], method, path.split("?", 1)[0], 422))
                 shared.check(state(actor["id"]) == before, "未知 key 拒絕改變帳號或 session")
@@ -328,7 +329,7 @@ def regression_cases(nonce):
     for query, fields in mixed_queries:
         for method, path, body, token in endpoints:
             full_path = path + ("&" if "?" in path else "?") + query
-            result = decoded(raw_request(method, full_path, body, token))
+            result = decoded(raw_request(method, full_path, body, token, backend=backend))
             shared.expect(result, 422, "E0001", fields)
             observed.append((result[1]["log_id"], method, path.split("?", 1)[0], 422))
             shared.check(state(actor["id"]) == before, "Query 身分判定拒絕改變帳號或 session")
@@ -346,12 +347,12 @@ def regression_cases(nonce):
             if path in ("/api/me", "/api/auth/logout"):
                 continue
             full_path = path + ("&" if "?" in path else "?") + query
-            result = decoded(raw_request(method, full_path, body, token))
+            result = decoded(raw_request(method, full_path, body, token, backend=backend))
             shared.expect(result, 422, "E0001", article_fields if method == "GET" else auth_fields)
             observed.append((result[1]["log_id"], method, path.split("?", 1)[0], 422))
             shared.check(state(actor["id"]) == before, "相鄰 Query control 拒絕改變帳號或 session")
     shared.check(state(actor["id"]) == before, "回歸 control 改變帳號或 session")
-    shared.trace_errors(BACKEND, observed)
+    shared.trace_errors(backend, observed)
     print("PASS CQ18 GET Body／認證優先、Query 身分／JSON 標籤與相鄰 control 回歸", flush=True)
 
 
@@ -369,7 +370,7 @@ def entry_cases(nonce, *, backend=BACKEND):
         observed.append((result[1]["log_id"], method, path, status))
     actor = shared.user(backend, nonce + "h", "member")
     before = state(actor["id"])
-    head_cases = ((None, 401), (actor["token"], 200)) if backend == BACKEND else ((None, 405), (actor["token"], 405))
+    head_cases = ((None, 401), (actor["token"], 200)) if backend in (BACKEND, "flask") else ((None, 405), (actor["token"], 405))
     for token, status in head_cases:
         result = raw_request("HEAD", "/api/me", token=token, backend=backend)
         shared.check(result[0] == status and result[1] == b""
@@ -383,11 +384,11 @@ def entry_cases(nonce, *, backend=BACKEND):
             shared.check(result[2].get("Access-Control-Allow-Origin") is None, "非信任 Origin 不得取得 CORS 許可")
         else:
             methods = {"GET", "POST", "PUT", "OPTIONS"} if backend == BACKEND else {"GET", "POST", "PUT"}
-            # Django 依個別路由宣告方法；登入路由只提供 POST 與預檢，不能要求其他寫入方法。
-            if backend == "django":
+            # Django／Flask 依個別路由宣告方法，登入預檢不能要求其他路由的寫入方法。
+            if backend in ("django", "flask"):
                 methods = {"POST", "OPTIONS"}
                 shared.check(set(result[2].get("Access-Control-Allow-Methods", "").replace(" ", "").split(","))
-                             == methods, "Django 登入預檢不得宣告其他路由方法")
+                             == methods, "登入預檢不得宣告其他路由方法")
             shared.check(methods <= set(
                 result[2].get("Access-Control-Allow-Methods", "").replace(" ", "").split(",")) and
                 {"authorization", "content-type", "accept"} <= set(
@@ -531,7 +532,7 @@ def login_claims(login, account_id, role, *, backend=BACKEND):
 # 僅在原 guard 通過後讀對應後端已核對的 key，簽署 fixture；key、JWT 不落盤或印出。
 def signed_token(claims, header=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離金鑰")
-    shared.check(backend in ("laravel", "aspnet-core", "django"), "未核准的簽署 fixture 後端")
+    shared.check(backend in ("laravel", "aspnet-core", "django", "flask"), "未核准的簽署 fixture 後端")
     key = base64.b64decode(Path(f".local/keys/{backend}.key").read_bytes().rstrip(b"\n"), validate=True)
     shared.check(len(key) == 32, "隔離金鑰長度不符")
     parts = [base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=")
@@ -687,7 +688,7 @@ def readback(records, *, backend=BACKEND):
                      and article["body"] == "更新後內文" and comment is not None and comment["created_backend"] == backend
                      and comment["id"] == comment_id and comment["body"] == "更新後留言", "十二後端讀回來源／內容不符")
     print("PASS CQ18 Laravel 建立資料由十二後端精確讀回" if backend == BACKEND
-          else "PASS CQ19 ASP.NET Core 建立資料由十二後端精確讀回", flush=True)
+          else f"PASS {backend} 建立資料由十二後端精確讀回", flush=True)
 
 
 # 保留原 shared guard 與全部必要案例；整體 PASS 只在 full suite 及 finally 恢復均完成後輸出。

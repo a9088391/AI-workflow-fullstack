@@ -20,6 +20,34 @@ class FlaskContractTests(unittest.TestCase):
     def setUp(self):
         self.client = create_app().test_client()
 
+    # 參數身分與顯示名稱分開，非法 UTF-8 不得把不同未知鍵誤判重複或改寫合法 U+FFFD。
+    def test_query_identity_and_error_labels(self):
+        cases = (
+            ("%FF=x&%25FF=y", {"%FF": ["不支援此欄位"]}),
+            ("%FF=x&%ff=y&%25FF=z", {"%FF": ["此參數不可重複"]}),
+            ("%25FF=x&%FF=y&%25FF=z", {"%FF": ["此參數不可重複"]}),
+            ("%EF%BF%BD=x", {"�": ["不支援此欄位"]}),
+            ("%EF%BF%BD=x&%EF%BF%BD=y", {"�": ["此參數不可重複"]}),
+            ("%FF=x&%EF%BF%BD=y", {"%FF": ["不支援此欄位"], "�": ["不支援此欄位"]}),
+            ("page%5b%ff%5d=x", {"page%5B%FF%5D": ["不支援此欄位"]}),
+            ("filters%5B%FF%5D=x", {"filters%5B%FF%5D": ["不支援此欄位"]}),
+            ("page%5B0%5D=x&page%5B1%5D=y", {
+                "page[0]": ["不支援此欄位"], "page[1]": ["不支援此欄位"],
+            }),
+        )
+        for query, errors in cases:
+            with self.subTest(query=query), patch("site_api.views.connect") as connect:
+                response = self.client.post("/api/auth/register?" + query, data=b"{", content_type="application/json")
+                self.assertEqual((response.status_code, response.json["errors"]), (422, errors))
+                connect.assert_not_called()
+        # 合法分頁欄位收到陣列須型態錯誤；與單值同時出現時仍以真正欄位重複優先。
+        for query, message in (("page[0]=1", "欄位型態不正確"),
+                               ("page=1&page[0]=2", "此參數不可重複"),
+                               ("pa%67e=1&page=2", "此參數不可重複")):
+            with self.subTest(query=query), patch("site_api.views.connect"):
+                response = self.client.get("/api/articles?per_page=20&" + query)
+                self.assertEqual((response.status_code, response.json["errors"]), (422, {"page": [message]}))
+
     # 管理專用端點先驗角色，非法參數不得先觸發管理資料查詢。
     def test_management_role_precedes_validation(self):
         paths = (
@@ -347,6 +375,33 @@ class FlaskContractTests(unittest.TestCase):
                 verify_token(foreign)
             self.assertEqual(result.exception.code, "E0002")
 
+    # DB 約束不容許微秒測資；僅以受控 unit seam 驗個別時間仍作精確比對，不宣稱真 DB 覆蓋。
+    def test_session_timestamps_reject_individual_microsecond_mismatch(self):
+        issued = datetime.fromtimestamp(1700000000, timezone.utc)
+        claims = {"sub": "1", "jti": "session", "iat": 1700000000, "exp": 1700028800}
+        account = {"id": 1, "email": "demo@example.test", "nickname": "讀者", "role": "member",
+                   "status": "active", "created_at": issued}
+        original = {"account_id": 1, "backend_id": "flask", "issued_at": issued,
+                    "expires_at": issued + timedelta(hours=8), "revoked_at": None}
+        for field in (None, "issued_at", "expires_at"):
+            session = dict(original)
+            if field is not None:
+                session[field] += timedelta(microseconds=1)
+            # 真正 authenticate 讀取兩個受控結果；只替換 JWT verifier 與 DB，避免時間／金鑰干擾。
+            results = [MagicMock(), MagicMock()]
+            results[0].fetchone.return_value = account
+            results[1].fetchone.return_value = session
+            with self.subTest(field=field), patch("site_api.views.connect") as connect, patch(
+                "site_api.core.verify_token", return_value=claims
+            ):
+                connection = connect.return_value.__enter__.return_value
+                connection.execute.side_effect = results
+                response = self.client.get("/api/me", headers={"Authorization": "Bearer fixture"})
+                self.assertEqual(response.status_code, 200 if field is None else 401)
+                if field is not None:
+                    self.assertEqual(response.json["error_code"], "E0002")
+                self.assertEqual(connection.execute.call_count, 2)
+
     # 停用帳號先於鎖定處理，且不驗密碼或增加失敗紀錄。
     def test_login_disabled_precedes_lock(self):
         now = datetime.now(timezone.utc)
@@ -371,6 +426,30 @@ class FlaskContractTests(unittest.TestCase):
         self.assertIn("login_lockout_settings", statements[0])
         self.assertIn("accounts", statements[1])
         self.assertIn("clock_timestamp", statements[2])
+
+    # 儲存的 PHC 損壞是設定錯誤，不能偽裝成密碼錯誤或新增失敗事件。
+    def test_malformed_password_hash_is_configuration_error(self):
+        account = {"id": 1, "status": "active", "role": "member", "locked_until": None,
+                   "failure_epoch": 0, "password_hash": "damaged-phc"}
+        rows = ({"enabled": True}, account, {"now": datetime.now(timezone.utc)})
+        results = [MagicMock() for _ in rows]
+        for result, row in zip(results, rows):
+            result.fetchone.return_value = row
+        with patch("site_api.views.connect") as connect, self.assertLogs("site_api", level="INFO") as captured:
+            connection = connect.return_value.__enter__.return_value
+            connection.execute.side_effect = results
+            response = self.client.post("/api/auth/login", json={"email": "demo@example.test", "password": "abcd"})
+        self.assertEqual((response.status_code, response.json["error_code"], response.json["message"]),
+                         (500, "E0104", "後台認證設定異常，請聯絡系統管理員"))
+        self.assertNotIn("errors", response.json)
+        # 三次讀取後即拒絕；真正 PHC verifier 參與測試，不能把錯密碼計數分支 mock 掉。
+        self.assertEqual(connection.execute.call_count, 3)
+        messages = "\n".join(record.getMessage() for record in captured.records)
+        self.assertIn(f"ERROR log_id={response.json['log_id']} code=E0104", messages)
+        # UUID 可能碰巧含密碼片段；保留原文驗追蹤碼，再排除該碼檢查真正的秘密洩漏。
+        sensitive_messages = messages.replace(response.json["log_id"], "")
+        self.assertNotIn("damaged-phc", sensitive_messages)
+        self.assertNotIn("abcd", sensitive_messages)
 
     # 門檻當次先提交鎖定；延遲後標頭只回鎖定剩餘秒數。
     def test_login_threshold_uses_remaining_seconds_after_commit(self):

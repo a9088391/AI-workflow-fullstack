@@ -33,6 +33,7 @@ INVALID = "欄位格式或範圍不正確"
 REQUIRED = "此欄位為必填"
 NULL = "此欄位不可為 null"
 TYPE = "欄位型態不正確"
+# 空白集合依跨後端契約列舉，不能改用各語言定義不同的 strip／isspace。
 SPACE = frozenset(chr(i) for i in range(9, 14)) | frozenset(
     "\u0020\u0085\u00a0\u1680\u2028\u2029\u202f\u205f\u3000"
 ) | frozenset(chr(i) for i in range(0x2000, 0x200b))
@@ -110,6 +111,7 @@ def password_hash(password):
 
 # 先驗 PHC 的成本與正規 Base64，再交給 Argon2id 驗證，毀損不計失敗。
 def verify_password(password, encoded):
+    # 先限制成本與正規 PHC 表示，避免把損壞或不支援的儲存格式當成登入失敗。
     match = PHC.fullmatch(encoded)
     if match is None:
         raise ApiError("E0104")
@@ -120,6 +122,7 @@ def verify_password(password, encoded):
             raise ApiError("E0104") from exc
         if len(raw) != size or base64.b64encode(raw).decode().rstrip("=") != text:
             raise ApiError("E0104")
+    # 密碼不符才回 False；雜湊驗證器異常仍交由共同認證設定錯誤處理。
     try:
         return HASHER.verify(encoded, password)
     except VerifyMismatchError:
@@ -171,6 +174,7 @@ def issue_token(account_id, jti, issued):
         "nbf": issued,
         "exp": issued + 28800,
     }
+    # 簽名只使用固定 header 與後端產生的 claims，不把角色或帳密放進憑證。
     payload = b64url(json.dumps(claims, separators=(",", ":"), ensure_ascii=True).encode())
     signed = header + "." + payload
     return signed + "." + b64url(hmac.new(jwt_key(), signed.encode(), hashlib.sha256).digest())
@@ -193,6 +197,7 @@ def reject_non_json_number(value):
 
 # 驗證固定 header、簽章、claims 型態與嚴格期限，再交由 DB 驗身分。
 def verify_token(token):
+    # 固定本後端金鑰與 HS256；先驗簽章，不依外來 header 選擇演算法或讀取外部金鑰。
     key = jwt_key()
     parts = token.split(".")
     if len(parts) != 3:
@@ -200,6 +205,7 @@ def verify_token(token):
     signed = (parts[0] + "." + parts[1]).encode()
     if not hmac.compare_digest(hmac.new(key, signed, hashlib.sha256).digest(), unb64url(parts[2])):
         raise ApiError("E0002")
+    # JWT 的重複欄位拒絕僅適用憑證，不改變一般 Request Body 的 JSON 解析規則。
     try:
         header = json.loads(unb64url(parts[0]), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
         claims = json.loads(unb64url(parts[1]), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
@@ -207,6 +213,7 @@ def verify_token(token):
         raise ApiError("E0002") from exc
     if header != {"alg": "HS256", "typ": "JWT"} or not isinstance(claims, dict):
         raise ApiError("E0002")
+    # 型態與欄位關係先成立，才可安全比較固定八小時且無寬限的有效期限。
     subject = claims.get("sub")
     jti = claims.get("jti")
     issued = claims.get("iat")
@@ -241,6 +248,7 @@ def authenticate(request, connection, required=True):
     match = re.fullmatch(r"Bearer ([^\s]+)", authorization or "", flags=re.IGNORECASE)
     if match is None:
         raise ApiError("E0002")
+    # 只有 JWT 身分可驗證後才查共用資料；DB 無法查核時由入口回系統錯誤，不能放行。
     claims = verify_token(match.group(1))
     account = connection.execute(
         "SELECT id, email, nickname, role, status, created_at FROM accounts WHERE id = %s",
@@ -261,6 +269,7 @@ def authenticate(request, connection, required=True):
         or session["expires_at"] != datetime.fromtimestamp(claims["exp"], timezone.utc)
     ):
         raise ApiError("E0002")
+    # 已確認同一登入身分後，停用優先於撤銷；恢復帳號仍不會復活原登入。
     if account["status"] == "disabled":
         raise ApiError("E0102")
     if session["revoked_at"] is not None:
