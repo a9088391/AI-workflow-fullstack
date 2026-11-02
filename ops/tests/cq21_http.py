@@ -61,9 +61,9 @@ def pending_recovery():
                          "既有 recovery 未恢復或檔名不符，拒絕新測資")
 
 
-# 快照只留記憶體，以本票帳號所有欄位、登入、事件、內容與設定證明拒絕沒有部分寫入。
-def snapshot(nonce):
-    shared.check(re.fullmatch(extra.NONCES[TICKET], nonce) is not None, "CQ21 nonce 不符")
+# 快照只留記憶體，以明示票號的帳號、登入、事件、內容與設定證明拒絕沒有部分寫入。
+def snapshot(nonce, *, ticket=TICKET):
+    shared.check(re.fullmatch(extra.NONCES[ticket], nonce) is not None, "內容測試 nonce 不符")
     ids = f"SELECT id FROM accounts WHERE email LIKE 't57-{nonce}%'"
     return shared.sql(
         "SELECT jsonb_build_object('settings',(SELECT to_jsonb(s) FROM login_lockout_settings s WHERE id=1),"
@@ -76,15 +76,16 @@ def snapshot(nonce):
 
 
 # 原始 bytes 避免客戶端改寫無效 JSON；每個拒絕逐字驗 envelope 並比較完整 DB 快照。
-def rejected(nonce, observed, method, path, payload, token, status, code, fields=None):
-    before = snapshot(nonce)
+def rejected(nonce, observed, method, path, payload, token, status, code, fields=None, *,
+             backend=BACKEND, ticket=TICKET):
+    before = snapshot(nonce, ticket=ticket)
     raw = payload if isinstance(payload, bytes) or payload is None else json.dumps(payload).encode()
-    result = extra.decoded(extra.raw_request(method, path, raw, token, backend=BACKEND))
+    result = extra.decoded(extra.raw_request(method, path, raw, token, backend=backend))
     shared.expect(result, status, code, fields)
     shared.check(result[2].get("Access-Control-Allow-Origin") == extra.ORIGIN, "拒絕回應缺 CORS")
-    # Django 的 request.path 已解碼百分比；日誌仍對應原請求的同一資源，不改測試 URL。
+    # Django／Flask 的 request.path 已解碼百分比；日誌仍對應原請求的同一資源，不改測試 URL。
     observed.append((result[1]["log_id"], method, unquote(path.split("?", 1)[0]), status))
-    shared.check(snapshot(nonce) == before, "拒絕請求留下部分資料變更")
+    shared.check(snapshot(nonce, ticket=ticket) == before, "拒絕請求留下部分資料變更")
 
 
 # 讀取物件須為完整共同欄位，時間與版本對照 DB，不以另一框架回應充當契約。
@@ -107,13 +108,13 @@ def resource(data, table, identifier, actor_id, backend):
 
 
 # 以固定 SQL 範圍驗第一／末／超頁，兼顧全部既有資料的排序總數及可重跑性。
-def exact_list(path, token, table, where):
+def exact_list(path, token, table, where, *, backend=BACKEND):
     shared.check(table in ("articles", "comments"), "列表表名不符")
     total = int(shared.sql(f"SELECT count(*) FROM {table} {where}"))
     separator = "&" if "?" in path else "?"
     last = max(1, (total + 99) // 100)
     for page in sorted({1, last, last + 1}):
-        data = shared.expect(shared.request(BACKEND, "GET", path + separator + f"page={page}&per_page=100",
+        data = shared.expect(shared.request(backend, "GET", path + separator + f"page={page}&per_page=100",
                                             token=token), 200)
         expected = shared.sql(f"SELECT id FROM {table} {where} ORDER BY created_at DESC,id DESC "
                               f"LIMIT 100 OFFSET {(page - 1) * 100}")
@@ -124,156 +125,159 @@ def exact_list(path, token, table, where):
 
 
 # 唯一作者與管理員區分公開、本人及管理範圍；重用已參數化父文案例保留作者例外。
-def scope_cases(nonce):
-    owner = shared.user(BACKEND, nonce + "s", "member")
-    other = shared.user(BACKEND, nonce + "s", "other")
-    admin = shared.user(BACKEND, nonce + "s", "admin")
-    article_id = create_article(BACKEND, owner, f"cq21-{nonce}-scope")
-    comment_id = create_comment(BACKEND, owner, article_id, f"cq21-{nonce}-scope-comment")
+def scope_cases(nonce, *, backend=BACKEND, ticket=TICKET):
+    owner = shared.user(backend, nonce + "s", "member")
+    other = shared.user(backend, nonce + "s", "other")
+    admin = shared.user(backend, nonce + "s", "admin")
+    article_id = create_article(backend, owner, f"cq21-{nonce}-scope")
+    comment_id = create_comment(backend, owner, article_id, f"cq21-{nonce}-scope-comment")
     article_path, comment_path = f"/api/articles/{article_id}", f"/api/comments/{comment_id}"
     observed = []
 
     # 可讀的公開目標無作者權即 403；先驗認證及格式，不能以舊版本取代這些錯誤。
     for path, body in ((article_path, {"title": "標題", "body": "內容", "version": 999}),
                        (comment_path, {"body": "內容", "version": 999})):
-        rejected(nonce, observed, "PUT", path, {**body, "version": 0}, None, 401, "E0002")
+        rejected(nonce, observed, "PUT", path, {**body, "version": 0}, None, 401, "E0002",
+                 backend=backend, ticket=ticket)
         rejected(nonce, observed, "PUT", path, {**body, "version": 0}, other["token"], 422, "E0001",
-                 {"version": [RANGE]})
+                 {"version": [RANGE]}, backend=backend, ticket=ticket)
         for actor in (other, admin):
-            rejected(nonce, observed, "PUT", path, body, actor["token"], 403, "E0003")
-    rejected(nonce, observed, "GET", comment_path, None, other["token"], 403, "E0003")
+            rejected(nonce, observed, "PUT", path, body, actor["token"], 403, "E0003", backend=backend, ticket=ticket)
+    rejected(nonce, observed, "GET", comment_path, None, other["token"], 403, "E0003", backend=backend, ticket=ticket)
     for path in (article_path, comment_path):
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "hidden", "version": 1}, owner["token"]), 200)
         rejected(nonce, observed, "PUT", path + "/visibility", {"visibility": "visible", "version": 999},
-                 other["token"], 404, "E0004")
-        rejected(nonce, observed, "GET", path, None, other["token"], 404, "E0004")
+                 other["token"], 404, "E0004", backend=backend, ticket=ticket)
+        rejected(nonce, observed, "GET", path, None, other["token"], 404, "E0004", backend=backend, ticket=ticket)
         body = {"body": "內容", "version": 999}
         if path == article_path:
             body["title"] = "標題"
-        rejected(nonce, observed, "PUT", path, body, other["token"], 404, "E0004")
+        rejected(nonce, observed, "PUT", path, body, other["token"], 404, "E0004", backend=backend, ticket=ticket)
     for token, status, code in ((None, 401, "E0002"), (other["token"], 403, "E0003")):
         for path in ("/api/comments?page=bad&per_page=100",
                      "/api/articles?filters%5Bscope%5D=management&page=bad&per_page=100"):
-            rejected(nonce, observed, "GET", path, None, token, status, code)
+            rejected(nonce, observed, "GET", path, None, token, status, code, backend=backend, ticket=ticket)
     for path in ("/api/comments?page=bad&per_page=100",
                  "/api/articles?filters%5Bscope%5D=management&page=bad&per_page=100"):
-        rejected(nonce, observed, "GET", path, None, admin["token"], 422, "E0001", {"page": [RANGE]})
+        rejected(nonce, observed, "GET", path, None, admin["token"], 422, "E0001", {"page": [RANGE]},
+                 backend=backend, ticket=ticket)
     for path in ("/api/articles/not-an-id?unknown=1", "/api/articles/not-an-id/comments?page=bad&per_page=20"):
-        rejected(nonce, observed, "GET", path, None, "invalid", 401, "E0002")
-    rejected(nonce, observed, "GET", "/api/articles/not-an-id", None, None, 422, "E0001", {"article_id": [RANGE]})
+        rejected(nonce, observed, "GET", path, None, "invalid", 401, "E0002", backend=backend, ticket=ticket)
+    rejected(nonce, observed, "GET", "/api/articles/not-an-id", None, None, 422, "E0001", {"article_id": [RANGE]},
+             backend=backend, ticket=ticket)
     for token in (None, owner["token"], admin["token"]):
-        exact_list("/api/articles", token, "articles", "WHERE visibility='visible'")
-    exact_list("/api/articles?filters%5Bscope%5D=management", admin["token"], "articles", "")
-    exact_list("/api/comments", admin["token"], "comments", "")
-    exact_list("/api/me/articles", owner["token"], "articles", f"WHERE author_id={owner['id']}")
-    exact_list("/api/me/comments", owner["token"], "comments", f"WHERE author_id={owner['id']}")
-    shared.trace_errors(BACKEND, observed)
-    extra.hidden_parent_cases(nonce, backend=BACKEND)
-    print("PASS CQ21 scope：登入／格式／404／403順序、公開／本人／管理範圍與父文例外", flush=True)
+        exact_list("/api/articles", token, "articles", "WHERE visibility='visible'", backend=backend)
+    exact_list("/api/articles?filters%5Bscope%5D=management", admin["token"], "articles", "", backend=backend)
+    exact_list("/api/comments", admin["token"], "comments", "", backend=backend)
+    exact_list("/api/me/articles", owner["token"], "articles", f"WHERE author_id={owner['id']}", backend=backend)
+    exact_list("/api/me/comments", owner["token"], "comments", f"WHERE author_id={owner['id']}", backend=backend)
+    shared.trace_errors(backend, observed)
+    extra.hidden_parent_cases(nonce, backend=backend)
+    print(f"PASS {ticket.upper()} scope：登入／格式／404／403順序、公開／本人／管理範圍與父文例外", flush=True)
 
 
 # 同值與過期都比較整列含微秒時間；管理員接管視為變更，作者無法藉重下架奪回恢復權。
-def lifecycle_cases(nonce):
-    owner = shared.user(BACKEND, nonce + "l", "member")
-    admin = shared.user(BACKEND, nonce + "l", "admin")
+def lifecycle_cases(nonce, *, backend=BACKEND, ticket=TICKET):
+    owner = shared.user(backend, nonce + "l", "member")
+    admin = shared.user(backend, nonce + "l", "admin")
     peer_token = login(PEER, owner)
-    parent = create_article(BACKEND, owner, f"cq21-{nonce}-parent")
-    article_id = create_article(BACKEND, owner, f"cq21-{nonce}-life")
-    comment_id = create_comment(BACKEND, owner, parent, f"cq21-{nonce}-life-comment")
+    parent = create_article(backend, owner, f"cq21-{nonce}-parent")
+    article_id = create_article(backend, owner, f"cq21-{nonce}-life")
+    comment_id = create_comment(backend, owner, parent, f"cq21-{nonce}-life-comment")
     observed = []
     for table, identifier in (("articles", article_id), ("comments", comment_id)):
         path = f"/api/{table}/{identifier}"
         initial = row(table, identifier)
         shared.check(initial["version"] == 1 and initial["created_at"] == initial["updated_at"], "建立版本／時間不符")
-        data = shared.expect(shared.request(BACKEND, "GET", path, token=owner["token"]), 200)
-        resource(data, table, identifier, owner["id"], BACKEND)
+        data = shared.expect(shared.request(backend, "GET", path, token=owner["token"]), 200)
+        resource(data, table, identifier, owner["id"], backend)
         shared.check(data["visibility"] == "visible" and data["can_restore"] is False, "建立可見性或恢復資格不符")
         body = {"body": initial["body"], "version": 1}
         if table == "articles":
             body["title"] = initial["title"]
-        shared.check(shared.expect(shared.request(BACKEND, "PUT", path, body, owner["token"]), 200) == {}, "同值 data 不符")
+        shared.check(shared.expect(shared.request(backend, "PUT", path, body, owner["token"]), 200) == {}, "同值 data 不符")
         shared.check(row(table, identifier) == initial, "正確版本同值更動整列")
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "visible", "version": 1}, owner["token"]), 200)
         shared.check(row(table, identifier) == initial, "公開同值可見性更動整列")
         body["body"] = " 修改😀e\u0301\r\n<script>純文字</script>\r\n "
-        shared.expect(shared.request(BACKEND, "PUT", path, body, owner["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", path, body, owner["token"]), 200)
         updated = row(table, identifier)
         changed(initial, updated, "修改版本／微秒時間未遞增")
-        rejected(nonce, observed, "PUT", path, body, owner["token"], 409, "E0201")
+        rejected(nonce, observed, "PUT", path, body, owner["token"], 409, "E0201", backend=backend, ticket=ticket)
         body["version"] = updated["version"]
-        shared.expect(shared.request(BACKEND, "PUT", path, body, owner["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", path, body, owner["token"]), 200)
         shared.check(row(table, identifier) == updated, "修改後同值更動整列")
         rejected(nonce, observed, "PUT", path + "/visibility", {"visibility": "visible", "version": 1},
-                 owner["token"], 409, "E0201")
+                 owner["token"], 409, "E0201", backend=backend, ticket=ticket)
 
         # 作者自己下架後仍可改文，原下架狀態與恢復權必須保留；留言父文保持公開。
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "hidden", "version": updated["version"]}, owner["token"]), 200)
         hidden = row(table, identifier)
         changed(updated, hidden, "作者下架未遞增版本／時間")
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "visible", "version": hidden["version"]}, owner["token"]), 200)
         restored_by_author = row(table, identifier)
         changed(hidden, restored_by_author, "作者恢復未遞增版本／時間")
         shared.check(restored_by_author["visibility"] == "visible" and restored_by_author["restore_control"] is None,
                      "作者恢復未清除控制者")
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "hidden", "version": restored_by_author["version"]}, owner["token"]), 200)
         hidden = row(table, identifier)
         body.update(body="下架內容編修\r\n😀", version=hidden["version"])
-        shared.expect(shared.request(BACKEND, "PUT", path, body, owner["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", path, body, owner["token"]), 200)
         edited = row(table, identifier)
         changed(hidden, edited, "下架編修未遞增版本／時間")
         shared.check(edited["visibility"] == "hidden" and edited["restore_control"] == "author", "編修擅改下架控制")
         rejected(nonce, observed, "PUT", path + "/visibility", {"visibility": "hidden", "version": hidden["version"]},
-                 owner["token"], 409, "E0201")
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+                 owner["token"], 409, "E0201", backend=backend, ticket=ticket)
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "hidden", "version": edited["version"]}, owner["token"]), 200)
         shared.check(row(table, identifier) == edited, "作者同值下架更動整列")
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "hidden", "version": edited["version"]}, admin["token"]), 200)
         takeover = row(table, identifier)
         changed(edited, takeover, "管理員接管未遞增版本／時間")
         shared.check(takeover["restore_control"] == "admin", "管理員未接管恢復權")
         for actor, can_restore in ((owner, False), (admin, True)):
-            shared.check(shared.expect(shared.request(BACKEND, "GET", path, token=actor["token"]), 200)
+            shared.check(shared.expect(shared.request(backend, "GET", path, token=actor["token"]), 200)
                          ["can_restore"] is can_restore, "接管後 can_restore 不符")
-            shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+            shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                          {"visibility": "hidden", "version": takeover["version"]}, actor["token"]), 200)
             shared.check(row(table, identifier) == takeover, "重下架更動整列或奪回控制")
         for version in (1, takeover["version"]):
             rejected(nonce, observed, "PUT", path + "/visibility", {"visibility": "visible", "version": version},
-                     owner["token"], 403, "E0003")
-        shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+                     owner["token"], 403, "E0003", backend=backend, ticket=ticket)
+        shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                      {"visibility": "visible", "version": takeover["version"]}, admin["token"]), 200)
         restored = row(table, identifier)
         changed(takeover, restored, "管理員恢復未遞增版本／時間")
         shared.check(restored["visibility"] == "visible" and restored["restore_control"] is None, "恢復未清控制者")
-        primary = shared.expect(shared.request(BACKEND, "GET", path, token=owner["token"]), 200)
-        resource(primary, table, identifier, owner["id"], BACKEND)
+        primary = shared.expect(shared.request(backend, "GET", path, token=owner["token"]), 200)
+        resource(primary, table, identifier, owner["id"], backend)
         shared.check(primary == shared.expect(shared.request(PEER, "GET", path, token=peer_token), 200), "跨後端讀回不符")
 
     # 管理員自己的文章／留言按作者規則，不能把所有管理員下架一律當成接管。
-    own_article = create_article(BACKEND, admin, f"cq21-{nonce}-admin-own")
-    own_comment = create_comment(BACKEND, admin, parent, f"cq21-{nonce}-admin-comment")
+    own_article = create_article(backend, admin, f"cq21-{nonce}-admin-own")
+    own_comment = create_comment(backend, admin, parent, f"cq21-{nonce}-admin-comment")
     for table, identifier in (("articles", own_article), ("comments", own_comment)):
         path = f"/api/{table}/{identifier}/visibility"
-        shared.expect(shared.request(BACKEND, "PUT", path, {"visibility": "hidden", "version": 1}, admin["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", path, {"visibility": "hidden", "version": 1}, admin["token"]), 200)
         hidden = row(table, identifier)
         shared.check(hidden["restore_control"] == "author" and hidden["version"] == 2, "管理員自己下架控制者不符")
-        shared.expect(shared.request(BACKEND, "PUT", path, {"visibility": "hidden", "version": 2}, admin["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", path, {"visibility": "hidden", "version": 2}, admin["token"]), 200)
         shared.check(row(table, identifier) == hidden, "管理員自己重下架更動整列")
-        shared.expect(shared.request(BACKEND, "PUT", path, {"visibility": "visible", "version": 2}, admin["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", path, {"visibility": "visible", "version": 2}, admin["token"]), 200)
         shared.check(row(table, identifier)["restore_control"] is None, "管理員自己恢復未清控制者")
-    shared.trace_errors(BACKEND, observed)
-    print("PASS CQ21 lifecycle：文章／留言完整同值、過期、下架編修、接管／恢復與跨後端讀回", flush=True)
+    shared.trace_errors(backend, observed)
+    print(f"PASS {ticket.upper()} lifecycle：文章／留言完整同值、過期、下架編修、接管／恢復與跨後端讀回", flush=True)
 
 
 # 建立特殊原文時用 UTF-8 hex 精確定位，不猜最新 ID，也不把內容插入 SQL 字串。
-def create_text(actor, title, body):
-    shared.check(shared.expect(shared.request(BACKEND, "POST", "/api/articles",
+def create_text(actor, title, body, *, backend=BACKEND):
+    shared.check(shared.expect(shared.request(backend, "POST", "/api/articles",
                                              {"title": title, "body": body}, actor["token"]), 201) == {}, "新增文章 data 不符")
     identifier = shared.sql(f"SELECT id FROM articles WHERE author_id={actor['id']} "
                             f"AND encode(convert_to(title,'UTF8'),'hex')='{title.encode().hex()}'")
@@ -282,11 +286,11 @@ def create_text(actor, title, body):
 
 
 # 逐欄覆蓋建立／修改長度與型態，版本、ID、未知欄位及原始 JSON 另按共同錯誤順序驗證。
-def input_cases(nonce):
-    actor = shared.user(BACKEND, nonce + "i", "member")
+def input_cases(nonce, *, backend=BACKEND, ticket=TICKET):
+    actor = shared.user(backend, nonce + "i", "member")
     observed = []
-    article_id = create_article(BACKEND, actor, f"cq21-{nonce}-input")
-    comment_id = create_comment(BACKEND, actor, article_id, f"cq21-{nonce}-input-comment")
+    article_id = create_article(backend, actor, f"cq21-{nonce}-input")
+    comment_id = create_comment(backend, actor, article_id, f"cq21-{nonce}-input-comment")
     article_path, comment_path = f"/api/articles/{article_id}", f"/api/comments/{comment_id}"
     endpoints = (
         ("POST", "/api/articles", {"title": "新標題", "body": "新內文"}, {"title": 200, "body": 20000}),
@@ -301,53 +305,59 @@ def input_cases(nonce):
         for field in base:
             missing = dict(base)
             del missing[field]
-            rejected(nonce, observed, method, path, missing, actor["token"], 422, "E0001", {field: ["此欄位為必填"]})
+            rejected(nonce, observed, method, path, missing, actor["token"], 422, "E0001", {field: ["此欄位為必填"]},
+                     backend=backend, ticket=ticket)
             for value, message in ((None, "此欄位不可為 null"), ([], TYPE), ({}, TYPE), (True, TYPE), (1.5, TYPE)):
-                rejected(nonce, observed, method, path, {**base, field: value}, actor["token"], 422, "E0001", {field: [message]})
+                rejected(nonce, observed, method, path, {**base, field: value}, actor["token"], 422, "E0001", {field: [message]},
+                         backend=backend, ticket=ticket)
         for field, limit in limits.items():
             # 將契約固定空白集合全部放入同一字串；任一字元誤判非空白都會使此例失敗。
             whitespace = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
             for value in ("", whitespace, "😀" * (limit + 1), "前\0後"):
                 payload = {**base, field: value}
                 shared.check(json.loads(json.dumps(payload))[field] == value, "特殊內容序列化失真")
-                rejected(nonce, observed, method, path, payload, actor["token"], 422, "E0001", {field: [RANGE]})
+                rejected(nonce, observed, method, path, payload, actor["token"], 422, "E0001", {field: [RANGE]},
+                         backend=backend, ticket=ticket)
         if "version" in base:
             for value, message in (("1", TYPE), (1.0, TYPE), (0, RANGE), (-1, RANGE), (9007199254740992, RANGE)):
                 rejected(nonce, observed, method, path, {**base, "version": value}, actor["token"], 422, "E0001",
-                         {"version": [message]})
-            rejected(nonce, observed, method, path, {**base, "version": 9007199254740991}, actor["token"], 409, "E0201")
+                         {"version": [message]}, backend=backend, ticket=ticket)
+            rejected(nonce, observed, method, path, {**base, "version": 9007199254740991}, actor["token"], 409, "E0201",
+                     backend=backend, ticket=ticket)
         if "visibility" in base:
             rejected(nonce, observed, method, path, {**base, "visibility": "VISIBLE"}, actor["token"], 422, "E0001",
-                     {"visibility": [RANGE]})
+                     {"visibility": [RANGE]}, backend=backend, ticket=ticket)
         for field in ("id", "author", "created_backend", "created_at", "updated_at", "can_restore"):
             rejected(nonce, observed, method, path, {**base, field: "readonly"}, actor["token"], 422, "E0001",
-                     {field: ["不支援此欄位"]})
+                     {field: ["不支援此欄位"]}, backend=backend, ticket=ticket)
         rejected(nonce, observed, method, path, {**dict.fromkeys(base), "extra": 1}, actor["token"], 422, "E0001",
-                 {**{field: ["此欄位不可為 null"] for field in base}, "extra": ["不支援此欄位"]})
+                 {**{field: ["此欄位不可為 null"] for field in base}, "extra": ["不支援此欄位"]}, backend=backend, ticket=ticket)
         for raw, status, code, errors in ((b"{", 400, "E0005", None),
                                           (b"[]", 422, "E0001", {"_body": ["Request Body 必須為 JSON object"]}),
                                           (None, 422, "E0001", {"_body": ["Request Body 必須為 JSON object"]})):
-            rejected(nonce, observed, method, path, raw, actor["token"], status, code, errors)
+            rejected(nonce, observed, method, path, raw, actor["token"], status, code, errors,
+                     backend=backend, ticket=ticket)
         rejected(nonce, observed, method, path + "?unknown=1", base, actor["token"], 422, "E0001",
-                 {"unknown": ["不支援此欄位"]})
+                 {"unknown": ["不支援此欄位"]}, backend=backend, ticket=ticket)
 
     # 每個內容讀取入口都驗 GET Body／未知 Query；公開端點攜無效 token 也不能降為訪客。
     list_paths = ("/api/articles", "/api/me/articles", "/api/me/comments", article_path + "/comments")
     for path in (*list_paths, article_path, comment_path):
         query = "?page=1&per_page=20" if path in list_paths else ""
         rejected(nonce, observed, "GET", path + query, b"{}", actor["token"], 422, "E0001",
-                 {"_body": ["此 API 不接受 Request Body"]})
+                 {"_body": ["此 API 不接受 Request Body"]}, backend=backend, ticket=ticket)
         rejected(nonce, observed, "GET", path + query + ("&" if query else "?") + "unknown=1",
-                 None, actor["token"], 422, "E0001", {"unknown": ["不支援此欄位"]})
+                 None, actor["token"], 422, "E0001", {"unknown": ["不支援此欄位"]}, backend=backend, ticket=ticket)
     for path in ("/api/articles?page=bad&per_page=20", article_path + "?unknown=1",
                  article_path + "/comments?page=bad&per_page=20"):
-        rejected(nonce, observed, "GET", path, None, "invalid", 401, "E0002")
+        rejected(nonce, observed, "GET", path, None, "invalid", 401, "E0002", backend=backend, ticket=ticket)
     for path in list_paths:
         for suffix, fields in (("", {"page": ["此欄位為必填"], "per_page": ["此欄位為必填"]}),
                                ("?page=1&page=2&per_page=20", {"page": ["此參數不可重複"]}),
                                ("?page=1&per_page=101", {"per_page": [RANGE]}),
                                ("?page%5B%5D=1&per_page=20", {"page": [TYPE]})):
-            rejected(nonce, observed, "GET", path + suffix, None, actor["token"], 422, "E0001", fields)
+            rejected(nonce, observed, "GET", path + suffix, None, actor["token"], 422, "E0001", fields,
+                     backend=backend, ticket=ticket)
 
     # 最小與最大碼點都經建立及修改；非 BMP、組合字、HTML／Markdown 與 CRLF 保留原文。
     texts = (("😀", "😀", "😀"), ("😀" * 200, "😀" * 20000, "😀" * 2000),
@@ -355,51 +365,52 @@ def input_cases(nonce):
     for title, body, comment_body in texts:
         shared.check(json.loads(json.dumps([title, body, comment_body], ensure_ascii=False).encode())
                      == [title, body, comment_body], "建立／修改特殊原文序列化失真")
-        created = create_text(actor, title, body)
+        created = create_text(actor, title, body, backend=backend)
         path = f"/api/articles/{created}"
-        detail = shared.expect(shared.request(BACKEND, "GET", path), 200)
-        resource(detail, "articles", created, actor["id"], BACKEND)
+        detail = shared.expect(shared.request(backend, "GET", path), 200)
+        resource(detail, "articles", created, actor["id"], backend)
         shared.check(detail["title"] == title and detail["body"] == body, "建立文章原文失真")
-        shared.expect(shared.request(BACKEND, "PUT", article_path, {"title": title, "body": body,
+        shared.expect(shared.request(backend, "PUT", article_path, {"title": title, "body": body,
             "version": row("articles", article_id)["version"]}, actor["token"]), 200)
-        detail = shared.expect(shared.request(BACKEND, "GET", article_path), 200)
+        detail = shared.expect(shared.request(backend, "GET", article_path), 200)
         shared.check(detail["title"] == title and detail["body"] == body, "修改文章原文失真")
-        shared.expect(shared.request(BACKEND, "POST", path + "/comments", {"body": comment_body}, actor["token"]), 201)
+        shared.expect(shared.request(backend, "POST", path + "/comments", {"body": comment_body}, actor["token"]), 201)
         identifier = int(shared.sql(f"SELECT id FROM comments WHERE article_id={created} AND author_id={actor['id']}"))
-        detail = shared.expect(shared.request(BACKEND, "GET", f"/api/comments/{identifier}", token=actor["token"]), 200)
-        resource(detail, "comments", identifier, actor["id"], BACKEND)
+        detail = shared.expect(shared.request(backend, "GET", f"/api/comments/{identifier}", token=actor["token"]), 200)
+        resource(detail, "comments", identifier, actor["id"], backend)
         shared.check(detail["body"] == comment_body, "建立留言原文失真")
-        shared.expect(shared.request(BACKEND, "PUT", comment_path, {"body": comment_body,
+        shared.expect(shared.request(backend, "PUT", comment_path, {"body": comment_body,
             "version": row("comments", comment_id)["version"]}, actor["token"]), 200)
-        rejected(nonce, observed, "GET", comment_path, None, None, 401, "E0002")
-        shared.check(shared.expect(shared.request(BACKEND, "GET", comment_path, token=actor["token"]), 200)
+        rejected(nonce, observed, "GET", comment_path, None, None, 401, "E0002", backend=backend, ticket=ticket)
+        shared.check(shared.expect(shared.request(backend, "GET", comment_path, token=actor["token"]), 200)
                      ["body"] == comment_body, "修改留言原文失真")
 
     # Path 的前導零可用；JSON 版本字串不可用，合法不存在 ID 與非法格式須分清 404／422。
     for table, identifier in (("articles", article_id), ("comments", comment_id)):
         good = f"/api/{table}/{identifier}"
-        shared.check(shared.expect(shared.request(BACKEND, "GET", f"/api/{table}/000{identifier}", token=actor["token"]), 200)
-                     == shared.expect(shared.request(BACKEND, "GET", good, token=actor["token"]), 200), "前導零 ID 不相同")
+        shared.check(shared.expect(shared.request(backend, "GET", f"/api/{table}/000{identifier}", token=actor["token"]), 200)
+                     == shared.expect(shared.request(backend, "GET", good, token=actor["token"]), 200), "前導零 ID 不相同")
         for invalid in ("0", "-1", "+1", "1.0", "1e0", " 1", "１", "9007199254740992"):
             field = "article_id" if table == "articles" else "comment_id"
             rejected(nonce, observed, "GET", f"/api/{table}/{quote(invalid, safe='')}", None, actor["token"],
-                     422, "E0001", {field: [RANGE]})
-        rejected(nonce, observed, "GET", f"/api/{table}/9007199254740991", None, actor["token"], 404, "E0004")
-    shared.trace_errors(BACKEND, observed)
-    print("PASS CQ21 input：內容逐欄／型態／唯讀／NUL、Unicode上下限、原文、ID與version", flush=True)
+                     422, "E0001", {field: [RANGE]}, backend=backend, ticket=ticket)
+        rejected(nonce, observed, "GET", f"/api/{table}/9007199254740991", None, actor["token"], 404, "E0004",
+                 backend=backend, ticket=ticket)
+    shared.trace_errors(backend, observed)
+    print(f"PASS {ticket.upper()} input：內容逐欄／型態／唯讀／NUL、Unicode上下限、原文、ID與version", flush=True)
 
 
 # 只重用可參數化的父列平台；兩方向、兩操作、兩順序均須觀察雙 API 等待及提交後讀回。
-def race_cases(nonce):
-    for hide_backend, comment_backend in ((BACKEND, PEER), (PEER, BACKEND)):
+def race_cases(nonce, *, backend=BACKEND):
+    for hide_backend, comment_backend in ((backend, PEER), (PEER, backend)):
         for operation in ("create", "update"):
             for comment_first in (False, True):
                 parent_overlap(nonce, hide_backend, comment_backend, operation, comment_first)
 
 
 # 中斷後只終止本 nonce 的既有 holder；不清未知連線、trigger、資料或其他票 fixture。
-def cleanup_holders(nonce):
-    shared.check(re.fullmatch(extra.NONCES[TICKET], nonce) is not None, "holder marker 不符")
+def cleanup_holders(nonce, *, ticket=TICKET):
+    shared.check(re.fullmatch(extra.NONCES[ticket], nonce) is not None, "holder marker 不符")
     shared.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() "
                f"AND application_name LIKE 'cq10-{nonce}-%' AND pid<>pg_backend_pid()")
     shared.check(shared.sql("SELECT count(*) FROM pg_stat_activity "

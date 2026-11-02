@@ -364,15 +364,18 @@ def authenticate_write(request, connection):
     # 等待期間可能已登出或停用，取得相容列鎖後必須重新讀取，不沿用外層結果。
     connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
     connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+    # 呼叫端在同一連線交易繼續鎖內容；離開 context 才提交或因例外回滾並釋放所有列鎖。
     return authenticate(request, connection)[0]
 
 
 # 先比版本，即使提交同值也拒絕過期；實際變更才增加版本與時間。
 def save_content(connection, table, row, version, changes):
+    # table／changes 只來自下方兩種內容操作；呼叫端已鎖目標列並裁決讀取與操作權。
     if row["version"] != version:
         raise ApiError("E0201")
     if all(row[key] == value for key, value in changes.items()):
         return
+    # 不改作者、建立來源或建立時間；條件 UPDATE 再守住版本，實際變更只遞增一次。
     columns = list(changes)
     assignments = ", ".join(f"{column} = %s" for column in columns)
     result = connection.execute(
@@ -389,6 +392,7 @@ def visibility_changes(row, viewer, visibility):
     own = viewer["id"] == row["author_id"]
     if visibility == "visible" and row["visibility"] == "hidden" and viewer["role"] != "admin" and row["restore_control"] != "author":
         raise ApiError("E0003")
+    # 恢復會清除控制者；重下架保留既有管理限制，管理員自己的內容仍視為作者操作。
     control = None if visibility == "visible" else row["restore_control"] or "author"
     if visibility == "hidden" and viewer["role"] == "admin" and not own:
         control = "admin"
@@ -538,6 +542,7 @@ def articles(request):
             )
         return success(status=201)
     with connect() as connection:
+        # 明確 management 才啟用管理門禁；即使登入管理員，省略 scope 仍只列公開文章。
         management = management_requested(request)
         identity = authenticate(request, connection, required=management)
         viewer = identity[0] if identity else None
@@ -547,6 +552,7 @@ def articles(request):
         if scope == "management" and (viewer is None or viewer["role"] != "admin"):
             raise ApiError("E0003")
         where = "" if scope == "management" else "WHERE articles.visibility = 'visible'"
+        # 計數與列表共用範圍，超頁仍保留真實總數；作者 JOIN 避免逐筆讀取暱稱。
         from_sql = "FROM articles JOIN accounts ON accounts.id = articles.author_id " + where
         total = connection.execute("SELECT count(*) " + from_sql).fetchone()["count"]
         offset = (page - 1) * per_page
@@ -572,6 +578,7 @@ def article(request, article_id):
         no_get_body(request)
         no_query(request)
         content_id = url_integer(article_id, "article_id")
+        # 先驗登入與輸入才查資源；無權讀下架內容時和不存在使用同一 404。
         row = connection.execute(
             "SELECT " + ARTICLE_COLUMNS
             + " FROM articles JOIN accounts ON accounts.id = articles.author_id WHERE articles.id = %s",
@@ -594,6 +601,7 @@ def comments(request, article_id):
             no_query(request)
             content_id = url_integer(article_id, "article_id")
             body = json_body(request, ("body",), content_limits={"body": 2000})
+            # 帳號與 session 已鎖定；再鎖父文章，讓下架和新增依父列取得順序完成。
             parent = connection.execute(
                 "SELECT author_id, visibility FROM articles WHERE id = %s FOR UPDATE", (content_id,)
             ).fetchone()
@@ -615,6 +623,7 @@ def comments(request, article_id):
         viewer = identity[0] if identity else None
         page, per_page, _ = list_input(request)
         content_id = url_integer(article_id, "article_id")
+        # 父文預覽只授予父文章作者／管理員；留言作者身分本身不取得父文讀取權。
         parent = connection.execute(
             "SELECT author_id, visibility FROM articles WHERE id = %s", (content_id,)
         ).fetchone()
@@ -624,6 +633,7 @@ def comments(request, article_id):
         ):
             raise ApiError("E0004")
         where = "WHERE comments.article_id = %s"
+        # 父文作者的預覽仍排除個別下架留言；管理員才可在這個列表讀取全部。
         if viewer is None or viewer["role"] != "admin":
             where += " AND comments.visibility = 'visible'"
         from_sql = "FROM comments JOIN accounts ON accounts.id = comments.author_id " + where
@@ -657,6 +667,7 @@ def my_content(request, table, columns, kind):
     with connect() as connection:
         viewer, _ = authenticate(request, connection)
         page, per_page, _ = list_input(request)
+        # table／columns／kind 僅由兩個本人列表指定；不接受 Query 決定 SQL 識別字。
         total = connection.execute(f"SELECT count(*) FROM {table} WHERE author_id = %s", (viewer["id"],)).fetchone()["count"]
         offset = (page - 1) * per_page
         rows = [] if offset >= total else connection.execute(
@@ -683,6 +694,7 @@ def mutate_article(request, article_id, visibility):
         fields = ("visibility", "version") if visibility else ("title", "body", "version")
         limits = {"visibility": 0, "version": 0} if visibility else {"title": 200, "body": 20000, "version": 0}
         body = json_body(request, fields, content_limits=limits)
+        # 帳號→session→文章鎖在同一交易；先隱藏不可讀目標，再驗操作權，最後才驗版本。
         row = connection.execute("SELECT * FROM articles WHERE id = %s FOR UPDATE", (content_id,)).fetchone()
         if row is None or (row["visibility"] == "hidden" and viewer["role"] != "admin" and viewer["id"] != row["author_id"]):
             raise ApiError("E0004")
@@ -711,6 +723,7 @@ def comment(request, comment_id):
         ).fetchone()
         if row is None:
             raise ApiError("E0004")
+        # 作者可讀自己的下架留言，管理員可讀全部；其他人先依留言及父文隱藏性決定 404 或 403。
         if viewer["role"] != "admin" and viewer["id"] != row["author_id"]:
             if row["visibility"] == "hidden" or row["article_visibility"] == "hidden":
                 raise ApiError("E0004")
@@ -718,7 +731,7 @@ def comment(request, comment_id):
         return success(content_resource(row, viewer, "comment"))
 
 
-# 留言下架與恢復不因父文章已下架而禁止，但不能繞過父文章可見性。
+# 留言下架與恢復不因父文章下架而禁止；留言恢復也不會改變父文章的隱藏狀態。
 @api("PUT")
 def comment_visibility(request, comment_id):
     return mutate_comment(request, comment_id, visibility=True)
@@ -746,6 +759,7 @@ def mutate_comment(request, comment_id, visibility):
             and (row["visibility"] == "hidden" or parent["visibility"] == "hidden")
         ):
             raise ApiError("E0004")
+        # 作者或管理員可獨立管理留言狀態；改內文則必須是本人且父文仍公開。
         if (viewer["id"] != row["author_id"] and (not visibility or viewer["role"] != "admin")) or (
             not visibility and parent["visibility"] == "hidden"
         ):
@@ -848,6 +862,7 @@ def management_comments(request):
     with connect() as connection:
         viewer, _ = management_identity(request, connection)
         page, per_page, _ = list_input(request)
+        # 管理列表不套用父文或留言 visibility 篩選，計數與分頁使用相同完整範圍。
         from_sql = "FROM comments JOIN accounts ON accounts.id = comments.author_id"
         total = connection.execute("SELECT count(*) " + from_sql).fetchone()["count"]
         offset = (page - 1) * per_page

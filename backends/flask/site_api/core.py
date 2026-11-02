@@ -291,6 +291,7 @@ def account_resource(account):
 
 # 依可見性與恢復控制者計算布林值，不把內部欄位洩漏到 API。
 def content_resource(row, viewer, kind):
+    # 呼叫端先裁決可讀性；只輸出公開作者欄位及同形資源，不洩漏 restore_control。
     resource = {
         "id": row["id"],
         "author": {"id": row["author_id"], "nickname": row["nickname"]},
@@ -299,6 +300,7 @@ def content_resource(row, viewer, kind):
         "created_at": business_time(row["created_at"]),
         "updated_at": business_time(row["updated_at"]),
         "visibility": row["visibility"],
+        # 此旗標只描述該筆恢復資格；留言的父文章仍可下架，恢復不會使父文對外公開。
         "can_restore": row["visibility"] == "hidden" and viewer is not None and (
             viewer["role"] == "admin"
             or (viewer["id"] == row["author_id"] and row["restore_control"] == "author")
