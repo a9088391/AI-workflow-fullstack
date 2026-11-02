@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AspNetCore;
 
 /// <summary>管理員以共同交易與資源格式管理會員、留言及登入鎖定設定。</summary>
+/// <param name="jwt">注入共用簽章服務，管理權限仍依交易內的目前帳號角色判定。</param>
 [ApiController]
 public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(jwt)
 {
@@ -10,6 +11,7 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
     [HttpGet("/api/members")]
     public async Task<IActionResult> Members(CancellationToken cancellationToken)
     {
+        // 管理門禁先於 Query 與 Body 格式，合法搜尋才進入計數與分頁查詢。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         await AdminAsync(db, cancellationToken);
@@ -37,8 +39,9 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
 
     /// <summary>管理員只可讀一般會員；管理員 ID 與不存在的 ID 都隱藏為 404。</summary>
     [HttpGet("/api/members/{member_id}")]
-    public async Task<IActionResult> Member(string member_id, CancellationToken cancellationToken)
+    public async Task<IActionResult> Member(string? member_id, CancellationToken cancellationToken)
     {
+        // 先驗管理員再驗目標 ID，空白路徑同樣交共同流程，不由 MVC 搶先回原生錯誤。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         await AdminAsync(db, cancellationToken);
@@ -53,8 +56,9 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
 
     /// <summary>狀態寫入先驗權及輸入，再按 ID 鎖雙方帳號與 session 重驗；停用才撤銷舊登入。</summary>
     [HttpPut("/api/members/{member_id}/status")]
-    public async Task<IActionResult> MemberStatus(string member_id, CancellationToken cancellationToken)
+    public async Task<IActionResult> MemberStatus(string? member_id, CancellationToken cancellationToken)
     {
+        // 短交易只確認門禁並釋鎖；取得目標 ID 後，才依雙方帳號排序進入正式寫入交易。
         long adminId;
         await using (var preflight = await Database.OpenAsync(cancellationToken))
         {
@@ -74,6 +78,7 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
         await AdminAsync(db, cancellationToken);
         var target = await db.RowAsync("SELECT id, role, status FROM accounts WHERE id = @id", new() { ["id"] = id }, cancellationToken);
         if (target is null || String(target, "role") != "member") throw new ApiFailure("E0004");
+        // 同值不重做撤銷；只有實際停用才使全部舊登入失效，恢復不會復活已撤銷登入。
         if (String(target, "status") != body["status"])
         {
             await db.ExecuteAsync("UPDATE accounts SET status = @status WHERE id = @id", new() { ["id"] = id, ["status"] = body["status"] }, cancellationToken);
@@ -88,6 +93,7 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
     [HttpGet("/api/comments")]
     public async Task<IActionResult> Comments(CancellationToken cancellationToken)
     {
+        // 管理門禁與格式先完成，列表才可包含所有父文章與留言狀態。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AdminAsync(db, cancellationToken);
@@ -111,6 +117,7 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
     [HttpGet("/api/settings/login-lockout")]
     public async Task<IActionResult> LoginLockout(CancellationToken cancellationToken)
     {
+        // 只在管理身分與輸入通過後讀設定；缺少必要設定是認證設定異常。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         await AdminAsync(db, cancellationToken);
@@ -125,6 +132,7 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
     [HttpPut("/api/settings/login-lockout")]
     public async Task<IActionResult> UpdateLoginLockout(CancellationToken cancellationToken)
     {
+        // 先以短交易完成角色門禁再驗 Body，正式更新必須按設定→帳號→session 重新取鎖。
         await using (var preflight = await Database.OpenAsync(cancellationToken))
         {
             await preflight.BeginAsync(cancellationToken);
@@ -143,6 +151,7 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
             await db.RowsAsync("SELECT id FROM accounts ORDER BY id FOR UPDATE", cancellationToken: cancellationToken);
         }
         await AdminAsync(db, cancellationToken);
+        // 四欄一起更新；只有從開啟轉為關閉才清鎖與世代，數值變更不修改既有到期時間。
         if ((bool)(current["enabled"] ?? false) != next.Enabled || Convert.ToInt32(current["window_minutes"]) != next.WindowMinutes
             || Convert.ToInt32(current["failure_threshold"]) != next.FailureThreshold || Convert.ToInt32(current["lock_seconds"]) != next.LockSeconds)
         {

@@ -5,15 +5,18 @@ using Microsoft.AspNetCore.Mvc;
 namespace AspNetCore;
 
 /// <summary>共用身分鎖序、資源輸出與時間格式，避免各端點偏離核准契約。</summary>
+/// <param name="jwt">共用啟動時載入的簽章服務，讓各控制器使用同一後端金鑰。</param>
 public abstract class ApiControllerBase(JwtToken jwt) : ControllerBase
 {
     protected JwtToken Jwt { get; } = jwt;
 
+    /// <summary>保留本次交易驗證過的帳號及登入識別，供授權與目前登入撤銷共用。</summary>
     protected sealed record Identity(Dictionary<string, object?> Account, string Jti);
 
     /// <summary>可選登入只有完全缺少 Authorization 才視為訪客；有值但無效必須回 401。</summary>
     private protected async Task<Identity?> AuthenticateAsync(Database db, bool optional, CancellationToken cancellationToken)
     {
+        // 只有完全缺少標頭才允許訪客；先驗 Bearer 格式與簽章，才用可信識別查資料庫。
         if (!Request.Headers.TryGetValue("Authorization", out var header))
         {
             if (optional) return null;
@@ -28,6 +31,7 @@ public abstract class ApiControllerBase(JwtToken jwt) : ControllerBase
         var account = await db.RowAsync("SELECT * FROM accounts WHERE id = @id FOR UPDATE", new() { ["id"] = accountId }, cancellationToken);
         var session = await db.RowAsync("SELECT * FROM login_sessions WHERE jti = @jti FOR UPDATE", new() { ["jti"] = jti }, cancellationToken);
         var now = new DateTimeOffset(await db.NowAsync(cancellationToken)).ToUnixTimeSeconds();
+        // 等鎖後再驗時效及登入關聯，避免使用等待前的時間；身分可確認後，停用優先於撤銷。
         if (now < issued || now >= expires || account is null || session is null
             || Long(session, "account_id") != accountId || String(session, "backend_id") != "aspnet-core"
             || Unix(session, "issued_at") != issued || Unix(session, "expires_at") != expires) throw new ApiFailure("E0002");

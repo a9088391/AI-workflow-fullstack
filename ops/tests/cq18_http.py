@@ -28,6 +28,8 @@ ORIGIN = "http://localhost:8080"
 LOGIN = "/api/auth/login"
 SETTINGS = "/api/settings/login-lockout"
 RECOVERY = Path(".scratch/code-quality/cq18")
+RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19")}
+NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
@@ -45,13 +47,16 @@ def arguments():
 
 
 # 保留原始 bytes、Query 與 HEAD 空內容，避免客戶端替框架改寫測資。
-def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_headers=None):
+def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_headers=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離 HTTP 目標")
-    headers = {"Accept": "application/json", "Content-Type": "application/json", "Origin": origin}
+    shared.check(backend in ("laravel", "aspnet-core"), "未核准的額外 HTTP 後端")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if origin is not None:
+        headers["Origin"] = origin
     headers.update(extra_headers or {})
     if token is not None:
         headers["Authorization"] = "Bearer " + token
-    request = Request(shared.BASES[BACKEND] + path, data=body, headers=headers, method=method)
+    request = Request(shared.BASES[backend] + path, data=body, headers=headers, method=method)
     try:
         response = urlopen(request, timeout=15)
     except HTTPError as error:
@@ -93,9 +98,10 @@ def clean_boundary():
 
 
 # 恢復檔只准包含非秘密的四設定、既有會員鎖定欄位與唯一 marker，避免擴成任意 SQL 輸入。
-def validate_packet(packet):
+def validate_packet(packet, *, ticket="cq18"):
+    shared.check(ticket in RECOVERIES, "未核准的恢復 namespace")
     shared.check(set(packet) == {"nonce", "settings", "members", "account_times", "session_times", "restored"}, "恢復檔欄位不符")
-    shared.check(re.fullmatch(r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", packet["nonce"]) is not None, "恢復 marker 不符")
+    shared.check(re.fullmatch(NONCES[ticket], packet["nonce"]) is not None, "恢復 marker 不符")
     settings = packet["settings"]
     shared.check(set(settings) == {"enabled", "window_minutes", "failure_threshold", "lock_seconds"}
                  and type(settings["enabled"]) is bool, "恢復設定欄位不符")
@@ -142,13 +148,15 @@ def save_packet(packet, path):
 
 
 # 首次服務寫入前同步落盤 baseline；中斷後不需帳密或 JWT 也能精確恢復既有會員鎖定欄位。
-def capture_baseline(nonce):
+def capture_baseline(nonce, *, ticket="cq18"):
+    shared.check(ticket in RECOVERIES and re.fullmatch(NONCES[ticket], nonce) is not None, "恢復 marker 不符")
+    recovery = RECOVERIES[ticket]
     clean_boundary()
-    RECOVERY.mkdir(parents=True, exist_ok=True)
-    for path in RECOVERY.glob("recovery-cq18*.json"):
+    recovery.mkdir(parents=True, exist_ok=True)
+    for path in recovery.glob(f"recovery-{ticket}*.json"):
         old = json.loads(path.read_text(encoding="utf-8"))
-        validate_packet(old)
-        shared.check(old["restored"], "上次 CQ18 尚未恢復，先用 --restore 核對處理")
+        validate_packet(old, ticket=ticket)
+        shared.check(old["restored"], f"上次 {ticket.upper()} 尚未恢復，先用 --restore 核對處理")
     shared.check(shared.sql(f"SELECT count(*) FROM accounts WHERE email LIKE 't57-{nonce}%' ") == "0",
                  "本票 marker 已存在")
     packet = {
@@ -164,8 +172,8 @@ def capture_baseline(nonce):
         "session_times": [],
         "restored": False,
     }
-    validate_packet(packet)
-    path = RECOVERY / f"recovery-{nonce}.json"
+    validate_packet(packet, ticket=ticket)
+    path = recovery / f"recovery-{nonce}.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
         json.dump(packet, output, ensure_ascii=False)
@@ -187,8 +195,8 @@ def restore_sql(statement):
 
 
 # 以同一交易恢復四設定與所有 baseline 會員；只降本次 admin／撤銷本次 sessions，保留測資。
-def restore_baseline(packet, path):
-    validate_packet(packet)
+def restore_baseline(packet, path, *, ticket="cq18"):
+    validate_packet(packet, ticket=ticket)
     clean_boundary()
     nonce, settings = packet["nonce"], packet["settings"]
     members_json = json.dumps(packet["members"], separators=(",", ":")).replace("'", "''")
@@ -346,50 +354,63 @@ def regression_cases(nonce):
 
 
 # 原始入口錯誤、HEAD 與 CORS 各驗實際 HTTP，避免把空內容當成 JSON 或聲稱瀏覽器驗證。
-def entry_cases(nonce):
+def entry_cases(nonce, *, backend=BACKEND):
     observed = []
     for method, path, status, code in (("GET", "/api/cq18-missing-" + nonce, 404, "E0004"),
                                        ("DELETE", LOGIN, 405, "E0005")):
-        result = decoded(raw_request(method, path))
+        result = decoded(raw_request(method, path, backend=backend))
         shared.expect(result, status, code)
         shared.check(result[2].get("Access-Control-Allow-Origin") == ORIGIN, "錯誤入口缺 CORS")
+        if backend != BACKEND:
+            shared.check("retry-after" in result[2].get("Access-Control-Expose-Headers", "").lower().replace(" ", "").split(","),
+                         "錯誤入口未 expose Retry-After")
         observed.append((result[1]["log_id"], method, path, status))
-    actor = shared.user(BACKEND, nonce + "h", "member")
+    actor = shared.user(backend, nonce + "h", "member")
     before = state(actor["id"])
-    for token, status in ((None, 401), (actor["token"], 200)):
-        result = raw_request("HEAD", "/api/me", token=token)
+    head_cases = ((None, 401), (actor["token"], 200)) if backend == BACKEND else ((None, 405), (actor["token"], 405))
+    for token, status in head_cases:
+        result = raw_request("HEAD", "/api/me", token=token, backend=backend)
         shared.check(result[0] == status and result[1] == b""
                      and result[2].get_content_type() == "application/json", "HEAD 狀態／空內容不符")
     for origin in (ORIGIN, "http://untrusted.example.test"):
         result = raw_request("OPTIONS", LOGIN, origin=origin, extra_headers={
-            "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type"})
-        shared.check(result[0] == 204 and result[1] == b"" and {"GET", "POST", "PUT", "OPTIONS"} <= set(
-            result[2].get("Access-Control-Allow-Methods", "").replace(" ", "").split(",")) and
-            {"authorization", "content-type", "accept"} <= set(
-                result[2].get("Access-Control-Allow-Headers", "").lower().replace(" ", "").split(",")),
-            "OPTIONS 預檢狀態／允許方法／標頭不符")
-        for response in (result, raw_request("GET", "/api/me", token=actor["token"], origin=origin)):
+            "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type"}, backend=backend)
+        # Laravel 保留既有允許清單；.NET 拒絕非信任 Origin 時不必回傳任何允許標頭。
+        shared.check(result[0] == 204 and result[1] == b"", "OPTIONS 預檢狀態／空內容不符")
+        if backend != BACKEND and origin != ORIGIN:
+            shared.check(result[2].get("Access-Control-Allow-Origin") is None, "非信任 Origin 不得取得 CORS 許可")
+        else:
+            methods = {"GET", "POST", "PUT", "OPTIONS"} if backend == BACKEND else {"GET", "POST", "PUT"}
+            shared.check(methods <= set(
+                result[2].get("Access-Control-Allow-Methods", "").replace(" ", "").split(",")) and
+                {"authorization", "content-type", "accept"} <= set(
+                    result[2].get("Access-Control-Allow-Headers", "").lower().replace(" ", "").split(",")),
+                "OPTIONS 預檢狀態／允許方法／標頭不符")
+        for response in (result, raw_request("GET", "/api/me", token=actor["token"], origin=origin, backend=backend)):
             # 單一白名單可固定回 ORIGIN；不信任來源仍不得取得反射值、萬用值或其他來源的許可。
             shared.check(response[2].get("Access-Control-Allow-Origin") in ((ORIGIN,) if origin == ORIGIN else (None, ORIGIN)),
                          "CORS origin 允許範圍不符")
+            if backend != BACKEND and origin != ORIGIN:
+                shared.check(response[2].get("Access-Control-Allow-Origin") is None,
+                             "非信任 Origin 的實際請求不應取得 CORS 許可")
     shared.check(state(actor["id"]) == before, "HEAD／OPTIONS／CORS 查核留下副作用")
-    shared.trace_errors(BACKEND, observed)
+    shared.trace_errors(backend, observed)
     print("PASS CQ18 404／405 log_id、HEAD 空內容、OPTIONS／CORS HTTP", flush=True)
 
 
 # 唯一父文章區分作者預覽、管理員與留言作者例外，防止下架後誤開父文或遺失自己的留言。
-def hidden_parent_cases(nonce):
-    owner = shared.user(BACKEND, nonce + "p", "member")
-    other = shared.user(BACKEND, nonce + "p", "other")
-    admin = shared.user(BACKEND, nonce + "p", "admin")
-    article_id = create_article(BACKEND, owner, f"t57-{nonce}-parent")
+def hidden_parent_cases(nonce, *, backend=BACKEND):
+    owner = shared.user(backend, nonce + "p", "member")
+    other = shared.user(backend, nonce + "p", "other")
+    admin = shared.user(backend, nonce + "p", "admin")
+    article_id = create_article(backend, owner, f"t57-{nonce}-parent")
     path = f"/api/articles/{article_id}"
-    visible = create_comment(BACKEND, other, article_id, f"t57-{nonce}-visible")
-    hidden = create_comment(BACKEND, other, article_id, f"t57-{nonce}-hidden")
-    admin_comment = create_comment(BACKEND, admin, article_id, f"t57-{nonce}-admin")
-    shared.expect(shared.request(BACKEND, "PUT", f"/api/comments/{hidden}/visibility",
+    visible = create_comment(backend, other, article_id, f"t57-{nonce}-visible")
+    hidden = create_comment(backend, other, article_id, f"t57-{nonce}-hidden")
+    admin_comment = create_comment(backend, admin, article_id, f"t57-{nonce}-admin")
+    shared.expect(shared.request(backend, "PUT", f"/api/comments/{hidden}/visibility",
                                 {"visibility": "hidden", "version": 1}, other["token"]), 200)
-    shared.expect(shared.request(BACKEND, "PUT", path + "/visibility",
+    shared.expect(shared.request(backend, "PUT", path + "/visibility",
                                 {"visibility": "hidden", "version": 1}, owner["token"]), 200)
     parent_before = row("articles", article_id)
     fields = {"id", "body", "author", "article_id", "version", "created_backend",
@@ -397,20 +418,20 @@ def hidden_parent_cases(nonce):
 
     # 父文章作者預覽僅 visible；管理員可見全部，非父文作者仍無法讀父文與其列表。
     for actor, expected in ((owner, [admin_comment, visible]), (admin, [admin_comment, hidden, visible])):
-        data = shared.expect(shared.request(BACKEND, "GET", path + "/comments?page=1&per_page=100",
+        data = shared.expect(shared.request(backend, "GET", path + "/comments?page=1&per_page=100",
                                             token=actor["token"]), 200)
         shared.check([item["id"] for item in data["list"]] == expected and data["pagination"] == {
             "page": 1, "per_page": 100, "total": len(expected), "total_pages": 1}, "父文預覽留言範圍不符")
     for token in (None, other["token"]):
         for suffix in ("", "/comments?page=1&per_page=100"):
-            shared.expect(shared.request(BACKEND, "GET", path + suffix, token=token), 404, "E0004")
-    mine = shared.expect(shared.request(BACKEND, "GET", "/api/me/comments?page=1&per_page=100",
+            shared.expect(shared.request(backend, "GET", path + suffix, token=token), 404, "E0004")
+    mine = shared.expect(shared.request(backend, "GET", "/api/me/comments?page=1&per_page=100",
                                        token=other["token"]), 200)
     shared.check([item["id"] for item in mine["list"]] == [hidden, visible]
                  and mine["pagination"] == {"page": 1, "per_page": 100, "total": 2, "total_pages": 1},
                  "父文隱藏後我的 visible／hidden 留言集合不符")
     for item in mine["list"]:
-        detail = shared.expect(shared.request(BACKEND, "GET", f"/api/comments/{item['id']}", token=other["token"]), 200)
+        detail = shared.expect(shared.request(backend, "GET", f"/api/comments/{item['id']}", token=other["token"]), 200)
         shared.check(detail == item and set(detail) == fields and detail["article_id"] == article_id
                      and set(detail["author"]) == {"id", "nickname"}
                      and detail["visibility"] == ("hidden" if item["id"] == hidden else "visible"),
@@ -419,28 +440,28 @@ def hidden_parent_cases(nonce):
     # 可讀父文者仍不得新增；自己的留言也不得改內文，包括管理員自己留言，拒絕後整列不變。
     for actor, status, code in ((owner, 403, "E0003"), (admin, 403, "E0003"), (other, 404, "E0004")):
         before = state(actor["id"])
-        shared.expect(shared.request(BACKEND, "POST", path + "/comments", {"body": "下架不得新增"}, actor["token"]),
+        shared.expect(shared.request(backend, "POST", path + "/comments", {"body": "下架不得新增"}, actor["token"]),
                       status, code)
         shared.check(state(actor["id"]) == before, "下架父文新增留言留下部分寫入")
     for identifier, actor in ((visible, other), (hidden, other), (admin_comment, admin)):
         before = row("comments", identifier)
-        shared.expect(shared.request(BACKEND, "PUT", f"/api/comments/{identifier}",
+        shared.expect(shared.request(backend, "PUT", f"/api/comments/{identifier}",
             {"body": "下架不得修改", "version": before["version"]}, actor["token"]), 403, "E0003")
         shared.check(row("comments", identifier) == before, "下架父文修改留言留下部分寫入")
-    shared.expect(shared.request(BACKEND, "PUT", f"/api/comments/{hidden}/visibility",
+    shared.expect(shared.request(backend, "PUT", f"/api/comments/{hidden}/visibility",
         {"visibility": "visible", "version": 2}, other["token"]), 200)
     shared.check(row("comments", hidden)["visibility"] == "visible" and row("articles", article_id) == parent_before,
                  "合法恢復留言意外恢復父文章")
-    shared.expect(shared.request(BACKEND, "GET", path, token=other["token"]), 404, "E0004")
+    shared.expect(shared.request(backend, "GET", path, token=other["token"]), 404, "E0004")
     print("PASS CQ18 下架父文預覽／自己的兩種留言、禁止新增改文與獨立可見性恢復", flush=True)
 
 
 # 三會員與一管理員共用唯一搜尋 marker；同時間 fixture 精確證明 ID 降冪、分頁及 admin 排除。
-def member_list_cases(nonce, packet, recovery_path):
+def member_list_cases(nonce, packet, recovery_path, *, backend=BACKEND):
     marker = nonce + "list"
-    admin = shared.user(BACKEND, marker, "admin")
-    members = [shared.user(BACKEND, marker, kind) for kind in ("a", "b", "c")]
-    shared.expect(shared.request(BACKEND, "PUT", f"/api/members/{members[1]['id']}/status",
+    admin = shared.user(backend, marker, "admin")
+    members = [shared.user(backend, marker, kind) for kind in ("a", "b", "c")]
+    shared.expect(shared.request(backend, "PUT", f"/api/members/{members[1]['id']}/status",
                                 {"status": "disabled"}, admin["token"]), 200)
     identifiers = sorted((member["id"] for member in members), reverse=True)
     ids = ",".join(map(str, identifiers))
@@ -451,7 +472,7 @@ def member_list_cases(nonce, packet, recovery_path):
     try:
         shared.sql(f"UPDATE accounts SET created_at='2026-01-01 00:00:00+08' WHERE id IN ({ids})")
         for page, per_page in ((1, 1), (1, 2), (2, 2), (3, 2), (1, 100), (2, 100)):
-            data = shared.expect(shared.request(BACKEND, "GET",
+            data = shared.expect(shared.request(backend, "GET",
                 f"/api/members?page={page}&per_page={per_page}&filters%5Bkeyword%5D={marker}", token=admin["token"]), 200)
             expected = identifiers[(page - 1) * per_page:page * per_page]
             shared.check([item["id"] for item in data["list"]] == expected and data["pagination"] == {
@@ -474,14 +495,14 @@ def member_list_cases(nonce, packet, recovery_path):
 
 
 # 登入 claims 與 session 必須同為八小時；只解碼記憶體中的 JWT，不輸出憑證。
-def login_claims(login, account_id, role):
+def login_claims(login, account_id, role, *, backend=BACKEND):
     parts = login["access_token"].split(".")
     shared.check(len(parts) == 3, "JWT 區段數不符")
     header, claims = [json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))) for part in parts[:2]]
     shared.check(header == {"alg": "HS256", "typ": "JWT"}
                  and set(claims) == {"iss", "aud", "sub", "jti", "iat", "nbf", "exp"}
-                 and claims["iss"] == f"ai-workflow-fullstack:{BACKEND}"
-                 and claims["aud"] == f"ai-workflow-fullstack-api:{BACKEND}" and claims["sub"] == str(account_id)
+                 and claims["iss"] == f"ai-workflow-fullstack:{backend}"
+                 and claims["aud"] == f"ai-workflow-fullstack-api:{backend}" and claims["sub"] == str(account_id)
                  and all(type(claims[field]) is int for field in ("iat", "nbf", "exp"))
                  and claims["nbf"] == claims["iat"] and claims["exp"] - claims["iat"] == 28800,
                  "JWT header／claims／八小時期限不符")
@@ -496,14 +517,15 @@ def login_claims(login, account_id, role):
         "SELECT account_id||'|'||backend_id||'|'||extract(epoch FROM issued_at)::bigint||'|'||"
         "extract(epoch FROM expires_at)::bigint||'|'||(revoked_at IS NULL)::text "
         f"FROM login_sessions WHERE jti='{claims['jti']}'") ==
-        f"{account_id}|{BACKEND}|{claims['iat']}|{claims['exp']}|true", "JWT 與 session 身分／時間不符")
+        f"{account_id}|{backend}|{claims['iat']}|{claims['exp']}|true", "JWT 與 session 身分／時間不符")
     return claims
 
 
-# 僅在原 guard 通過後讀已核對的 Laravel key，簽署 fixture；key、JWT 不落盤或印出。
-def signed_token(claims, header=None):
+# 僅在原 guard 通過後讀對應後端已核對的 key，簽署 fixture；key、JWT 不落盤或印出。
+def signed_token(claims, header=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離金鑰")
-    key = base64.b64decode(Path(".local/keys/laravel.key").read_bytes().rstrip(b"\n"), validate=True)
+    shared.check(backend in ("laravel", "aspnet-core"), "未核准的簽署 fixture 後端")
+    key = base64.b64decode(Path(f".local/keys/{backend}.key").read_bytes().rstrip(b"\n"), validate=True)
     shared.check(len(key) == 32, "隔離金鑰長度不符")
     parts = [base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=")
              for value in (header or {"alg": "HS256", "typ": "JWT"}, claims)]
@@ -512,38 +534,39 @@ def signed_token(claims, header=None):
 
 
 # 兩次真登入驗證不續期與選擇性撤銷；錯誤 claims 及跨後端 token 拒絕也必須無副作用。
-def session_cases(nonce):
+def session_cases(nonce, *, backend=BACKEND):
+    peer = PEER if backend == BACKEND else shared.BACKENDS[(shared.BACKENDS.index(backend) + 1) % len(shared.BACKENDS)]
     for role in ("member", "admin"):
-        actor = shared.user(BACKEND, nonce + "s", role)
-        login = shared.expect(shared.request(BACKEND, "POST", LOGIN,
+        actor = shared.user(backend, nonce + "s", role)
+        login = shared.expect(shared.request(backend, "POST", LOGIN,
             {"email": actor["email"], "password": "Abcd1234"}, "stale"), 200)
-        claims = login_claims(login, actor["id"], role)
+        claims = login_claims(login, actor["id"], role, backend=backend)
         before = state(actor["id"])
-        shared.check(shared.expect(shared.request(BACKEND, "GET", "/api/me", token=login["access_token"]), 200)
+        shared.check(shared.expect(shared.request(backend, "GET", "/api/me", token=login["access_token"]), 200)
                      == login["user"] and state(actor["id"]) == before, "/me 續期或改變帳號／session")
         shared.check(login["access_token"] != actor["token"], "獨立登入重用 JWT")
-        shared.expect(shared.request(BACKEND, "POST", "/api/auth/logout", {}, actor["token"]), 200)
-        shared.expect(shared.request(BACKEND, "POST", "/api/auth/logout", {}, actor["token"]), 401, "E0002")
-        shared.expect(shared.request(BACKEND, "GET", "/api/me", token=actor["token"]), 401, "E0002")
-        shared.expect(shared.request(BACKEND, "GET", "/api/me", token=login["access_token"]), 200)
+        shared.expect(shared.request(backend, "POST", "/api/auth/logout", {}, actor["token"]), 200)
+        shared.expect(shared.request(backend, "POST", "/api/auth/logout", {}, actor["token"]), 401, "E0002")
+        shared.expect(shared.request(backend, "GET", "/api/me", token=actor["token"]), 401, "E0002")
+        shared.expect(shared.request(backend, "GET", "/api/me", token=login["access_token"]), 200)
         shared.check(shared.sql(f"SELECT count(*) FROM login_sessions WHERE account_id={actor['id']} "
                                 "AND revoked_at IS NOT NULL") == "1", "登出影響其他登入")
-        peer_token = shared.expect(shared.request(PEER, "POST", LOGIN,
+        peer_token = shared.expect(shared.request(peer, "POST", LOGIN,
             {"email": actor["email"], "password": "Abcd1234"}), 200)["access_token"]
         before = state(actor["id"])
         missing = dict(claims)
         del missing["sub"]
-        for token in (peer_token, signed_token(claims, {"alg": "none", "typ": "JWT"}), signed_token(missing),
-                      signed_token({**claims, "iat": str(claims["iat"])}),
-                      signed_token({**claims, "aud": f"ai-workflow-fullstack-api:{PEER}"})):
-            shared.expect(shared.request(BACKEND, "GET", "/api/me", token=token), 401, "E0002")
+        for token in (peer_token, signed_token(claims, {"alg": "none", "typ": "JWT"}, backend=backend), signed_token(missing, backend=backend),
+                      signed_token({**claims, "iat": str(claims["iat"])}, backend=backend),
+                      signed_token({**claims, "aud": f"ai-workflow-fullstack-api:{peer}"}, backend=backend)):
+            shared.expect(shared.request(backend, "GET", "/api/me", token=token), 401, "E0002")
         shared.check(state(actor["id"]) == before, "JWT 拒絕留下副作用")
     print("PASS CQ18 八小時 claims／session、/me 不續期、獨立登入撤銷與 JWT 拒絕", flush=True)
 
 
 # 只改新 fixture session 時間；以 DB 前後讀數包住真 HTTP，精確證明 nbf／exp 的前側與相等。
-def expiry_cases(nonce, packet, path):
-    actor = shared.user(BACKEND, nonce + "t", "member")
+def expiry_cases(nonce, packet, path, *, backend=BACKEND):
+    actor = shared.user(backend, nonce + "t", "member")
     claims = json.loads(base64.urlsafe_b64decode(actor["token"].split(".")[1] + "=="))
     jti = claims["jti"]
     shared.check(re.fullmatch(r"[A-Za-z0-9_-]{22}", jti) is not None, "時間 fixture jti 不符")
@@ -559,11 +582,11 @@ def expiry_cases(nonce, packet, path):
             changed = {**claims, "iat": issued, "nbf": issued, "exp": issued + 28800}
             shared.sql(f"UPDATE login_sessions SET issued_at=to_timestamp({issued}),expires_at=to_timestamp({issued + 28800}) "
                        f"WHERE jti='{jti}' AND account_id={actor['id']}")
-            token, before = signed_token(changed), state(actor["id"])
+            token, before = signed_token(changed, backend=backend), state(actor["id"])
             shared.check(int(shared.sql("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")) < target,
                          "JWT 前側 fixture 已越界")
             status = 401 if boundary == "nbf" else 200
-            shared.expect(shared.request(BACKEND, "GET", "/api/me", token=token), status,
+            shared.expect(shared.request(backend, "GET", "/api/me", token=token), status,
                           "E0002" if status == 401 else None)
             shared.check(int(shared.sql("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")) < target,
                          "JWT 前側 HTTP 已越界")
@@ -577,7 +600,7 @@ def expiry_cases(nonce, packet, path):
                 time.sleep(0.05)
             shared.check(now == target, "未命中精確 JWT 邊界秒")
             status = 200 if boundary == "nbf" else 401
-            shared.expect(shared.request(BACKEND, "GET", "/api/me", token=token), status,
+            shared.expect(shared.request(backend, "GET", "/api/me", token=token), status,
                           "E0002" if status == 401 else None)
             shared.check(int(shared.sql("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")) == target,
                          "HTTP 越過 JWT 邊界秒，不能聲稱涵蓋相等")
@@ -620,10 +643,10 @@ def wait_ready():
 
 
 # 真停專用 DB 後讀寫皆不得放行；finally 啟回並重跑 guard，再用同 token 驗證恢復與零部分寫入。
-def unavailable_cases(nonce):
-    actor = shared.user(BACKEND, nonce + "u", "member")
+def unavailable_cases(nonce, *, backend=BACKEND):
+    actor = shared.user(backend, nonce + "u", "member")
     before = state(actor["id"])
-    title = f"t57-{nonce}-laravel-unavailable"
+    title = f"t57-{nonce}-{backend}-unavailable"
     observed = []
     shared.container("db")
     try:
@@ -631,7 +654,7 @@ def unavailable_cases(nonce):
         for method, path, body in (("GET", "/api/me", None),
                                    ("POST", LOGIN, json.dumps({"email": actor["email"], "password": "Abcd1234"}).encode()),
                                    ("POST", "/api/articles", json.dumps({"title": title, "body": "不得部分寫入"}).encode())):
-            result = decoded(raw_request(method, path, body, actor["token"]))
+            result = decoded(raw_request(method, path, body, actor["token"], backend=backend))
             unavailable_error(result)
             observed.append((result[1]["log_id"], method, path, 500))
     finally:
@@ -639,23 +662,24 @@ def unavailable_cases(nonce):
         wait_ready()
     shared.check(state(actor["id"]) == before and shared.sql(
         f"SELECT count(*) FROM articles WHERE title='{title}'") == "0", "DB 不可用留下部分 session／內容寫入")
-    shared.check(shared.expect(shared.request(BACKEND, "GET", "/api/me", token=actor["token"]), 200)["id"] == actor["id"],
+    shared.check(shared.expect(shared.request(backend, "GET", "/api/me", token=actor["token"]), 200)["id"] == actor["id"],
                  "DB 恢復後同 token 無法繼續使用")
-    shared.trace_errors(BACKEND, observed)
+    shared.trace_errors(backend, observed)
     print("PASS CQ18 真 DB 不可用 500/E9999、讀寫拒絕與同 token 恢復", flush=True)
 
 
-# Laravel 建立的文章／留言仍由十二後端讀回，保留 created_backend 與內容差異的精確契約。
-def readback(records):
+# 指定後端建立的文章／留言仍由十二後端讀回，保留 created_backend 與內容差異的精確契約。
+def readback(records, *, backend=BACKEND):
     article_id, comment_id = records
     for reader in shared.BACKENDS:
         article = shared.expect(shared.request(reader, "GET", f"/api/articles/{article_id}"), 200)
         comments = shared.expect(shared.request(reader, "GET", f"/api/articles/{article_id}/comments?page=1&per_page=100"), 200)
         comment = next((item for item in comments["list"] if item["id"] == comment_id), None)
-        shared.check(article["created_backend"] == BACKEND and article["id"] == article_id
-                     and article["body"] == "更新後內文" and comment is not None and comment["created_backend"] == BACKEND
+        shared.check(article["created_backend"] == backend and article["id"] == article_id
+                     and article["body"] == "更新後內文" and comment is not None and comment["created_backend"] == backend
                      and comment["id"] == comment_id and comment["body"] == "更新後留言", "十二後端讀回來源／內容不符")
-    print("PASS CQ18 Laravel 建立資料由十二後端精確讀回", flush=True)
+    print("PASS CQ18 Laravel 建立資料由十二後端精確讀回" if backend == BACKEND
+          else "PASS CQ19 ASP.NET Core 建立資料由十二後端精確讀回", flush=True)
 
 
 # 保留原 shared guard 與全部必要案例；整體 PASS 只在 full suite 及 finally 恢復均完成後輸出。

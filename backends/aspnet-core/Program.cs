@@ -1,6 +1,7 @@
 using AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
+// 控制器自行按共同順序驗證原始輸入；保留 MVC 路由與預設安全機制。
 builder.Services.AddControllers();
 // 啟動時載入既存 ASP.NET 專屬金鑰，缺漏時立即失敗，避免運行中默默換金鑰。
 builder.Services.AddSingleton(new JwtToken("/run/secrets/aspnet-core-jwt.key"));
@@ -29,20 +30,23 @@ app.Use(async (context, next) =>
     }
     catch (ApiFailure failure)
     {
-        await ((Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Failure(context, failure)).ExecuteResultAsync(new Microsoft.AspNetCore.Mvc.ActionContext { HttpContext = context });
+        await ((Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Failure(context, failure))
+            .ExecuteResultAsync(new Microsoft.AspNetCore.Mvc.ActionContext { HttpContext = context });
     }
     catch (Exception exception)
     {
         // 未預期例外只對外給共同錯誤，內部日誌保留例外類型便於追查。
         app.Logger.LogError("API EX {LogId} {Exception}", logId, exception.GetType().FullName);
-        await ((Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Failure(context, new ApiFailure("E9999"))).ExecuteResultAsync(new Microsoft.AspNetCore.Mvc.ActionContext { HttpContext = context });
+        await ((Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Failure(context, new ApiFailure("E9999")))
+            .ExecuteResultAsync(new Microsoft.AspNetCore.Mvc.ActionContext { HttpContext = context });
     }
     // 路由結果的 404／405 仍需共用 envelope；已開始的業務回應不可覆寫。
     if ((context.Response.StatusCode is 404 or 405) && !context.Response.HasStarted)
     {
         var status = context.Response.StatusCode;
         var routeCode = status == 404 ? "E0004" : "E0005";
-        await ((Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Failure(context, new ApiFailure(routeCode, httpStatus: status))).ExecuteResultAsync(new Microsoft.AspNetCore.Mvc.ActionContext { HttpContext = context });
+        await ((Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Failure(context, new ApiFailure(routeCode, httpStatus: status)))
+            .ExecuteResultAsync(new Microsoft.AspNetCore.Mvc.ActionContext { HttpContext = context });
     }
     // 統一記錄錯誤代碼與 HTTP 狀態，避免各控制器漏記或印出敏感資料。
     if (context.Items.TryGetValue("error_code", out var code)) app.Logger.LogWarning("API EX {LogId} {Code}", logId, code);

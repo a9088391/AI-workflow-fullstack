@@ -68,8 +68,9 @@ public sealed class JwtToken
             if (jti is null) throw new ApiFailure("E0002");
             return (accountId, jti, issued, expires);
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
+            // 只涵蓋已驗簽 JSON 的讀取與 claims 判定；延遲字串解碼失敗同樣是無效憑證。
             throw new ApiFailure("E0002");
         }
     }
@@ -81,7 +82,7 @@ public sealed class JwtToken
     private static bool TryDecode(string text, out byte[] bytes)
     {
         bytes = [];
-        // 先限制 base64url 字母表，再往返編碼確認同一位元組只有一種文字表示。
+        // 逐字拒絕 base64url 字母表以外的字元，再往返編碼確認同一組 bytes 只有一種文字表示。
         if (text.Length == 0 || text.Any(c => !((c is >= 'A' and <= 'Z') || (c is >= 'a' and <= 'z') || (c is >= '0' and <= '9') || c is '-' or '_'))) return false;
         try
         {

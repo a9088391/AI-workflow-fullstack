@@ -20,11 +20,17 @@ Check(Rules.ValidContent("😀\r\n文", 4) && !Rules.ValidContent("😀\r\n文",
 Check(Rules.TryJsonVersion("9007199254740991", out var maxVersion) && maxVersion == 9007199254740991
     && !Rules.TryJsonVersion("0", out _) && !Rules.TryJsonVersion("1.0", out _)
     && !Rules.TryJsonVersion("1e0", out _) && !Rules.TryJsonVersion("9007199254740992", out _), "JSON version integer precision");
-// 從真正的 HTTP Body 解析，確認原文及 version 型態沒有被 model binding 寬鬆轉換。
+// 以 DefaultHttpContext 的 Request.Body 作輔助檢查；真正 HTTP／認證順序仍由隔離公開案例驗收。
 var content = await ParseContentAsync("{\"title\":\"😀\\r\\n文\",\"body\":\"原文\",\"version\":1}", ["title", "body", "version"]);
 Check(content.Text["title"] == "😀\r\n文" && content.Version == 1, "content JSON preservation");
 await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":\"1\"}", ["body", "version"], "version", "欄位型態不正確");
 await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":1.0}", ["body", "version"], "version", "欄位型態不正確");
+// 超過 runtime 整數容量仍是 JSON 整數，必須依共同契約歸為範圍錯誤。
+await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":9223372036854775808}", ["body", "version"], "version", "欄位格式或範圍不正確");
+foreach (var raw in new[] { "-9223372036854775809", "9007199254740992", "-0" })
+{
+    await ExpectContentFailureAsync("{\"body\":\"留言\",\"version\":" + raw + "}", ["body", "version"], "version", "欄位格式或範圍不正確");
+}
 await ExpectContentFailureAsync("{\"body\":null,\"version\":1}", ["body", "version"], "body", "此欄位不可為 null");
 // JSON object 的重複名稱由最後一筆決定；最後一筆仍須完整通過文字或版本驗證。
 var lastBody = await ParseContentAsync("{\"body\":null,\"body\":\"最後\"}", ["body"]);
@@ -41,12 +47,30 @@ var memberQuery = MemberQuery("?page=2&per_page=1&filters%5Bkeyword%5D=%20A%25_%
 Check(memberQuery.Page == 2 && memberQuery.PerPage == 1 && memberQuery.Filter == "A%_\\陳", "member keyword literal preservation");
 await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=a&filters%5Bkeyword%5D=b", "filters.keyword", "此參數不可重複");
 await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D%5B0%5D=a", "filters.keyword", "欄位型態不正確");
+// 僅保留 ASP.NET 搜尋 NUL 的歷史行為檢查；共同政策尚未定案，不能據此宣稱跨後端一致。
 await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=%00", "filters.keyword", "欄位格式或範圍不正確");
 // 無效 UTF-8 位元組不可搜尋；合法字面百分號序列及 U+FFFD 仍保留原文。
 await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=%FF", "filters.keyword", "欄位格式或範圍不正確");
 Check(MemberQuery("?page=1&per_page=20&filters%5Bkeyword%5D=%25FF").Filter == "%FF", "literal percent keyword remains valid");
 Check(MemberQuery("?page=1&per_page=20&filters%5Bkeyword%5D=%EF%BF%BD").Filter == "\uFFFD", "valid replacement character keyword remains valid");
 await ExpectQueryFailureAsync("?page=1&per_page=20&%FF=x", "%FF", "不支援此欄位");
+// 無效 bytes 與字面百分號名稱只有顯示標籤相同，不可因此當成重複參數。
+await ExpectQueryFailureAsync("?page=1&per_page=20&%FF=x&%25FF=y", "%FF", "不支援此欄位");
+// 兩個公開解析入口共用 bytes 身分規則，真重複的優先性也不能受輸入順序影響。
+foreach (var (query, errors) in new (string, Dictionary<string, string[]>)[]
+{
+    ("%25FF=x&%FF=y", new() { ["%FF"] = ["不支援此欄位"] }),
+    ("%FF=x&%ff=y", new() { ["%FF"] = ["此參數不可重複"] }),
+    ("%FF=x&%FF=y&%25FF=z", new() { ["%FF"] = ["此參數不可重複"] }),
+    ("%25FF=x&%FF=y&%25FF=z", new() { ["%FF"] = ["此參數不可重複"] }),
+    ("%ff=x&%25ff=y", new() { ["%FF"] = ["不支援此欄位"], ["%ff"] = ["不支援此欄位"] }),
+    ("page%5B%FF%5D=x", new() { ["page%5B%FF%5D"] = ["不支援此欄位"] }),
+    ("unexpected=x&%75nexpected=y", new() { ["unexpected"] = ["此參數不可重複"] })
+})
+{
+    ExpectQueryErrors("?" + query, errors, false);
+    ExpectQueryErrors("?page=1&per_page=20&" + query, errors, true);
+}
 await ExpectQueryFailureAsync("?page=1&per_page=20&filters%5Bkeyword%5D=" + new string('x', 255), "filters.keyword", "欄位格式或範圍不正確");
 var status = await ParseContentAsync("{\"status\":\"active\",\"status\":\"disabled\"}", ["status"]);
 Check(status.Text["status"] == "disabled", "member status final duplicate key");
@@ -54,12 +78,59 @@ await ExpectContentFailureAsync("{\"status\":\"blocked\"}", ["status"], "status"
 var settings = await ParseSettingsAsync("{\"enabled\":true,\"enabled\":false,\"window_minutes\":5,\"failure_threshold\":5,\"lock_seconds\":300}");
 Check(!settings.Enabled && settings.WindowMinutes == 5 && settings.FailureThreshold == 5 && settings.LockSeconds == 300, "settings final duplicate key and exact fields");
 await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":1.0,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位型態不正確");
-// PHP 的 64-bit JSON 整數即使超過 Int32，仍屬範圍錯誤；超過 Int64 才是型態錯誤。
+// 整數超過 Int32 或 Int64 都是範圍錯誤，公開型態不依各 runtime 的數字容量改變。
 await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":2147483648,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位格式或範圍不正確");
-await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":9223372036854775808,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位型態不正確");
+await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":9223372036854775808,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位格式或範圍不正確");
 await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":0,\"failure_threshold\":5,\"lock_seconds\":300}", "window_minutes", "欄位格式或範圍不正確");
 await ExpectSettingsFailureAsync("{\"enabled\":true,\"window_minutes\":5,\"failure_threshold\":5,\"lock_seconds\":300,\"extra\":1}", "extra", "不支援此欄位");
 await ExpectSettingsFailureAsync("{\"enabled\":null,\"window_minutes\":5,\"failure_threshold\":5,\"lock_seconds\":300}", "enabled", "此欄位不可為 null");
+// 三個設定數字都保留 lexical type／range 差異，不只檢查代表欄位。
+foreach (var field in new[] { "window_minutes", "failure_threshold", "lock_seconds" })
+{
+    foreach (var (raw, message) in new[]
+    {
+        ("9223372036854775808", "欄位格式或範圍不正確"),
+        ("-9223372036854775809", "欄位格式或範圍不正確"),
+        ("1e0", "欄位型態不正確")
+    })
+    {
+        var json = "{\"enabled\":true,\"window_minutes\":" + (field == "window_minutes" ? raw : "5")
+            + ",\"failure_threshold\":" + (field == "failure_threshold" ? raw : "5")
+            + ",\"lock_seconds\":" + (field == "lock_seconds" ? raw : "300") + "}";
+        await ExpectSettingsFailureAsync(json, field, message);
+    }
+}
+// 巨大整數不能搶掉其他欄位的 null 錯誤；比對完整明細，避免只回其中一欄也通過。
+await ExpectFailureAsync(async () => { await ParseContentAsync("{\"body\":null,\"version\":9223372036854775808}", ["body", "version"]); },
+    "E0001", new() { ["body"] = ["此欄位不可為 null"], ["version"] = ["欄位格式或範圍不正確"] });
+// 設定同樣逐欄聚合，不能因 enabled 為 null 就停止檢查其餘三個數字。
+await ExpectFailureAsync(async () => { await ParseSettingsAsync("{\"enabled\":null,\"window_minutes\":9223372036854775808,\"failure_threshold\":null,\"lock_seconds\":0}"); },
+    "E0001", new()
+    {
+        ["enabled"] = ["此欄位不可為 null"],
+        ["window_minutes"] = ["欄位格式或範圍不正確"],
+        ["failure_threshold"] = ["此欄位不可為 null"],
+        ["lock_seconds"] = ["欄位格式或範圍不正確"]
+    });
+
+// 完整解碼 JSON 後才驗業務欄位，孤立 surrogate 不可被誤報為系統或欄位錯誤。
+await ExpectFailureAsync(async () => { await ParseContentAsync("{\"body\":\"\\ud800\"}", ["body"]); }, "E0005");
+foreach (var json in new[]
+{
+    "{\"\\udfff\":1}", "{\"body\":\"ok\",\"extra\":{\"value\":\"\\ud800\"}}",
+    "{\"body\":\"ok\",\"extra\":[\"\\udfff\"]}", "{\"body\":\"\\ud800\",\"body\":\"ok\"}",
+    "\"\\ud800\"", "[\"\\udfff\"]"
+})
+{
+    // 帳密 parser 也須先解碼未知、巢狀及重複鍵的每個值，才判欄位錯誤。
+    await ExpectFailureAsync(async () => { await ParseAccountAsync(json); }, "E0005");
+    // 內容 parser 不可因採最後同名鍵就忽略較早的解碼錯誤。
+    await ExpectFailureAsync(async () => { await ParseContentAsync(json, ["body"]); }, "E0005");
+    // 設定 parser 的獨立入口須有相同的完整 JSON 解碼結果。
+    await ExpectFailureAsync(async () => { await ParseSettingsAsync(json); }, "E0005");
+}
+var paired = await ParseContentAsync("{\"body\":\"\\ud83d\\ude00\"}", ["body"]);
+Check(paired.Text["body"] == "😀", "valid surrogate pair is preserved");
 
 // 驗證有效 JWT 的固定八小時、跨後端金鑰隔離與到期邊界。
 var keyFile = Path.GetTempFileName();
@@ -77,17 +148,40 @@ try
     ExpectFailure(() => jwt.Verify(token, issued + 28800), "E0002");
     // 簽章位元組被改動時，驗證不得接受原 claims。
     ExpectFailure(() => jwt.Verify(token + "x", issued), "E0002");
-    var wrongAlgorithm = SignedToken("{\"alg\":\"none\",\"typ\":\"JWT\"}", "{\"iss\":\"ai-workflow-fullstack:aspnet-core\",\"aud\":\"ai-workflow-fullstack-api:aspnet-core\",\"sub\":\"42\",\"jti\":\"" + jti + "\",\"iat\":" + issued + ",\"nbf\":" + issued + ",\"exp\":" + (issued + 28800) + "}", firstKey);
+    var validPayload = "{\"iss\":\"ai-workflow-fullstack:aspnet-core\",\"aud\":\"ai-workflow-fullstack-api:aspnet-core\",\"sub\":\"42\",\"jti\":\"" + jti
+        + "\",\"iat\":" + issued + ",\"nbf\":" + issued + ",\"exp\":" + (issued + 28800) + "}";
+    var wrongAlgorithm = SignedToken("{\"alg\":\"none\",\"typ\":\"JWT\"}", validPayload, firstKey);
     // 即使測試金鑰重新簽署，非 HS256 header 仍不得通過。
     ExpectFailure(() => jwt.Verify(wrongAlgorithm, issued), "E0002");
-    var missingClaim = SignedToken("{\"alg\":\"HS256\",\"typ\":\"JWT\"}", "{\"iss\":\"ai-workflow-fullstack:aspnet-core\",\"aud\":\"ai-workflow-fullstack-api:aspnet-core\",\"sub\":\"42\",\"jti\":\"" + jti + "\",\"iat\":" + issued + ",\"nbf\":" + issued + "}", firstKey);
+    var missingClaim = SignedToken("{\"alg\":\"HS256\",\"typ\":\"JWT\"}",
+        "{\"iss\":\"ai-workflow-fullstack:aspnet-core\",\"aud\":\"ai-workflow-fullstack-api:aspnet-core\",\"sub\":\"42\",\"jti\":\"" + jti
+        + "\",\"iat\":" + issued + ",\"nbf\":" + issued + "}", firstKey);
     // 缺少必要時間 claim 時不得補預設值接受。
     ExpectFailure(() => jwt.Verify(missingClaim, issued), "E0002");
+    var malformedClaim = SignedToken("{\"alg\":\"HS256\",\"typ\":\"JWT\"}",
+        "{\"iss\":\"ai-workflow-fullstack:aspnet-core\",\"aud\":\"ai-workflow-fullstack-api:aspnet-core\",\"sub\":\"\\ud800\",\"jti\":\"" + jti
+        + "\",\"iat\":" + issued + ",\"nbf\":" + issued + ",\"exp\":" + (issued + 28800) + "}", firstKey);
+    // 已驗簽仍須拒絕不能解碼的必要 claim，不能讓 JSON 例外變成系統錯誤。
+    ExpectFailure(() => jwt.Verify(malformedClaim, issued), "E0002");
+    foreach (var payload in new[]
+    {
+        validPayload.Replace("ai-workflow-fullstack:aspnet-core", "\\udfff"),
+        validPayload.Replace(jti, "\\ud800"),
+        validPayload.Replace("\"sub\":", "\"\\ud800\":")
+    })
+    {
+        var malformed = SignedToken("{\"alg\":\"HS256\",\"typ\":\"JWT\"}", payload, firstKey);
+        // 必要文字 claim 或名稱的解碼失敗都應拒絕為無效 JWT，不可向外拋原生例外。
+        ExpectFailure(() => jwt.Verify(malformed, issued), "E0002");
+    }
     await File.WriteAllTextAsync(keyFile, Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)) + "\n");
     // 換成本後端另一把金鑰後，舊憑證應立即無效。
     ExpectFailure(() => new JwtToken(keyFile).Verify(token, issued), "E0002");
 }
-finally { File.Delete(keyFile); }
+finally
+{
+    File.Delete(keyFile);
+}
 Console.WriteLine("ASP.NET contract checks passed");
 
 /// <summary>在最小 console harness 中保留失敗出口，避免邏輯退化仍回零。</summary>
@@ -99,17 +193,41 @@ static void Check(bool condition, string name)
 /// <summary>驗證安全路徑拒絕而非只確認方法回傳值。</summary>
 static void ExpectFailure(Action action, string code)
 {
-    try { action(); }
-    catch (ApiFailure failure) when (failure.Code == code) { return; }
+    try
+    {
+        action();
+    }
+    catch (ApiFailure failure) when (failure.Code == code)
+    {
+        return;
+    }
     throw new Exception("Expected " + code);
 }
 
-/// <summary>用真正完成的非同步結果確認損壞雜湊不落入一般錯密碼路徑。</summary>
-static async Task ExpectFailureAsync(Func<Task> action, string code)
+/// <summary>等待完整非同步結果並核對共同錯誤，必要時比對全部欄位以防驗證漏報。</summary>
+static async Task ExpectFailureAsync(Func<Task> action, string code, Dictionary<string, string[]>? errors = null)
 {
-    try { await action(); }
-    catch (ApiFailure failure) when (failure.Code == code) { return; }
+    try
+    {
+        await action();
+    }
+    catch (ApiFailure failure) when (failure.Code == code)
+    {
+        if (errors is not null) CheckErrors(failure, errors);
+        return;
+    }
     throw new Exception("Expected " + code);
+}
+
+/// <summary>比對完整錯誤集合與文案，欄位順序不影響結果，但多報或漏報都必須失敗。</summary>
+static void CheckErrors(ApiFailure failure, Dictionary<string, string[]> expected)
+{
+    if (failure.Errors is not { } actual) throw new Exception("Expected validation errors");
+    Check(actual.Count == expected.Count, "validation error field count");
+    foreach (var (field, messages) in expected)
+    {
+        Check(actual.TryGetValue(field, out var found) && found.SequenceEqual(messages), "validation error " + field);
+    }
 }
 
 /// <summary>以測試金鑰簽自訂 claims，驗證固定 header 與必填欄位確實由 verifier 拒絕。</summary>
@@ -119,20 +237,37 @@ static string SignedToken(string header, string payload, byte[] key)
     return input + "." + JwtToken.Encode(System.Security.Cryptography.HMACSHA256.HashData(key, System.Text.Encoding.ASCII.GetBytes(input)));
 }
 
-/// <summary>以最小真實 HttpRequest 測試內容解析，不依賴資料庫或 MVC model binding。</summary>
-static Task<(Dictionary<string, string> Text, long Version)> ParseContentAsync(string json, string[] fields)
+/// <summary>以 DefaultHttpContext 測試內容解析並釋放 Body stream，不冒充真實 HTTP／DB 驗收。</summary>
+static async Task<(Dictionary<string, string> Text, long Version)> ParseContentAsync(string json, string[] fields)
 {
     var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
     context.Request.ContentType = "application/json";
-    context.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
-    return ApiInput.ContentBodyAsync(context.Request, fields, CancellationToken.None);
+    using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+    context.Request.Body = stream;
+    return await ApiInput.ContentBodyAsync(context.Request, fields, CancellationToken.None);
+}
+
+/// <summary>直接檢查帳密 parser 的 JSON 解碼，不需要帳號或資料庫即可重現解析錯誤。</summary>
+static async Task<Dictionary<string, string>> ParseAccountAsync(string json)
+{
+    var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+    context.Request.ContentType = "application/json";
+    using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+    context.Request.Body = stream;
+    return await ApiInput.BodyAsync(context.Request, ["email", "password", "nickname"], false, CancellationToken.None);
 }
 
 /// <summary>逐字比對固定驗證明細，避免錯誤欄位或文案在跨後端漂移。</summary>
 static async Task ExpectContentFailureAsync(string json, string[] fields, string field, string message)
 {
-    try { await ParseContentAsync(json, fields); }
-    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return; }
+    try
+    {
+        await ParseContentAsync(json, fields);
+    }
+    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message]))
+    {
+        return;
+    }
     throw new Exception("Expected content error " + field + ": " + message);
 }
 
@@ -147,24 +282,55 @@ static (long Page, int PerPage, string? Filter) MemberQuery(string query)
 /// <summary>逐字比對會員 Query 的第一項欄位錯誤。</summary>
 static Task ExpectQueryFailureAsync(string query, string field, string message)
 {
-    try { MemberQuery(query); }
-    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return Task.CompletedTask; }
+    try
+    {
+        MemberQuery(query);
+    }
+    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message]))
+    {
+        return Task.CompletedTask;
+    }
     throw new Exception("Expected member query error " + field + ": " + message);
 }
 
+/// <summary>兩種 Query 入口都比較完整錯誤集合，避免標籤撞名或重複優先性只在單一入口正確。</summary>
+static void ExpectQueryErrors(string query, Dictionary<string, string[]> errors, bool list)
+{
+    var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+    context.Request.QueryString = new Microsoft.AspNetCore.Http.QueryString(query);
+    try
+    {
+        if (list) ApiInput.ListQuery(context.Request, false, true);
+        else ApiInput.NoQuery(context.Request);
+    }
+    catch (ApiFailure failure) when (failure.Code == "E0001")
+    {
+        CheckErrors(failure, errors);
+        return;
+    }
+    throw new Exception("Expected query validation errors");
+}
+
 /// <summary>直接餵原始 JSON Body，確認設定型態未被 MVC model binding 轉換。</summary>
-static Task<(bool Enabled, int WindowMinutes, int FailureThreshold, int LockSeconds)> ParseSettingsAsync(string json)
+static async Task<(bool Enabled, int WindowMinutes, int FailureThreshold, int LockSeconds)> ParseSettingsAsync(string json)
 {
     var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
     context.Request.ContentType = "application/json";
-    context.Request.Body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
-    return ApiInput.SettingsBodyAsync(context.Request, CancellationToken.None);
+    using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));
+    context.Request.Body = stream;
+    return await ApiInput.SettingsBodyAsync(context.Request, CancellationToken.None);
 }
 
 /// <summary>逐字比對設定 Body 的固定欄位錯誤，涵蓋 null、型態與未知欄位。</summary>
 static async Task ExpectSettingsFailureAsync(string json, string field, string message)
 {
-    try { await ParseSettingsAsync(json); }
-    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message])) { return; }
+    try
+    {
+        await ParseSettingsAsync(json);
+    }
+    catch (ApiFailure failure) when (failure.Code == "E0001" && failure.Errors?.TryGetValue(field, out var messages) == true && messages.SequenceEqual([message]))
+    {
+        return;
+    }
     throw new Exception("Expected settings error " + field + ": " + message);
 }

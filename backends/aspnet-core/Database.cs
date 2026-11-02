@@ -8,7 +8,7 @@ internal sealed class Database : IAsyncDisposable
     private readonly NpgsqlConnection connection;
     private NpgsqlTransaction? transaction;
 
-    /// <summary>只從本機設定組合資料庫連線，不將憑證放在程式或日誌。</summary>
+    /// <summary>接管已開啟的請求連線，讓同次交易與查詢共用並由此物件負責釋放。</summary>
     private Database(NpgsqlConnection connection) => this.connection = connection;
 
     /// <summary>每個請求使用獨立連線並固定台北 session 時區，供跨後端時間一致性查核。</summary>
@@ -49,6 +49,7 @@ internal sealed class Database : IAsyncDisposable
         await using var command = Command(sql, parameters);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var rows = new List<Dictionary<string, object?>>();
+        // 逐列保留資料庫原生型態，只將 DBNull 轉 null，避免自行轉字串而改變輸出與比較。
         while (await reader.ReadAsync(cancellationToken))
         {
             var row = new Dictionary<string, object?>(StringComparer.Ordinal);

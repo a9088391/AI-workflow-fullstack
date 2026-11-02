@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AspNetCore;
 
 /// <summary>作者內容操作共用交易內身分、父文章及內容列鎖，維持跨後端一致的可見性與版本規則。</summary>
+/// <param name="jwt">共用固定簽章服務，寫入仍須在交易內重驗帳號與登入紀錄。</param>
 [ApiController]
 public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
 {
@@ -10,6 +11,7 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
     [HttpPost("/api/articles")]
     public async Task<IActionResult> CreateArticle(CancellationToken cancellationToken)
     {
+        // 先在交易內固定身分，再驗寫入欄位；用戶端不能指定作者、版本或建立來源。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, false, cancellationToken) ?? throw new ApiFailure("E0002");
@@ -33,16 +35,17 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
 
     /// <summary>只讓作者修改文章內文；隱藏文章先依可讀性裁決，再檢查操作權與版本。</summary>
     [HttpPut("/api/articles/{article_id}")]
-    public Task<IActionResult> UpdateArticle(string article_id, CancellationToken cancellationToken) => MutateArticleAsync(article_id, false, cancellationToken);
+    public Task<IActionResult> UpdateArticle(string? article_id, CancellationToken cancellationToken) => MutateArticleAsync(article_id, false, cancellationToken);
 
     /// <summary>作者或管理員按恢復控制權變更狀態；父文章列鎖同時阻止留言競爭寫入。</summary>
     [HttpPut("/api/articles/{article_id}/visibility")]
-    public Task<IActionResult> ArticleVisibility(string article_id, CancellationToken cancellationToken) => MutateArticleAsync(article_id, true, cancellationToken);
+    public Task<IActionResult> ArticleVisibility(string? article_id, CancellationToken cancellationToken) => MutateArticleAsync(article_id, true, cancellationToken);
 
     /// <summary>鎖住父文章直到留言提交，防止與父文章下架交錯產生違規留言。</summary>
     [HttpPost("/api/articles/{article_id}/comments")]
-    public async Task<IActionResult> CreateComment(string article_id, CancellationToken cancellationToken)
+    public async Task<IActionResult> CreateComment(string? article_id, CancellationToken cancellationToken)
     {
+        // 認證先於路徑及 Body，格式合法後才鎖父文章，不向無權者透露隱藏目標。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, false, cancellationToken) ?? throw new ApiFailure("E0002");
@@ -62,8 +65,9 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
 
     /// <summary>作者與管理員可獨立讀取留言；其他會員先按父子可見性回 404 或 403。</summary>
     [HttpGet("/api/comments/{comment_id}")]
-    public async Task<IActionResult> CommentDetail(string comment_id, CancellationToken cancellationToken)
+    public async Task<IActionResult> CommentDetail(string? comment_id, CancellationToken cancellationToken)
     {
+        // 本端點須登入；空白路徑也先驗權，再交共同 ID 驗證，避免 MVC 自動回原生 400。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, false, cancellationToken) ?? throw new ApiFailure("E0002");
@@ -74,18 +78,18 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
         var comment = await db.RowAsync(CommentSelect + " WHERE comments.id = @id", new() { ["id"] = id }, cancellationToken);
         var article = comment is null ? null : await db.RowAsync("SELECT id, visibility FROM articles WHERE id = @id", new() { ["id"] = Long(comment, "article_id") }, cancellationToken);
         comment = CheckCommentReadable(comment, article, viewer);
-        if (Long(comment!, "author_id") != Long(viewer.Account, "id") && String(viewer.Account, "role") != "admin") throw new ApiFailure("E0003");
+        if (Long(comment, "author_id") != Long(viewer.Account, "id") && String(viewer.Account, "role") != "admin") throw new ApiFailure("E0003");
         await db.CommitAsync(cancellationToken);
         return ApiEnvelope.Success(CommentResource(comment, viewer));
     }
 
     /// <summary>修改自己的留言時鎖父文章與留言，父文章下架後即拒絕內文寫入。</summary>
     [HttpPut("/api/comments/{comment_id}")]
-    public Task<IActionResult> UpdateComment(string comment_id, CancellationToken cancellationToken) => MutateCommentAsync(comment_id, false, cancellationToken);
+    public Task<IActionResult> UpdateComment(string? comment_id, CancellationToken cancellationToken) => MutateCommentAsync(comment_id, false, cancellationToken);
 
     /// <summary>下架或恢復留言時仍鎖父文章；父下架只影響對外可見性，不阻止合法狀態操作。</summary>
     [HttpPut("/api/comments/{comment_id}/visibility")]
-    public Task<IActionResult> CommentVisibility(string comment_id, CancellationToken cancellationToken) => MutateCommentAsync(comment_id, true, cancellationToken);
+    public Task<IActionResult> CommentVisibility(string? comment_id, CancellationToken cancellationToken) => MutateCommentAsync(comment_id, true, cancellationToken);
 
     private const string ArticleSelect = "SELECT articles.id, articles.author_id, articles.title, articles.body, articles.visibility, articles.restore_control, articles.version, articles.created_backend, articles.created_at, articles.updated_at, accounts.nickname FROM articles JOIN accounts ON accounts.id = articles.author_id";
     private const string CommentSelect = "SELECT comments.id, comments.author_id, comments.article_id, comments.body, comments.visibility, comments.restore_control, comments.version, comments.created_backend, comments.created_at, comments.updated_at, accounts.nickname FROM comments JOIN accounts ON accounts.id = comments.author_id";
@@ -93,6 +97,7 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
     /// <summary>個人列表沿用相同分頁及資源格式，不以父文章可讀性過濾自己的留言。</summary>
     private async Task<IActionResult> MyContentAsync(bool comments, CancellationToken cancellationToken)
     {
+        // 以目前交易內身分固定作者條件；內部布林只選兩個固定表名，不採用用戶端 SQL 片段。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, false, cancellationToken) ?? throw new ApiFailure("E0002");
@@ -113,8 +118,9 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
     }
 
     /// <summary>文章更新依可讀→權限→版本順序，在持有列鎖時完成條件更新與提交。</summary>
-    private async Task<IActionResult> MutateArticleAsync(string rawId, bool visibility, CancellationToken cancellationToken)
+    private async Task<IActionResult> MutateArticleAsync(string? rawId, bool visibility, CancellationToken cancellationToken)
     {
+        // 認證與全部格式先完成，才讀寫目標；nullable 僅保留共同拒絕空白路徑的順序。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, false, cancellationToken) ?? throw new ApiFailure("E0002");
@@ -129,6 +135,7 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
         if (visibility) await SaveVisibilityAsync(db, "articles", article, viewer, text["visibility"], version, cancellationToken);
         else
         {
+            // 權限通過後才比較版本；正確版本的同值更新保留版本與 updated_at。
             CheckVersion(article, version);
             if (String(article, "title") != text["title"] || String(article, "body") != text["body"])
                 await ExecuteVersionedAsync(db, "UPDATE articles SET title = @title, body = @body, version = version + 1, updated_at = @now WHERE id = @id AND version = @version",
@@ -139,8 +146,9 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
     }
 
     /// <summary>探索父 ID 後才依文章→留言加鎖，重讀留言避免在錯誤鎖序下修改舊資料。</summary>
-    private async Task<IActionResult> MutateCommentAsync(string rawId, bool visibility, CancellationToken cancellationToken)
+    private async Task<IActionResult> MutateCommentAsync(string? rawId, bool visibility, CancellationToken cancellationToken)
     {
+        // 先驗身分與完整輸入，避免在目標可讀性之前透露內容或版本。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, false, cancellationToken) ?? throw new ApiFailure("E0002");
@@ -154,10 +162,13 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
         if (article is null || comment is null || Long(comment, "article_id") != Long(article, "id")) throw new ApiFailure("E0004");
         comment = CheckCommentReadable(comment, article, viewer);
         var own = Long(comment, "author_id") == Long(viewer.Account, "id");
-        if (!own && (!visibility || String(viewer.Account, "role") != "admin") || !visibility && String(article, "visibility") != "visible") throw new ApiFailure("E0003");
+        // 內文只允許作者且父文章須公開；狀態操作則保留作者與管理員各自的恢復權規則。
+        if (!own && (!visibility || String(viewer.Account, "role") != "admin")
+            || !visibility && String(article, "visibility") != "visible") throw new ApiFailure("E0003");
         if (visibility) await SaveVisibilityAsync(db, "comments", comment, viewer, text["visibility"], version, cancellationToken);
         else
         {
+            // 先拒絕過期版本，再判同值；正確且未變更的內文不觸發寫入或更新時間。
             CheckVersion(comment, version);
             if (String(comment, "body") != text["body"])
                 await ExecuteVersionedAsync(db, "UPDATE comments SET body = @body, version = version + 1, updated_at = @now WHERE id = @id AND version = @version",
@@ -170,6 +181,7 @@ public sealed class ContentController(JwtToken jwt) : ApiControllerBase(jwt)
     /// <summary>先核實恢復權，再比較版本；同值保留時間，管理員接管他人下架則必須更新版本。</summary>
     private static async Task SaveVisibilityAsync(Database db, string table, Dictionary<string, object?> content, Identity viewer, string requested, long version, CancellationToken cancellationToken)
     {
+        // 作者不能用新版本繞過管理員恢復限制；版本檢查必須在恢復資格通過後。
         var own = Long(content, "author_id") == Long(viewer.Account, "id");
         var admin = String(viewer.Account, "role") == "admin";
         if (requested == "visible" && String(content, "visibility") == "hidden" && !admin && String(content, "restore_control") != "author") throw new ApiFailure("E0003");

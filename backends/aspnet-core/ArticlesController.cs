@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AspNetCore;
 
 /// <summary>公開閱讀文章與留言，帶有效 JWT 才擴張作者預覽或管理員範圍。</summary>
+/// <param name="jwt">共用後端簽章服務，公開請求一旦帶憑證仍須採相同驗證。</param>
 [ApiController]
 public sealed class ArticlesController(JwtToken jwt) : ApiControllerBase(jwt)
 {
@@ -10,6 +11,7 @@ public sealed class ArticlesController(JwtToken jwt) : ApiControllerBase(jwt)
     [HttpGet("/api/articles")]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
+        // 明確要求管理範圍時先驗角色，其餘請求允許訪客；參數錯誤不能搶先洩漏管理資訊。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var management = ApiInput.ManagementRequested(Request);
@@ -36,14 +38,16 @@ public sealed class ArticlesController(JwtToken jwt) : ApiControllerBase(jwt)
 
     /// <summary>隱藏文章只有作者或管理員可預覽；其他人與不存在均回相同 404。</summary>
     [HttpGet("/api/articles/{article_id}")]
-    public async Task<IActionResult> Detail(string article_id, CancellationToken cancellationToken)
+    public async Task<IActionResult> Detail(string? article_id, CancellationToken cancellationToken)
     {
+        // nullable 讓 MVC 轉為 null 的空白路徑進入共同流程，先驗憑證再以 ID 欄位錯誤拒絕。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, true, cancellationToken);
         await ApiInput.NoGetBodyAsync(Request, cancellationToken);
         ApiInput.NoQuery(Request);
         var id = ApiInput.Id(article_id, "article_id");
+        // 只在輸入合法後查目標，不存在與無預覽權限的下架文章使用相同結果。
         var article = await db.RowAsync("SELECT articles.id, articles.author_id, articles.title, articles.body, articles.visibility, articles.restore_control, articles.version, articles.created_backend, articles.created_at, articles.updated_at, accounts.nickname FROM articles JOIN accounts ON accounts.id = articles.author_id WHERE articles.id = @id",
             new() { ["id"] = id }, cancellationToken);
         if (article is null || !Readable(article, viewer)) throw new ApiFailure("E0004");
@@ -53,8 +57,9 @@ public sealed class ArticlesController(JwtToken jwt) : ApiControllerBase(jwt)
 
     /// <summary>先驗父文章可讀，作者預覽仍僅列公開留言；管理員可查看個別下架留言。</summary>
     [HttpGet("/api/articles/{article_id}/comments")]
-    public async Task<IActionResult> Comments(string article_id, CancellationToken cancellationToken)
+    public async Task<IActionResult> Comments(string? article_id, CancellationToken cancellationToken)
     {
+        // 先驗可選登入及所有格式，再查父文章，避免下架目標或框架綁定改變錯誤順序。
         await using var db = await Database.OpenAsync(cancellationToken);
         await db.BeginAsync(cancellationToken);
         var viewer = await AuthenticateAsync(db, true, cancellationToken);

@@ -31,6 +31,7 @@ internal static partial class Rules
     {
         var count = 0;
         var hasText = false;
+        // 同次碼點掃描檢查長度、NUL 與非空白文字，不改動要保存的暱稱。
         foreach (var rune in value.EnumerateRunes())
         {
             count++;
@@ -45,6 +46,7 @@ internal static partial class Rules
     {
         var count = 0;
         var hasText = false;
+        // 按實際碼點累計，不把 UTF-16 長度當字數，也不裁切換行或前後空白。
         foreach (var rune in value.EnumerateRunes())
         {
             count++;
@@ -59,6 +61,7 @@ internal static partial class Rules
     {
         result = 0;
         if (string.IsNullOrEmpty(value)) return false;
+        // 在乘十與加下一位前檢查上限，讓超長整數安全失敗而不溢位或經過浮點數。
         foreach (var c in value)
         {
             if (c < '0' || c > '9' || result > (maximum - (c - '0')) / 10) return false;
@@ -69,6 +72,9 @@ internal static partial class Rules
 
     /// <summary>將 API 資源 ID 限於 JavaScript 可精確表示的正整數。</summary>
     internal static bool TryId(string? value, out long result) => TryUrlInteger(value, MaxId, out result);
+
+    /// <summary>只判定已解析 JSON number 的整數表示，讓小數／指數型態與數值越界分開回報。</summary>
+    internal static bool IsJsonInteger(string raw) => raw.IndexOfAny(['.', 'e', 'E']) < 0;
 
     /// <summary>JSON version 不允許小數與指數表示法；上限避免前端數字失去精度。</summary>
     internal static bool TryJsonVersion(string raw, out long result)
