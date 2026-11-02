@@ -27,7 +27,7 @@ class AdminInputTests(unittest.TestCase):
                     list_input(request, allow_keyword=True)
                 self.assertEqual(caught.exception.errors, expected)
 
-    # 布林、整數及 64 位元溢位依原始 JSON 判定；小數及指數不能湊成整數。
+    # 布林與整數依原始 JSON 區分，整數按業務範圍判定；小數及指數不能湊成整數。
     def test_settings_and_status_body_types(self):
         fields = ("enabled", "window_minutes", "failure_threshold", "lock_seconds")
         types = {"enabled": bool, "window_minutes": int, "failure_threshold": int, "lock_seconds": int}
@@ -38,9 +38,9 @@ class AdminInputTests(unittest.TestCase):
             (b'{"enabled":true,"window_minutes":1e0,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位型態不正確"]}),
             (b'{"enabled":true,"window_minutes":0,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位格式或範圍不正確"]}),
             (b'{"enabled":true,"window_minutes":9223372036854775807,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位格式或範圍不正確"]}),
-            (b'{"enabled":true,"window_minutes":9223372036854775808,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位型態不正確"]}),
+            (b'{"enabled":true,"window_minutes":9223372036854775808,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位格式或範圍不正確"]}),
             (b'{"enabled":true,"window_minutes":-9223372036854775808,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位格式或範圍不正確"]}),
-            (b'{"enabled":true,"window_minutes":-9223372036854775809,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位型態不正確"]}),
+            (b'{"enabled":true,"window_minutes":-9223372036854775809,"failure_threshold":5,"lock_seconds":300}', {"window_minutes": ["欄位格式或範圍不正確"]}),
         ):
             with self.subTest(raw=raw):
                 request = SimpleNamespace(body=raw, content_type="application/json")
@@ -74,7 +74,7 @@ class AdminInputTests(unittest.TestCase):
                 with self.assertRaises(ApiError) as caught:
                     json_body(request, fields, content_limits=limits, field_types=types)
                 self.assertEqual(caught.exception.code, "E0001")
-                self.assertEqual(caught.exception.errors, {"window_minutes": ["欄位型態不正確"]})
+                self.assertEqual(caught.exception.errors, {"window_minutes": ["欄位格式或範圍不正確"]})
                 # 內容 version 與字串型態不同：原始超大整數仍是範圍錯誤。
                 request.body = b'{"body":"ok","version":' + oversized + b'}'
                 with self.assertRaises(ApiError) as caught:
@@ -102,7 +102,7 @@ class AdminInputTests(unittest.TestCase):
         ):
             response = login_lockout_settings(request)
         self.assertEqual(response.status_code, 422)
-        self.assertEqual(json.loads(response.content)["errors"], {"window_minutes": ["欄位型態不正確"]})
+        self.assertEqual(json.loads(response.content)["errors"], {"window_minutes": ["欄位格式或範圍不正確"]})
         connect.assert_called_once_with()
         connection.execute.assert_not_called()
 

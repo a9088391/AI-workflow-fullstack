@@ -1,11 +1,11 @@
-"""Django 共用 API 與作者內容端點，統一 HTTP 錯誤邊界。"""
+"""Django 的帳號、內容與管理 HTTP 流程，共用驗證、授權及錯誤邊界。"""
 
 import logging
 import re
 import secrets
 import uuid
 from datetime import timedelta
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, unquote_to_bytes
 
 import psycopg
 from django.http import HttpResponse
@@ -65,10 +65,12 @@ def api(method):
             except Exception:
                 LOGGER.exception("ERROR log_id=%s code=E9999", log_id)
                 response = failure(ApiError("E9999"), log_id)
+            # 只有固定前端入口可讀跨來源回應；倒數秒數由同一 Retry-After 標頭提供。
             if origin == "http://localhost:8080":
                 response["Access-Control-Allow-Origin"] = origin
                 response["Vary"] = "Origin"
                 response["Access-Control-Expose-Headers"] = "Retry-After"
+            # 業務錯誤也要留下同次 EX／OUT，讓前端回報的 log_id 可追查。
             if response.status_code >= 400:
                 LOGGER.warning("EX log_id=%s status=%s", log_id, response.status_code)
             LOGGER.info("OUT log_id=%s status=%s", log_id, response.status_code)
@@ -95,22 +97,30 @@ def query_values(request, allowed):
     raw = request.META.get("QUERY_STRING", "")
     values = {}
     errors = {}
+    seen = set()
     for pair in raw.split("&") if raw else ():
         encoded_name, _, encoded_value = pair.partition("=")
-        decoded = unquote_plus(encoded_name, errors="replace")
-        # 非法 UTF-8 鍵保留原始百分比編碼，避免替代字元與合法欄位撞名。
-        name = decoded if "\ufffd" not in decoded else encoded_name.upper()
+        # 合法 U+FFFD 保留原名；非法 UTF-8 另存 bytes 身分，不與字面百分比名稱混同。
+        try:
+            name = unquote_plus(encoded_name, errors="strict")
+            invalid_name = None
+        except UnicodeDecodeError:
+            name = encoded_name.upper()
+            invalid_name = unquote_to_bytes(encoded_name.replace("+", " "))
         # 陣列式鍵先對回原欄位，才能回型態錯誤或與單值鍵的重複錯誤。
         array_match = re.match(r"(page|per_page|filters\[(?:scope|keyword)\])\[", name)
         canonical = array_match.group(1) if array_match else name
         label = re.sub(r"^filters\[([^]]+)\]$", r"filters.\1", canonical)
-        # 重複優先於陣列型態，其後才是未知欄位，維持共用錯誤先後。
-        if canonical in values:
+        identity = canonical if invalid_name is None else invalid_name
+        # 真重複優先；不同身分撞同一 errors 名稱時，後來的未知欄位不能蓋掉已判定的重複。
+        if identity in seen:
             errors[label] = ["此參數不可重複"]
-        elif array_match and canonical in allowed:
-            errors[label] = [TYPE]
-        elif canonical not in allowed:
-            errors[label] = ["不支援此欄位"]
+        elif label not in errors:
+            if array_match and canonical in allowed:
+                errors[label] = [TYPE]
+            elif canonical not in allowed:
+                errors[label] = ["不支援此欄位"]
+        seen.add(identity)
         # 值採嚴格 UTF-8；遇到非法位元組保留欄位錯誤，不交給資料庫搜尋。
         try:
             values[canonical] = unquote_plus(encoded_value, errors="strict")
@@ -137,7 +147,7 @@ def no_query(request):
         raise ApiError("E0001", errors)
 
 
-# GET 的任何非空 Body 均為驗證錯誤，不先依 Content-Type 解讀。
+# GET 的非空 Body 一律拒絕，避免 Content-Type 或框架預設改變共同驗證順序。
 def no_get_body(request):
     if request.body:
         raise ApiError("E0001", {"_body": ["此 API 不接受 Request Body"]})
@@ -167,7 +177,7 @@ def parse_json_integer(value):
     return int(value)
 
 
-# 解析 JSON object 後依必填、null、型態、格式順序回第一個錯誤；管理設定整數遵守跨後端 64 位元型態。
+# 解析 JSON object 後彙整所有欄位；每欄依必填、null、型態、格式順序只回第一個錯誤。
 def json_body(request, fields, empty_allowed=False, content_limits=None, field_types=None):
     if empty_allowed and not request.body:
         return {}
@@ -207,20 +217,19 @@ def json_body(request, fields, empty_allowed=False, content_limits=None, field_t
         raise ApiError("E0001", {"_body": ["Request Body 必須為 JSON object"]})
     errors = {}
     field_types = field_types or {}
+    # JSON 整數不因 Python／其他 runtime 的表示寬度改變型態；數值界線由欄位契約判斷。
     for field in fields:
         if field not in body:
             errors[field] = [REQUIRED]
         elif body[field] is None:
             errors[field] = [NULL]
         elif type(body[field]) is OversizedJsonInteger:
-            errors[field] = [INVALID if field == "version" else TYPE]
+            errors[field] = [INVALID if field == "version" or field_types.get(field) is int else TYPE]
         elif type(body[field]) is not field_types.get(
             field, int if field == "version" and content_limits is not None else str
         ):
             errors[field] = [TYPE]
-        elif field_types.get(field) is int and not -(1 << 63) <= body[field] < (1 << 63):
-            # Python 整數沒有固定寬度；超出共用後端的有號 64 位元解析範圍屬型態錯誤。
-            errors[field] = [TYPE]
+    # 未知欄位與已知欄位錯誤一起回報；只對通過型態檢查的帳號欄位套格式驗證。
     for field in body:
         if field not in fields:
             errors[field] = ["不支援此欄位"]
@@ -260,6 +269,7 @@ def authenticate_write(request, connection):
     account, claims = authenticate(request, connection)
     connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
     connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+    # 等待鎖期間可能已被停用或登出，不能直接沿用鎖前查到的身分。
     return authenticate(request, connection)[0]
 
 
@@ -301,6 +311,7 @@ def list_input(request, allow_scope=False, allow_keyword=False):
         allowed.add("filters[keyword]")
     values, errors = query_values(request, allowed)
     numbers = {}
+    # 兩個分頁欄位都驗完才回錯誤，避免第一欄錯誤遮蔽其他欄位的必填或範圍問題。
     for name in ("page", "per_page"):
         if name not in values:
             errors[name] = [REQUIRED]
@@ -337,6 +348,7 @@ def pagination(page, per_page, total):
 # 註冊先驗欄位再檢查唯一 Email；DB unique index 裁決跨後端並行。
 @api("POST")
 def register(request):
+    # 公開註冊不沿用舊 JWT；格式錯誤必須先於 Email 唯一性檢查。
     no_query(request)
     body = json_body(request, ("email", "password", "nickname"))
     with connect() as connection:
@@ -344,6 +356,7 @@ def register(request):
             raise ApiError("E0001", {"email": ["此 Email 已註冊"]})
         encoded = password_hash(body["password"])
         try:
+            # 前置查重不能阻止其他後端同時新增；唯一索引的衝突仍轉為共同 Email 文案。
             connection.execute(
                 "INSERT INTO accounts (email, password_hash, nickname, role, status) "
                 "VALUES (%s, %s, %s, 'member', 'active')",
@@ -354,9 +367,19 @@ def register(request):
     return success(status=201)
 
 
+# 先完成登入交易才計算鎖定剩餘秒數，避免雜湊或 COMMIT 等待讓 Retry-After 多算。
+def locked_response(connection, until, log_id):
+    connection.commit()
+    # 新 DB 時間只供回應倒數；外層 with 之後只需結束這個讀取交易，不重算登入業務時間。
+    now = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+    retry = max(1, -((now - until) // timedelta(seconds=1)))
+    return failure(ApiError("E0105", retry_after=retry), log_id)
+
+
 # 登入在設定列→帳號列鎖後取 DB 時間，序列化跨後端失敗計數。
 @api("POST")
 def login(request):
+    # 格式錯誤不屬錯誤密碼事件，先完整驗證才進入共用鎖定交易。
     no_query(request)
     body = json_body(request, ("email", "password"))
     with connect() as connection:
@@ -366,6 +389,7 @@ def login(request):
         account = connection.execute(
             "SELECT * FROM accounts WHERE email = %s FOR UPDATE", (body["email"],)
         ).fetchone()
+        # 鎖後只取一次業務時間 t；帳號不存在及停用先判定，不進入計數或驗密碼。
         now = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
         if account is None:
             return failure(ApiError("E0101"), request.api_log_id)
@@ -375,8 +399,7 @@ def login(request):
         if account["role"] == "member" and account["locked_until"] is not None:
             until = account["locked_until"]
             if settings["enabled"] and now < until:
-                retry = max(1, -((now - until) // timedelta(seconds=1)))
-                return failure(ApiError("E0105", retry_after=retry), request.api_log_id)
+                return locked_response(connection, until, request.api_log_id)
             account["failure_epoch"] += 1
             connection.execute(
                 "UPDATE accounts SET failure_epoch = %s, locked_until = NULL WHERE id = %s",
@@ -397,7 +420,8 @@ def login(request):
                 if count >= settings["failure_threshold"]:
                     until = now + timedelta(seconds=settings["lock_seconds"])
                     connection.execute("UPDATE accounts SET locked_until = %s WHERE id = %s", (until, account["id"]))
-                    return failure(ApiError("E0105", retry_after=settings["lock_seconds"]), request.api_log_id)
+                    return locked_response(connection, until, request.api_log_id)
+            # 正常 return 會讓 with 提交失敗事件；若拋業務例外反而會回滾計數。
             return failure(ApiError("E0101"), request.api_log_id)
         # 成功時換世代並保存與 JWT 同秒數的登入紀錄；金鑰失敗會回滾。
         issued = int(now.timestamp())
@@ -428,6 +452,7 @@ def logout(request):
         no_query(request)
         json_body(request, (), empty_allowed=True)
         account, claims = identity
+        # 鎖後重驗，讓登出與其他受保護寫入依同一帳號→session 順序完成。
         connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
         connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
         authenticate(request, connection)
@@ -605,7 +630,7 @@ def members(request):
         page, per_page, keyword = list_input(request, allow_keyword=True)
         # translate 僅折疊 ASCII，strpos 將百分號、底線及反斜線視為普通字元。
         folded = (keyword or "").translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
-        # PostgreSQL text 不含 NUL；合法字面搜尋含 NUL 時沒有可能的結果。
+        # PostgreSQL text 無法包含 NUL；此分支保留目前回空列表的既有處理。
         if "\0" in folded:
             return success({"list": [], "pagination": pagination(page, per_page, 0)})
         condition = "WHERE role = 'member'"
@@ -626,7 +651,7 @@ def members(request):
                         "pagination": pagination(page, per_page, total)})
 
 
-# 管理員詳情先驗角色與輸入，對管理員帳號及不存在 ID 統一回 404。
+# 會員詳情先驗管理員與輸入；管理員 ID 及不存在目標統一 404，避免透露管理帳號。
 @api("GET")
 def member(request, member_id):
     with connect() as connection:
@@ -663,6 +688,7 @@ def member_status(request, member_id):
             (admin_id, target_id),
         ).fetchall()
         accounts = {row["id"]: row for row in rows}
+        # 外層認證只決定是否可驗輸入；實際修改前仍須在帳號與 session 鎖內重驗。
         current, claims = authenticate(request, connection)
         connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
         current, _ = authenticate(request, connection)
@@ -671,6 +697,7 @@ def member_status(request, member_id):
         target = accounts.get(target_id)
         if target is None or target["role"] != "member":
             raise ApiError("E0004")
+        # 同值不重新撤銷；只有 active→disabled 的變更才同交易撤銷所有後端登入。
         if target["status"] != body["status"]:
             connection.execute("UPDATE accounts SET status = %s WHERE id = %s", (body["status"], target_id))
             if body["status"] == "disabled":
@@ -717,6 +744,7 @@ def login_lockout_settings(request):
             if row is None:
                 raise ApiError("E0104")
             return success(row)
+    # PUT 先驗角色再驗完整四欄，不能讓無權者先取得輸入或設定資訊。
     with connect() as connection:
         viewer, _ = authenticate(request, connection)
         if viewer["role"] != "admin":
@@ -742,6 +770,7 @@ def login_lockout_settings(request):
         current = authenticate_write(request, connection)
         if current["role"] != "admin":
             raise ApiError("E0003")
+        # 最後提交的整組值為準；同值不更新，也不重做關閉鎖定的副作用。
         if any(row[field] != body[field] for field in fields):
             connection.execute(
                 "UPDATE login_lockout_settings SET enabled = %s, window_minutes = %s, "
@@ -845,7 +874,7 @@ def mutate_comment(request, comment_id, visibility):
     return success()
 
 
-# 尚未實作的 API 固定回 404，不讓 Django HTML 錯誤或假成功外洩。
+# 未知 API 固定回共同 404，避免落入 Django 的 HTML 錯誤回應。
 @api("*")
 def not_found(request):
     raise ApiError("E0004")

@@ -28,8 +28,10 @@ ORIGIN = "http://localhost:8080"
 LOGIN = "/api/auth/login"
 SETTINGS = "/api/settings/login-lockout"
 RECOVERY = Path(".scratch/code-quality/cq18")
-RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19")}
-NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}"}
+RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19"),
+              "cq20": Path(".scratch/code-quality/cq20")}
+NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}",
+          "cq20": r"cq20[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
@@ -49,7 +51,7 @@ def arguments():
 # 保留原始 bytes、Query 與 HEAD 空內容，避免客戶端替框架改寫測資。
 def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_headers=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離 HTTP 目標")
-    shared.check(backend in ("laravel", "aspnet-core"), "未核准的額外 HTTP 後端")
+    shared.check(backend in ("laravel", "aspnet-core", "django"), "未核准的額外 HTTP 後端")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if origin is not None:
         headers["Origin"] = origin
@@ -194,8 +196,8 @@ def restore_sql(statement):
     return result.stdout.strip()
 
 
-# 以同一交易恢復四設定與所有 baseline 會員；只降本次 admin／撤銷本次 sessions，保留測資。
-def restore_baseline(packet, path, *, ticket="cq18"):
+# 以同一交易恢復 baseline 並收束本次角色／sessions；有額外 fixture 的呼叫端須完成清理才標記整體恢復。
+def restore_baseline(packet, path, *, ticket="cq18", mark_restored=True):
     validate_packet(packet, ticket=ticket)
     clean_boundary()
     nonce, settings = packet["nonce"], packet["settings"]
@@ -256,7 +258,7 @@ def restore_baseline(packet, path, *, ticket="cq18"):
         f"WHERE a.email LIKE 't57-{nonce}%' AND s.revoked_at IS NULL"
     ) == "0", "本票管理員或有效 session 尚未收束")
     clean_boundary()
-    packet["restored"] = True
+    packet["restored"] = mark_restored
     save_packet(packet, path)
     print("PASS CQ18 baseline 四設定／會員鎖定欄位恢復，臨時管理員及 sessions 已收束", flush=True)
 
@@ -375,12 +377,17 @@ def entry_cases(nonce, *, backend=BACKEND):
     for origin in (ORIGIN, "http://untrusted.example.test"):
         result = raw_request("OPTIONS", LOGIN, origin=origin, extra_headers={
             "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type"}, backend=backend)
-        # Laravel 保留既有允許清單；.NET 拒絕非信任 Origin 時不必回傳任何允許標頭。
+        # Laravel 保留既有允許清單；其他版本不向非信任 Origin 提供 CORS 許可。
         shared.check(result[0] == 204 and result[1] == b"", "OPTIONS 預檢狀態／空內容不符")
         if backend != BACKEND and origin != ORIGIN:
             shared.check(result[2].get("Access-Control-Allow-Origin") is None, "非信任 Origin 不得取得 CORS 許可")
         else:
             methods = {"GET", "POST", "PUT", "OPTIONS"} if backend == BACKEND else {"GET", "POST", "PUT"}
+            # Django 依個別路由宣告方法；登入路由只提供 POST 與預檢，不能要求其他寫入方法。
+            if backend == "django":
+                methods = {"POST", "OPTIONS"}
+                shared.check(set(result[2].get("Access-Control-Allow-Methods", "").replace(" ", "").split(","))
+                             == methods, "Django 登入預檢不得宣告其他路由方法")
             shared.check(methods <= set(
                 result[2].get("Access-Control-Allow-Methods", "").replace(" ", "").split(",")) and
                 {"authorization", "content-type", "accept"} <= set(
@@ -524,7 +531,7 @@ def login_claims(login, account_id, role, *, backend=BACKEND):
 # 僅在原 guard 通過後讀對應後端已核對的 key，簽署 fixture；key、JWT 不落盤或印出。
 def signed_token(claims, header=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離金鑰")
-    shared.check(backend in ("laravel", "aspnet-core"), "未核准的簽署 fixture 後端")
+    shared.check(backend in ("laravel", "aspnet-core", "django"), "未核准的簽署 fixture 後端")
     key = base64.b64decode(Path(f".local/keys/{backend}.key").read_bytes().rstrip(b"\n"), validate=True)
     shared.check(len(key) == 32, "隔離金鑰長度不符")
     parts = [base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=")
@@ -658,7 +665,8 @@ def unavailable_cases(nonce, *, backend=BACKEND):
             unavailable_error(result)
             observed.append((result[1]["log_id"], method, path, 500))
     finally:
-        database_command("start", "db")
+        # 只恢復原 DB 容器，不執行 SQL 相依服務、重建容器或清除資料卷。
+        database_command("up", "-d", "--no-deps", "--no-recreate", "db")
         wait_ready()
     shared.check(state(actor["id"]) == before and shared.sql(
         f"SELECT count(*) FROM articles WHERE title='{title}'") == "0", "DB 不可用留下部分 session／內容寫入")

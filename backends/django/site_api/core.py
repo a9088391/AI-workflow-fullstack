@@ -68,6 +68,7 @@ def failure(error, log_id):
         body["errors"] = error.errors
     body["log_id"] = log_id
     response = JsonResponse(body, status=status)
+    # 倒數放在標頭，保持共同錯誤 JSON 的欄位不變。
     if error.retry_after is not None:
         response["Retry-After"] = str(error.retry_after)
     return response
@@ -83,6 +84,7 @@ def connect():
         password=os.environ.get("DB_PASSWORD", ""),
         row_factory=dict_row,
     )
+    # 時區設定先獨立提交，讓呼叫端 with connection 管理的業務交易從乾淨狀態開始。
     connection.execute("SET TIME ZONE 'Asia/Taipei'")
     connection.commit()
     return connection
@@ -113,6 +115,7 @@ def verify_password(password, encoded):
     match = PHC.fullmatch(encoded)
     if match is None:
         raise ApiError("E0104")
+    # 長度與重編碼都必須吻合，避免非正規 PHC 被不同後端以不同方式接受。
     for text, size in zip(match.groups(), (16, 32)):
         try:
             raw = base64.b64decode(text + "=" * (-len(text) % 4), validate=True)
@@ -120,6 +123,7 @@ def verify_password(password, encoded):
             raise ApiError("E0104") from exc
         if len(raw) != size or base64.b64encode(raw).decode().rstrip("=") != text:
             raise ApiError("E0104")
+    # 只有正常的密碼不符回 False；演算法／儲存格式異常必須中止，不能新增失敗事件。
     try:
         return HASHER.verify(encoded, password)
     except VerifyMismatchError:
@@ -193,6 +197,7 @@ def reject_non_json_number(value):
 
 # 驗證固定 header、簽章、claims 型態與嚴格期限，再交由 DB 驗身分。
 def verify_token(token):
+    # 先以本後端固定金鑰驗簽，不依 token 的 header 選擇演算法或外部金鑰。
     key = jwt_key()
     parts = token.split(".")
     if len(parts) != 3:
@@ -200,6 +205,7 @@ def verify_token(token):
     signed = (parts[0] + "." + parts[1]).encode()
     if not hmac.compare_digest(hmac.new(key, signed, hashlib.sha256).digest(), unb64url(parts[2])):
         raise ApiError("E0002")
+    # JWT 的 JSON 另拒絕重複欄位與非 JSON 數值，不把此規則擴大到一般 Request Body。
     try:
         header = json.loads(unb64url(parts[0]), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
         claims = json.loads(unb64url(parts[1]), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
@@ -207,6 +213,7 @@ def verify_token(token):
         raise ApiError("E0002") from exc
     if header != {"alg": "HS256", "typ": "JWT"} or not isinstance(claims, dict):
         raise ApiError("E0002")
+    # 主體、後端與八小時整數秒關係一起驗證；bool 不能充當 Python 的整數子型態。
     subject = claims.get("sub")
     jti = claims.get("jti")
     issued = claims.get("iat")
@@ -227,6 +234,7 @@ def verify_token(token):
         or claims["exp"] != issued + 28800
     ):
         raise ApiError("E0002")
+    # 沒有到期寬限；只有正常登入可簽發新的八小時身分。
     now = int(datetime.now(timezone.utc).timestamp())
     if now < issued or now >= claims["exp"]:
         raise ApiError("E0002")
@@ -235,6 +243,7 @@ def verify_token(token):
 
 # 先核對憑證的簽章與型態，再依目前帳號狀態及登入紀錄授權。
 def authenticate(request, connection, required=True):
+    # 公開讀取只在完全沒帶 Authorization 時當訪客，舊或無效 token 仍須拒絕。
     authorization = request.headers.get("Authorization")
     if authorization is None and not required:
         return None
@@ -242,6 +251,7 @@ def authenticate(request, connection, required=True):
     if match is None:
         raise ApiError("E0002")
     claims = verify_token(match.group(1))
+    # 不從 JWT 取得角色；帳號與 session 必須能在共用 DB 查核，儲存錯誤交由入口回系統錯誤。
     account = connection.execute(
         "SELECT id, email, nickname, role, status, created_at FROM accounts WHERE id = %s",
         (int(claims["sub"]),),
@@ -261,6 +271,7 @@ def authenticate(request, connection, required=True):
         or session["expires_at"] != datetime.fromtimestamp(claims["exp"], timezone.utc)
     ):
         raise ApiError("E0002")
+    # 確認登入紀錄身分後，停用優先於撤銷；恢復帳號仍不會使舊 session 復活。
     if account["status"] == "disabled":
         raise ApiError("E0102")
     if session["revoked_at"] is not None:
