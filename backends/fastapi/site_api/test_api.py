@@ -84,11 +84,11 @@ class ApiTests(unittest.TestCase):
     def test_asgi_validation_and_cors(self):
         # 實際走 FastAPI 路由，確認框架預設沒有取代共同驗證與 CORS。
         # 最小 ASGI 呼叫保留原始 request bytes 並蒐集實際 response 事件。
-        async def call(method, path, body=b"", headers=()):
+        async def call(method, path, body=b"", headers=(), query=b""):
             sent = []
             scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
                      "method": method, "scheme": "http", "path": path, "raw_path": path.encode(),
-                     "root_path": "", "query_string": b"", "headers": headers,
+                     "root_path": "", "query_string": query, "headers": headers,
                      "client": ("127.0.0.1", 12345), "server": ("localhost", 8000)}
 
             # 只送一個完整請求事件，避免測試改變 Body 語意。
@@ -116,6 +116,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(missing[0]["status"], 404)
         self.assertEqual(json.loads(missing[1]["body"])["error_code"], "E0004")
 
+        # 未知 Query 必須先於損壞 Body 拒絕；鍵的真身分與顯示標籤各自依契約判定。
+        for query, fields in (
+            (b"%EF%BF%BD=x", {"�": ["不支援此欄位"]}),
+            (b"%EF%BF%BD=x&%EF%BF%BD=y", {"�": ["此參數不可重複"]}),
+            (b"%FF=x&%EF%BF%BD=y", {"%FF": ["不支援此欄位"], "�": ["不支援此欄位"]}),
+            (b"%FF=x&%25FF=y", {"%FF": ["不支援此欄位"]}),
+            (b"%25FF=x&%FF=y", {"%FF": ["不支援此欄位"]}),
+            (b"%FF=x&%ff=y&%25FF=z", {"%FF": ["此參數不可重複"]}),
+            (b"%25FF=x&%FF=y&%25FF=z", {"%FF": ["此參數不可重複"]}),
+            (b"page[0]=x&page[1]=y", {"page[0]": ["不支援此欄位"], "page[1]": ["不支援此欄位"]}),
+            (b"page%5B%FF%5D=x", {"page%5B%FF%5D": ["不支援此欄位"]}),
+        ):
+            with self.subTest(query=query):
+                response = asyncio.run(call("POST", "/api/auth/register", b"{", query=query))
+                self.assertEqual(response[0]["status"], 422)
+                payload = json.loads(response[1]["body"])
+                self.assertEqual(payload["error_code"], "E0001")
+                self.assertEqual(payload["errors"], fields)
+
     # 驗證原始 Query、JSON 型態、媒體型態與 GET Body 的邊界。
     def test_raw_input_validation(self):
         with self.assertRaises(core.ApiError) as duplicate:
@@ -124,6 +143,15 @@ class ApiTests(unittest.TestCase):
         with self.assertRaises(core.ApiError) as array:
             list_input(Request(query=b"page[]=1&per_page=20"))
         self.assertEqual(array.exception.errors["page"], [core.TYPE])
+        # 合法欄位的陣列別名仍須合併判重複；非法 UTF-8 值不能被替代字元接受。
+        for query, fields in (
+            (b"page[0]=x&page=1&per_page=20", {"page": ["此參數不可重複"]}),
+            (b"page=%FF&per_page=20", {"page": [core.INVALID]}),
+            (b"page=%FF&page=1&per_page=20", {"page": ["此參數不可重複"]}),
+        ):
+            with self.subTest(query=query), self.assertRaises(core.ApiError) as invalid:
+                list_input(Request(query=query))
+            self.assertEqual(invalid.exception.errors, fields)
         with self.assertRaises(core.ApiError) as password:
             json_body(Request(body=json.dumps({"email": "a@example.test", "password": 1234}).encode()),
                       ("email", "password"))

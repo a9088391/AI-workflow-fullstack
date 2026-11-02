@@ -1,7 +1,7 @@
 """共同 API 的原始 Query、Body 與分頁驗證。"""
 
 import re
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, unquote_to_bytes
 
 from .core import (ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, TYPE,
                    SPACE, normalize_email, reject_non_json_number, valid_email,
@@ -12,22 +12,30 @@ def query_values(request, allowed):
     raw = request.query_string.decode("latin1")
     values = {}
     errors = {}
+    seen = set()
     for pair in raw.split("&") if raw else ():
         encoded_name, _, encoded_value = pair.partition("=")
-        decoded = unquote_plus(encoded_name, errors="replace")
-        # 非法 UTF-8 鍵保留原始百分比編碼，避免替代字元與合法欄位撞名。
-        name = decoded if "\ufffd" not in decoded else encoded_name.upper()
-        # 陣列式鍵先對回原欄位，才能回型態錯誤或與單值鍵的重複錯誤。
+        identity = unquote_to_bytes(encoded_name.replace("+", " ").encode("latin1"))
+        # 嚴格解碼才能保留合法 U+FFFD；非法 bytes 與同名百分比標籤仍是不同參數。
+        try:
+            name = identity.decode("utf-8")
+        except UnicodeDecodeError:
+            # callback 只統一 escape 的十六進位大小寫，不能連欄位 ASCII 名稱也改寫。
+            name = re.sub(r"%[0-9A-Fa-f]{2}", lambda match: match.group().upper(), encoded_name)
+        # 僅將本端點支援的陣列別名對回單值欄位；未知巢狀鍵保留原名與身分。
         array_match = re.match(r"(page|per_page|filters\[(?:scope|keyword)\])\[", name)
-        canonical = array_match.group(1) if array_match else name
+        canonical = array_match.group(1) if array_match and array_match.group(1) in allowed else name
+        if canonical != name:
+            identity = canonical.encode("utf-8")
         label = re.sub(r"^filters\[([^]]+)\]$", r"filters.\1", canonical)
-        # 重複優先於陣列型態，其後才是未知欄位，維持共用錯誤先後。
-        if canonical in values:
+        # 真重複優先；不同參數共用顯示標籤時，未知錯誤不能覆蓋先前判定的重複。
+        if identity in seen:
             errors[label] = ["此參數不可重複"]
         elif array_match and canonical in allowed:
-            errors[label] = [TYPE]
+            errors.setdefault(label, [TYPE])
         elif canonical not in allowed:
-            errors[label] = ["不支援此欄位"]
+            errors.setdefault(label, ["不支援此欄位"])
+        seen.add(identity)
         # 值採嚴格 UTF-8；遇到非法位元組保留欄位錯誤，不交給資料庫搜尋。
         try:
             values[canonical] = unquote_plus(encoded_value, errors="strict")
@@ -119,6 +127,7 @@ def json_body(request, fields, empty_allowed=False, content_limits=None, field_t
         raise ApiError("E0005") from None
     if not isinstance(body, dict):
         raise ApiError("E0001", {"_body": ["Request Body 必須為 JSON object"]})
+    # 先彙整缺漏、null、型態與未知欄位；後續格式檢查不能蓋掉同欄較早的錯誤。
     errors = {}
     for field in fields:
         if field not in body:
@@ -135,6 +144,7 @@ def json_body(request, fields, empty_allowed=False, content_limits=None, field_t
     for field in body:
         if field not in fields:
             errors[field] = ["不支援此欄位"]
+    # 只有 Email 依契約正規化；密碼與暱稱維持原值後各自驗證。
     if "email" in fields and "email" not in errors:
         body["email"] = normalize_email(body["email"])
         if not valid_email(body["email"]):
@@ -180,6 +190,7 @@ def list_input(request, allow_scope=False, allow_keyword=False):
         allowed.add("filters[keyword]")
     values, errors = query_values(request, allowed)
     numbers = {}
+    # 兩個分頁欄位都檢查，讓必填與範圍錯誤能完整回傳而不受第一個錯誤遮蔽。
     for name in ("page", "per_page"):
         if name not in values:
             errors[name] = [REQUIRED]

@@ -73,7 +73,7 @@ def failure(error, log_id):
     return response
 
 
-# 取得共用資料庫連線並設定時區；每個請求用短連線避免交易殘留。
+# 取得共用資料庫連線並設定時區；由呼叫端的 with 結束交易及關閉短連線。
 def connect():
     connection = psycopg.connect(
         host=os.environ.get("DB_HOST", "db"),
@@ -193,6 +193,7 @@ def reject_non_json_number(value):
 
 # 驗證固定 header、簽章、claims 型態與嚴格期限，再交由 DB 驗身分。
 def verify_token(token):
+    # 只用本後端固定金鑰驗簽，不依未驗證的 header 選演算法或金鑰。
     key = jwt_key()
     parts = token.split(".")
     if len(parts) != 3:
@@ -200,6 +201,7 @@ def verify_token(token):
     signed = (parts[0] + "." + parts[1]).encode()
     if not hmac.compare_digest(hmac.new(key, signed, hashlib.sha256).digest(), unb64url(parts[2])):
         raise ApiError("E0002")
+    # 驗簽後才解析 JSON，拒絕重複鍵與非標準數值，讓 claims 不會有多種解讀。
     try:
         header = json.loads(unb64url(parts[0]), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
         claims = json.loads(unb64url(parts[1]), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
@@ -210,6 +212,7 @@ def verify_token(token):
     subject = claims.get("sub")
     jti = claims.get("jti")
     issued = claims.get("iat")
+    # 身分與 NumericDate 採精確型態；到期固定八小時，不接受 boolean 冒充整數。
     if (
         claims.get("iss") != "ai-workflow-fullstack:fastapi"
         or claims.get("aud") != "ai-workflow-fullstack-api:fastapi"
@@ -227,6 +230,7 @@ def verify_token(token):
         or claims["exp"] != issued + 28800
     ):
         raise ApiError("E0002")
+    # 前側含 nbf、後側不含 exp；不另給時鐘寬限或延長期限。
     now = int(datetime.now(timezone.utc).timestamp())
     if now < issued or now >= claims["exp"]:
         raise ApiError("E0002")
@@ -235,6 +239,7 @@ def verify_token(token):
 
 # 先核對憑證的簽章與型態，再依目前帳號狀態及登入紀錄授權。
 def authenticate(request, connection, required=True):
+    # 公開讀取只有完全未帶 Authorization 才能當訪客；已帶但無效不能降成訪客。
     authorization = request.headers.get("Authorization")
     if authorization is None and not required:
         return None
@@ -242,6 +247,7 @@ def authenticate(request, connection, required=True):
     if match is None:
         raise ApiError("E0002")
     claims = verify_token(match.group(1))
+    # 目前帳號與 session 一起查核；DB 例外保留給 HTTP 系統錯誤處理，不偽裝成 token 失效。
     account = connection.execute(
         "SELECT id, email, nickname, role, status, created_at FROM accounts WHERE id = %s",
         (int(claims["sub"]),),
@@ -261,6 +267,7 @@ def authenticate(request, connection, required=True):
         or session["expires_at"] != datetime.fromtimestamp(claims["exp"], timezone.utc)
     ):
         raise ApiError("E0002")
+    # 身分可驗證時停用優先於撤銷；恢復帳號仍不會使舊 session 復活。
     if account["status"] == "disabled":
         raise ApiError("E0102")
     if session["revoked_at"] is not None:
