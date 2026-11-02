@@ -51,9 +51,9 @@ def guard_source():
                  "Ticket 57 guard 來源不同，須 Main 重新核對")
 
 
-# 所有前票恢復記錄都須完成，避免在未知殘留上疊加新 fixture。
-def pending_recovery():
-    for ticket, folder in extra.RECOVERIES.items():
+# 所有前票恢復記錄都須完成；可傳暫存路徑離線驗 pending，但 live 入口固定使用完整預設。
+def pending_recovery(*, recoveries=extra.RECOVERIES):
+    for ticket, folder in recoveries.items():
         for path in folder.glob(f"recovery-{ticket}*.json"):
             packet = json.loads(path.read_text(encoding="utf-8"))
             extra.validate_packet(packet, ticket=ticket)
@@ -83,7 +83,7 @@ def rejected(nonce, observed, method, path, payload, token, status, code, fields
     result = extra.decoded(extra.raw_request(method, path, raw, token, backend=backend))
     shared.expect(result, status, code, fields)
     shared.check(result[2].get("Access-Control-Allow-Origin") == extra.ORIGIN, "拒絕回應缺 CORS")
-    # Django／Flask 的 request.path 已解碼百分比；日誌仍對應原請求的同一資源，不改測試 URL。
+    # 框架的 request.path 已解碼百分比；日誌仍對應原請求的同一資源，不改測試 URL。
     observed.append((result[1]["log_id"], method, unquote(path.split("?", 1)[0]), status))
     shared.check(snapshot(nonce, ticket=ticket) == before, "拒絕請求留下部分資料變更")
 
@@ -358,6 +358,19 @@ def input_cases(nonce, *, backend=BACKEND, ticket=TICKET):
                                ("?page%5B%5D=1&per_page=20", {"page": [TYPE]})):
             rejected(nonce, observed, "GET", path + suffix, None, actor["token"], 422, "E0001", fields,
                      backend=backend, ticket=ticket)
+
+    # 鍵的 UTF-8 bytes 身分與顯示標籤分開；合法 U+FFFD、非法 bytes 及百分比字面標籤不能誤合併。
+    for suffix, fields in (
+        ("%EF%BF%BD=x", {"�": ["不支援此欄位"]}),
+        ("%EF%BF%BD=x&%EF%BF%BD=y", {"�": ["此參數不可重複"]}),
+        ("%FF=x&%EF%BF%BD=y", {"%FF": ["不支援此欄位"], "�": ["不支援此欄位"]}),
+        ("%FF=x&%25FF=y", {"%FF": ["不支援此欄位"]}),
+        ("%25FF=x&%FF=y", {"%FF": ["不支援此欄位"]}),
+        ("%FF=x&%ff=y&%25FF=z", {"%FF": ["此參數不可重複"]}),
+        ("%25FF=x&%FF=y&%25FF=z", {"%FF": ["此參數不可重複"]}),
+    ):
+        rejected(nonce, observed, "GET", "/api/articles?page=1&per_page=20&" + suffix,
+                 None, actor["token"], 422, "E0001", fields, backend=backend, ticket=ticket)
 
     # 最小與最大碼點都經建立及修改；非 BMP、組合字、HTML／Markdown 與 CRLF 保留原文。
     texts = (("😀", "😀", "😀"), ("😀" * 200, "😀" * 20000, "😀" * 2000),

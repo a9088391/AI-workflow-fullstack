@@ -289,6 +289,7 @@ def account_resource(account):
 
 # 依可見性與恢復控制者計算布林值，不把內部欄位洩漏到 API。
 def content_resource(row, viewer, kind):
+    # can_restore 只描述該筆內容的恢復資格，不授予父文章讀取權，也不取代寫入時重驗。
     resource = {
         "id": row["id"],
         "author": {"id": row["author_id"], "nickname": row["nickname"]},
@@ -302,6 +303,7 @@ def content_resource(row, viewer, kind):
             or (viewer["id"] == row["author_id"] and row["restore_control"] == "author")
         ),
     }
+    # 留言只回父 ID；不能因作者可讀自己留言而附帶不可讀父文章的欄位。
     if kind == "article":
         resource.update(title=row["title"], body=row["body"])
     else:

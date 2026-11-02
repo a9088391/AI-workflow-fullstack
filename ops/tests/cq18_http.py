@@ -31,10 +31,10 @@ RECOVERY = Path(".scratch/code-quality/cq18")
 RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19"),
               "cq20": Path(".scratch/code-quality/cq20"), "cq21": Path(".scratch/code-quality/cq21"),
               "cq22": Path(".scratch/code-quality/cq22"), "cq23": Path(".scratch/code-quality/cq23"),
-              "cq24": Path(".scratch/code-quality/cq24")}
+              "cq24": Path(".scratch/code-quality/cq24"), "cq25": Path(".scratch/code-quality/cq25")}
 NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}",
           "cq20": r"cq20[0-9a-f]{8}", "cq21": r"cq21[0-9a-f]{8}", "cq22": r"cq22[0-9a-f]{8}",
-          "cq23": r"cq23[0-9a-f]{8}", "cq24": r"cq24[0-9a-f]{8}"}
+          "cq23": r"cq23[0-9a-f]{8}", "cq24": r"cq24[0-9a-f]{8}", "cq25": r"cq25[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
