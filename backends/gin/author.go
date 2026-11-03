@@ -19,6 +19,7 @@ func (s *server) writeTx(c *gin.Context, viewer *account, token *claims) (*sql.T
 		failInternal(c, fmt.Errorf("begin protected write: %w", err))
 		return nil, nil, false
 	}
+	// 外層認證後仍可能等待他人停用或登出；帳號鎖先於 session，鎖後重新裁決。
 	var current account
 	err = tx.QueryRowContext(ctx, "SELECT id,role,status FROM accounts WHERE id=$1 FOR UPDATE", viewer.ID).Scan(&current.ID, &current.Role, &current.Status)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -67,11 +68,13 @@ func (s *server) writeTx(c *gin.Context, viewer *account, token *claims) (*sql.T
 		respondError(c, &apiError{code: "E0002"})
 		return nil, nil, false
 	}
+	// 失敗分支已自行回滾；成功時把交易交給 handler，負責 Commit 或 defer Rollback。
 	return tx, &current, true
 }
 
 // createArticle 在認證鎖內寫入作者與實際建立後端，讓建立與更新時間相同。
 func (s *server) createArticle(c *gin.Context) {
+	// 先驗登入，再驗 Query 與 Body，無效輸入不得進入寫入交易。
 	viewer, token, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -138,6 +141,7 @@ func (s *server) ownedList(c *gin.Context, viewer *account, page, perPage int64,
 	if article {
 		table, columns, reader = "articles", articleColumns, readArticleRow
 	}
+	// 計數與取頁使用相同作者條件；沒有快照分頁承諾，也不逐筆追加查詢。
 	base := " FROM " + table + " JOIN accounts ON accounts.id=" + table + ".author_id WHERE " + table + ".author_id=$1"
 	ctx := c.Request.Context()
 	var total int64
@@ -153,6 +157,7 @@ func (s *server) ownedList(c *gin.Context, viewer *account, page, perPage int64,
 			failInternal(c, fmt.Errorf("list owned content: %w", err))
 			return
 		}
+		// 即使中途掃描失敗仍釋放查詢資源；迭代錯誤不能回成不完整成功列表。
 		defer rows.Close()
 		for rows.Next() {
 			row, err := reader(rows)
@@ -172,6 +177,7 @@ func (s *server) ownedList(c *gin.Context, viewer *account, page, perPage int64,
 
 // createComment 鎖住公開父文章後新增留言，使文章下架與留言建立不能交錯通過。
 func (s *server) createComment(c *gin.Context) {
+	// 先驗登入，再驗 Query／Path／Body，無效輸入不得進入寫入交易。
 	viewer, token, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -246,6 +252,7 @@ func (s *server) commentDetail(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
+	// 一次讀取留言與父文章狀態，其他會員須先過隱藏 404 才判作者詳情 403。
 	var row content
 	var parentState string
 	query := "SELECT " + commentColumns + ",articles.visibility FROM comments JOIN accounts ON accounts.id=comments.author_id JOIN articles ON articles.id=comments.article_id WHERE comments.id=$1"
@@ -283,6 +290,7 @@ func (s *server) setCommentVisibility(c *gin.Context) { s.mutateContent(c, false
 
 // mutateContent 共用四種版本寫入的驗證與鎖順序，避免同值或競爭繞過權限。
 func (s *server) mutateContent(c *gin.Context, article, visibility bool) {
+	// 先驗登入，再驗 Query／Path／Body，無效輸入不得進入寫入交易。
 	viewer, token, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -370,6 +378,7 @@ func (s *server) mutateContent(c *gin.Context, article, visibility bool) {
 			return
 		}
 	}
+	// 權限與恢復資格都通過後才比版本；過期的同值請求仍必須回 409。
 	if row.Version != version {
 		respondError(c, &apiError{code: "E0201"})
 		return
@@ -431,7 +440,7 @@ func lockedArticle(ctx context.Context, tx *sql.Tx, id int64) (content, error) {
 	return row, err
 }
 
-// lockedComment 在父文章之後鎖住留言，讀取目前狀態而不改建立來源。
+// lockedComment 由已鎖父文章的流程呼叫，只鎖留言本身以維持文章→留言順序。
 func lockedComment(ctx context.Context, tx *sql.Tx, id int64) (content, error) {
 	row, err := readCommentRow(tx.QueryRowContext(ctx, "SELECT "+commentColumns+" FROM comments JOIN accounts ON accounts.id=comments.author_id WHERE comments.id=$1 FOR UPDATE OF comments", id))
 	return row, err
@@ -439,6 +448,7 @@ func lockedComment(ctx context.Context, tx *sql.Tx, id int64) (content, error) {
 
 // saveContent 只更新允許的內容欄位，並以版本條件保護跨後端寫入。
 func saveContent(ctx context.Context, tx *sql.Tx, row content, body map[string]string, article, visibility bool, control string) error {
+	// 僅寫入這次操作允許的欄位；建立來源及其他欄位保持原值。
 	var result sql.Result
 	var err error
 	if visibility {
@@ -459,6 +469,7 @@ func saveContent(ctx context.Context, tx *sql.Tx, row content, body map[string]s
 	if err != nil {
 		return fmt.Errorf("update content: %w", err)
 	}
+	// 已持有內容鎖且帶版本條件，更新筆數異常須失敗，不能回報假成功。
 	n, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("check updated content: %w", err)

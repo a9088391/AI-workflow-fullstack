@@ -21,7 +21,17 @@ var messages = map[string]struct {
 	status  int
 	message string
 }{
-	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E0201": {409, "內容已更新，請確認最新內容後再送出"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
+	"E0001": {422, "欄位資料不正確，請確認後再送出"},
+	"E0002": {401, "登入已逾期，請重新登入"},
+	"E0003": {403, "沒有權限使用此功能"},
+	"E0004": {404, "找不到指定資料或 API"},
+	"E0005": {400, "系統暫時無法處理，請稍後再試"},
+	"E0101": {401, "帳號或密碼錯誤"},
+	"E0102": {403, "此帳號已停用，請聯絡系統管理員"},
+	"E0104": {500, "後台認證設定異常，請聯絡系統管理員"},
+	"E0105": {429, "登入失敗次數過多，請稍後再試"},
+	"E0201": {409, "內容已更新，請確認最新內容後再送出"},
+	"E9999": {500, "系統暫時無法處理，請稍後再試"},
 }
 
 // server 持有唯一資料庫池與 Gin 專屬金鑰，避免請求間共用可變身分。
@@ -76,6 +86,7 @@ func logMiddleware() gin.HandlerFunc {
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Expose-Headers", "Retry-After")
 		}
+		// 預檢在業務路由前結束；一般請求完成後再記錄最終狀態。
 		log.Printf("IN log_id=%s method=%s path=%s", id, c.Request.Method, c.Request.URL.Path)
 		if c.Request.Method == http.MethodOptions {
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
@@ -104,6 +115,7 @@ func (s *server) register(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
+	// 先回報已註冊帳號；實際 INSERT 仍須由唯一索引處理並行競爭。
 	var exists bool
 	err := s.db.QueryRowContext(c.Request.Context(), "SELECT EXISTS(SELECT 1 FROM accounts WHERE email=$1)", body["email"]).Scan(&exists)
 	if err != nil {
@@ -164,6 +176,7 @@ func (s *server) login(c *gin.Context) {
 		failInternal(c, err)
 		return
 	}
+	// 任一未提交出口都回滾；成功 Commit 後的 Rollback 不會撤回結果。
 	defer tx.Rollback()
 	// 設定列先於帳號列加鎖，讓管理設定變更與跨後端登入使用同一序列。
 	var enabled bool
@@ -187,6 +200,7 @@ func (s *server) login(c *gin.Context) {
 		failInternal(c, err)
 		return
 	}
+	// 等待設定及帳號鎖結束後才取實際時間，避免把等待時間排除於鎖定判定。
 	var now time.Time
 	if err = tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		failInternal(c, err)
@@ -231,6 +245,7 @@ func (s *server) login(c *gin.Context) {
 				failInternal(c, err)
 				return
 			}
+			// 視窗左開右閉並包含本次事件，只計目前世代而不刪除歷史。
 			var count int
 			err = tx.QueryRowContext(ctx, "SELECT count(*) FROM login_failures WHERE account_id=$1 AND failure_epoch=$2 AND occurred_at>$3 AND occurred_at<=$4", a.ID, a.Epoch, now.Add(-time.Duration(window)*time.Minute), now).Scan(&count)
 			if err != nil {
@@ -334,6 +349,7 @@ func (s *server) logout(c *gin.Context) {
 		failInternal(c, err)
 		return
 	}
+	// 任一未提交出口都回滾；成功 Commit 後的 Rollback 不會撤回結果。
 	defer tx.Rollback()
 	// 與停用、重設密碼共用帳號→session 鎖順序；鎖後再次檢查現況。
 	var status string
@@ -399,6 +415,7 @@ func (s *server) health(c *gin.Context) {
 
 // run 建立固定路由，保持 Gin 預設 404 與 HTTP 方法錯誤可受共同回應控制。
 func run() error {
+	// 先驗持久金鑰及資料庫連線，失敗時讓容器退出而非提供假就緒服務。
 	key, err := loadKey()
 	if err != nil {
 		return err
@@ -427,6 +444,7 @@ func run() error {
 		respondError(c, &apiError{code: "E9999"})
 		c.Abort()
 	}))
+	// 路由直接綁定各責任檔案的 handler，所有框架保持相同方法與路徑。
 	router.POST("/api/auth/register", s.register)
 	router.POST("/api/auth/login", s.login)
 	router.POST("/api/auth/logout", s.logout)
@@ -455,6 +473,7 @@ func run() error {
 	// 已知路徑但方法不符時保留 HTTP 405。
 	router.NoMethod(func(c *gin.Context) { respondError(c, &apiError{code: "E0005", status: 405}) })
 	router.HandleMethodNotAllowed = true
+	// Run 返回後由 defer 關閉資料庫池；啟動失敗交由 main 記錄並退出。
 	return router.Run(":8000")
 }
 

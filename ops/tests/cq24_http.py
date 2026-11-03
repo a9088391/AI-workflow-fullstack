@@ -16,6 +16,7 @@ from types import CodeType, FunctionType
 
 import cq10_http
 import cq18_http as extra
+import cq21_http as content
 import cq22_http as suite
 import ticket40_http
 import ticket57_http as shared
@@ -57,8 +58,8 @@ def arguments(argv=None):
 
 
 # 只接受已核准的固定 DDL 與唯一 trigger；未知來源、依賴或 namespace 均保留待 Main 查明。
-def boundary_identity(catalog, nonce):
-    shared.check(re.fullmatch(extra.NONCES[TICKET], nonce) is not None, "邊界 nonce 不符")
+def boundary_identity(catalog, nonce, *, ticket=TICKET):
+    shared.check(re.fullmatch(extra.NONCES[ticket], nonce) is not None, "邊界 nonce 不符")
     function, triggers = catalog["function"], catalog["triggers"]
     if function is None and not triggers:
         shared.check(not catalog["dependents"], "沒有 function 卻有未知相依物件")
@@ -119,12 +120,12 @@ def boundary_catalog():
 
 
 # 帳號／事件所有權確認後，在鎖住目標表的同一交易重驗並刪已知 DDL；呼叫端先核唯一 pending。
-def cleanup_boundary(packet):
+def cleanup_boundary(packet, *, backend=BACKEND, ticket=TICKET):
     catalog = boundary_catalog()
-    values = boundary_identity(catalog, packet["nonce"])
+    values = boundary_identity(catalog, packet["nonce"], ticket=ticket)
     if values is None:
         return
-    email = f"t57-{packet['nonce']}x{values['microseconds']}-{BACKEND}-member@example.test"
+    email = f"t57-{packet['nonce']}x{values['microseconds']}-{backend}-member@example.test"
     shared.check(shared.sql(
         "SELECT count(*) FROM accounts a JOIN login_failures f ON f.account_id=a.id "
         f"WHERE a.id={values['member_id']} AND a.email='{email}' AND a.role='member' "
@@ -146,39 +147,48 @@ def cleanup_boundary(packet):
     extra.clean_boundary()
 
 
-# 先收束本票三種已知 holder 與邊界 DDL，再用既有交易恢復四設定、存量鎖欄及本票時間。
-def restore_baseline(packet, path, *, ticket=TICKET):
-    shared.check(ticket == TICKET and path.parent == RECOVERY
-                 and path.name == f"recovery-{packet['nonce']}.json" and not packet["restored"], "CQ24 恢復路徑或狀態不符")
+# 先離線核對唯一 pending 與固定目錄；測試可傳暫存目錄，不必模擬 DB 或偷換全域值。
+def validate_restore(packet, path, *, backend=BACKEND, ticket=TICKET, recoveries=extra.RECOVERIES):
+    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"))
+                 and path.parent == recoveries[ticket]
+                 and path.name == f"recovery-{packet['nonce']}.json" and not packet["restored"], "邊界恢復路徑或狀態不符")
     extra.validate_packet(packet, ticket=ticket)
     # 任何其他 pending 都必須先處理，不能讓不同 run 的恢復互相覆蓋。
-    for other_ticket, folder in extra.RECOVERIES.items():
+    for other_ticket, folder in recoveries.items():
         for other in folder.glob(f"recovery-{other_ticket}*.json"):
             candidate = json.loads(other.read_text(encoding="utf-8"))
             extra.validate_packet(candidate, ticket=other_ticket)
             shared.check(other.name == f"recovery-{candidate['nonce']}.json"
                          and (other == path or candidate["restored"]), "不是唯一 pending recovery，拒絕恢復")
+
+
+# 先收束本票已知 holder 與邊界 DDL，再用既有交易恢復四設定、存量鎖欄及本票時間。
+def restore_baseline(packet, path, *, backend=BACKEND, ticket=TICKET):
+    validate_restore(packet, path, backend=backend, ticket=ticket)
     # 只終止本 nonce 與固定 mode 命名的 owner holder，不碰應用連線或其他票。
     names = ",".join(f"'{packet['nonce']}-{mode}'" for mode in ("settings", "disable-first", "login-first"))
     shared.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() "
                f"AND usename='articles_owner' AND application_name IN ({names}) AND pid<>pg_backend_pid()")
-    cleanup_boundary(packet)
+    if ticket == "cq26":
+        content.cleanup_holders(packet["nonce"], ticket=ticket)
+    cleanup_boundary(packet, backend=backend, ticket=ticket)
     extra.restore_baseline(packet, path, ticket=ticket)
 
 
 # 建立與 shared 精確左界中斷相同的持久狀態；這是獨立故障 fixture，沒有攔截 shared 函式。
-def interrupt_at_boundary():
+def interrupt_at_boundary(*, backend=BACKEND, ticket=TICKET):
+    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26")), "未核准的邊界 fixture 組合")
     suite.pending_recovery()
     shared.guard()
-    nonce = TICKET + secrets.token_hex(4)
-    packet, path = extra.capture_baseline(nonce, ticket=TICKET)
+    nonce = ticket + secrets.token_hex(4)
+    packet, path = extra.capture_baseline(nonce, ticket=ticket)
     try:
-        admin = shared.user(BACKEND, nonce + "e", "admin")
-        member = shared.user(BACKEND, nonce + "x0", "member")
+        admin = shared.user(backend, nonce + "e", "admin")
+        member = shared.user(backend, nonce + "x0", "member")
         settings = {"enabled": True, "window_minutes": 1, "failure_threshold": 2, "lock_seconds": 30}
-        shared.expect(shared.request(BACKEND, "PUT", extra.SETTINGS, settings, admin["token"]), 200)
+        shared.expect(shared.request(backend, "PUT", extra.SETTINGS, settings, admin["token"]), 200)
         epoch = int(shared.sql(f"SELECT failure_epoch FROM accounts WHERE id={member['id']}"))
-        shared.expect(shared.request(BACKEND, "POST", extra.LOGIN,
+        shared.expect(shared.request(backend, "POST", extra.LOGIN,
                                     {"email": member["email"], "password": "Wrong1234"}), 401, "E0101")
         first_id = shared.sql(f"SELECT id FROM login_failures WHERE account_id={member['id']} AND failure_epoch={epoch}")
         shared.check(first_id.isdecimal(), "故障 fixture 第一筆事件不唯一")
@@ -188,21 +198,21 @@ def interrupt_at_boundary():
                    "LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$" + source + "$$; "
                    "CREATE TRIGGER ticket57_http_boundary_shift BEFORE INSERT ON public.login_failures "
                    "FOR EACH ROW EXECUTE FUNCTION public.ticket57_http_boundary_shift()")
-        boundary_identity(boundary_catalog(), nonce)
-        print(f"INTERRUPT CQ24 independent boundary fixture；pending {path}", flush=True)
+        boundary_identity(boundary_catalog(), nonce, ticket=ticket)
+        print(f"INTERRUPT {ticket.upper()} independent boundary fixture；pending {path}", flush=True)
         # 刻意略過 finally，留下已落盤的 pending 與持久 DDL，供新程序以 --restore 驗證恢復。
         os._exit(75)
     finally:
         # 一般例外（含 KeyboardInterrupt）仍立即嘗試恢復；失敗則保留 pending，交 Main／CLI 處理。
-        restore_baseline(packet, path)
+        restore_baseline(packet, path, backend=backend, ticket=ticket)
 
 
 # 只從已知 driver 模組收集 code object 與靜態名稱，例外中不可信的 filename／函式名不直接輸出。
-def trusted_locations():
+def trusted_locations(*, modules=()):
     locations = {}
     for module, filename in ((sys.modules[__name__], "cq24_http.py"), (suite, "cq22_http.py"),
                              (extra, "cq18_http.py"), (shared, "ticket57_http.py"),
-                             (cq10_http, "cq10_http.py"), (ticket40_http, "ticket40_http.py")):
+                             (cq10_http, "cq10_http.py"), (ticket40_http, "ticket40_http.py"), *modules):
         codes = [value.__code__ for value in vars(module).values()
                  if isinstance(value, FunctionType) and value.__module__ == module.__name__]
         while codes:
@@ -213,8 +223,8 @@ def trusted_locations():
 
 
 # 案例與復原可能同時失敗；遍歷 cause/context 且防循環，只輸出可信位置及固定例外類型。
-def report_failure(error):
-    locations, seen, pending = trusted_locations(), set(), [error]
+def report_failure(error, *, ticket=TICKET, modules=()):
+    locations, seen, pending = trusted_locations(modules=modules), set(), [error]
     types = {kind: kind.__name__ for kind in (AssertionError, RuntimeError, KeyboardInterrupt, ValueError,
              TypeError, KeyError, OSError, TimeoutError, json.JSONDecodeError,
              subprocess.CalledProcessError, subprocess.TimeoutExpired)}
@@ -228,15 +238,15 @@ def report_failure(error):
             location = locations.get(frame.f_code)
             frames.append(f"{location[0]}:{line}:{location[1]}" if location else "<external>")
         location = " -> ".join(frames) or "<no traceback>"
-        print(f"FAIL CQ24 {types.get(type(current), 'Exception')} at {location}；核對 RUN／recovery", file=sys.stderr)
+        print(f"FAIL {ticket.upper()} {types.get(type(current), 'Exception')} at {location}；核對 RUN／recovery", file=sys.stderr)
         for linked in (current.__context__, current.__cause__):
             if linked is not None:
                 pending.append(linked)
 
 
 # 離線用真 validator 核 DDL 拒絕、參數與雙重失敗診斷；沒有 guard、HTTP、Docker 或 DB 呼叫。
-def self_check():
-    suite.self_check(backend=BACKEND, ticket=TICKET)
+def self_check(*, backend=BACKEND, ticket=TICKET):
+    suite.self_check(backend=backend, ticket=ticket)
     raw = json.dumps({"nickname": "😀\r\n\0"}).encode()
     assert [ord(char) for char in json.loads(raw)["nickname"]] == [0x1F600, 13, 10, 0]
     source = BOUNDARY_BODY.format(member_id=7, epoch=2, first_id=11, microseconds=0)
@@ -251,17 +261,17 @@ def self_check():
                              "FOR EACH ROW EXECUTE FUNCTION ticket57_http_boundary_shift()"}
     catalog = {"function": function, "triggers": [trigger],
                "dependents": [{"class": "pg_trigger", "oid": 91, "subid": 0, "type": "n"}]}
-    assert boundary_identity(catalog, "cq240123abcd") == {
+    assert boundary_identity(catalog, ticket + "0123abcd", ticket=ticket) == {
         "member_id": 7, "epoch": 2, "first_id": 11, "microseconds": 0,
     }
-    assert boundary_identity({"function": None, "triggers": [], "dependents": []}, "cq240123abcd") is None
+    assert boundary_identity({"function": None, "triggers": [], "dependents": []}, ticket + "0123abcd", ticket=ticket) is None
     for changed in ({**catalog, "function": {**function, "owner": "unknown"}},
                     {**catalog, "function": {**function, "source": source + " "}},
                     {**catalog, "function": {**function, "security_definer": False}},
                     {**catalog, "triggers": [{**trigger, "enabled": "D"}]},
                     {**catalog, "dependents": []}):
         try:
-            boundary_identity(changed, "cq240123abcd")
+            boundary_identity(changed, ticket + "0123abcd", ticket=ticket)
         except AssertionError:
             continue
         raise AssertionError("未知 DDL 未被拒絕")
@@ -277,14 +287,14 @@ def self_check():
             error.__cause__ = ValueError("cq24-secret-sentinel")
             error.__context__.__context__ = error
             with redirect_stderr(output):
-                report_failure(error)
+                report_failure(error, ticket=ticket)
         text = output.getvalue()
-        assert text.count("FAIL CQ24 ") == 3
+        assert text.count(f"FAIL {ticket.upper()} ") == 3
         assert "RuntimeError" in text and "ValueError" in text and failure.__name__ in text
         assert "cq24_http.py:" in text and "cq24-secret-sentinel" not in text
     assert arguments(["--regression", "query"]).regression == "query"
     assert arguments(["--interrupt-at-boundary"]).interrupt_at_boundary
-    print("PASS CQ24 offline known-DDL rejection／safe chained failure／CLI", flush=True)
+    print(f"PASS {ticket.upper()} offline known-DDL rejection／safe chained failure／CLI", flush=True)
 
 
 # 只有本票入口選 FastAPI/CQ24；生命週期固定走本票恢復，再重用原票的公開案例編排。

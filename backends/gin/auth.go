@@ -55,11 +55,22 @@ func businessTime(t time.Time) string { return t.In(taipei).Format("2006-01-02 1
 
 // accountData 限定可回傳的帳號欄位，避免洩漏密碼與鎖定內部值。
 func accountData(a account) map[string]any {
-	return map[string]any{"id": a.ID, "email": a.Email, "nickname": a.Nickname, "role": a.Role, "status": a.Status, "created_at": businessTime(a.Created)}
+	return map[string]any{
+		"id":         a.ID,
+		"email":      a.Email,
+		"nickname":   a.Nickname,
+		"role":       a.Role,
+		"status":     a.Status,
+		"created_at": businessTime(a.Created),
+	}
 }
 
 // randomBytes 使用作業系統安全亂數，供密碼鹽與每次登入 jti 使用。
-func randomBytes(n int) ([]byte, error) { b := make([]byte, n); _, err := rand.Read(b); return b, err }
+func randomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	return b, err
+}
 
 // passwordHash 寫入標準 Argon2id PHC，讓所有後端可驗證同一密碼。
 func passwordHash(password string) (string, error) {
@@ -73,6 +84,7 @@ func passwordHash(password string) (string, error) {
 
 // verifyPassword 先限制 PHC 版本與成本，再以固定成本驗證跨後端雜湊。
 func verifyPassword(password, encoded string) (bool, *apiError) {
+	// 只接受固定成本與正規 Base64，避免毀損資料觸發任意成本或被誤認密碼錯誤。
 	match := phcPattern.FindStringSubmatch(encoded)
 	if match == nil {
 		return false, &apiError{code: "E0104"}
@@ -85,6 +97,7 @@ func verifyPassword(password, encoded string) (bool, *apiError) {
 	if err != nil || len(expected) != 32 || base64.RawStdEncoding.EncodeToString(expected) != match[2] {
 		return false, &apiError{code: "E0104"}
 	}
+	// 使用相同 Argon2id 參數重算，以固定時間比較避免逐 byte 洩漏差異。
 	actual := argon2.IDKey([]byte(password), salt, 2, 19456, 1, 32)
 	return hmac.Equal(actual, expected), nil
 }
@@ -122,6 +135,7 @@ func uniqueObject(raw []byte) (map[string]json.RawMessage, bool) {
 	if err != nil || start != json.Delim('{') {
 		return nil, false
 	}
+	// 在解碼成 map 前逐鍵拒絕重複，不能讓最後值覆寫簽章內的歧義。
 	object := make(map[string]json.RawMessage)
 	for decoder.More() {
 		key, err := decoder.Token()
@@ -138,6 +152,7 @@ func uniqueObject(raw []byte) (map[string]json.RawMessage, bool) {
 		}
 		object[name] = value
 	}
+	// 必須完整結束且沒有第二份 JSON，避免只驗證合法前綴。
 	end, err := decoder.Token()
 	if err != nil || end != json.Delim('}') {
 		return nil, false
@@ -233,6 +248,7 @@ func authenticate(ctx context.Context, db *sql.DB, key []byte, authorization str
 	if e != nil {
 		return nil, nil, e, nil
 	}
+	// 角色與狀態只讀資料庫目前值；查詢失敗保留系統錯誤，不能降成逾期。
 	id, _ := strconv.ParseInt(c.Sub, 10, 64)
 	var a account
 	err := db.QueryRowContext(ctx, "SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1", id).Scan(&a.ID, &a.Email, &a.Nickname, &a.Role, &a.Status, &a.Created)

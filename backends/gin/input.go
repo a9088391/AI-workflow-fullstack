@@ -21,6 +21,8 @@ var emailPattern = regexp.MustCompile(`^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@
 var passwordPattern = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
 var decimalPattern = regexp.MustCompile(`^[0-9]+$`)
 var jsonIntegerPattern = regexp.MustCompile(`^-?[0-9]+$`)
+var queryEscapePattern = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+var queryFieldPattern = regexp.MustCompile(`^filters\[([^]]+)\]$`)
 
 // apiError 保存固定錯誤碼及欄位細節，讓各端點共用相同回應。
 type apiError struct {
@@ -38,33 +40,44 @@ func fieldError(name, message string) *apiError {
 // oneQuery 逐個解析原始參數，以保留重複及陣列鍵的驗證資訊。
 func oneQuery(r *http.Request, allowed map[string]bool) (map[string]string, map[string][]string) {
 	values, errors := map[string]string{}, map[string][]string{}
+	seen := map[string]bool{}
 	if r.URL.RawQuery == "" {
 		return values, errors
 	}
 	for _, pair := range strings.Split(r.URL.RawQuery, "&") {
-		// 原始 Query 保留重複次數與陣列鍵，錯誤欄位改成 API15 的名稱。
+		// 解碼後的 bytes 作為身分，非法 UTF-8 的顯示標籤不能與字面百分比名稱合併。
 		parts := strings.SplitN(pair, "=", 2)
 		name, err := url.QueryUnescape(parts[0])
-		if err != nil || !utf8.ValidString(name) {
+		if err != nil {
 			name = parts[0]
+		}
+		identity := name
+		if !utf8.ValidString(name) {
+			// 只統一百分比 escape 的 hex 大小寫，保留原欄位的 ASCII 大小寫。
+			name = queryEscapePattern.ReplaceAllStringFunc(parts[0], strings.ToUpper)
 		}
 		canonical := name
 		for _, key := range []string{"page", "per_page", "filters[scope]", "filters[keyword]"} {
-			if strings.HasPrefix(name, key+"[") {
+			// 支援欄位的陣列別名仍視為同一單值參數；未知巢狀鍵保留各自身分。
+			if allowed[key] && strings.HasPrefix(name, key+"[") {
 				canonical = key
+				identity = key
 				break
 			}
 		}
-		label := strings.ReplaceAll(strings.ReplaceAll(canonical, "filters[", "filters."), "]", "")
-		_, seen := values[canonical]
+		label := queryFieldPattern.ReplaceAllString(canonical, "filters.$1")
+		// 真正重複優先；不同身分若共用顯示標籤，後來的錯誤不得覆蓋首個錯誤。
 		switch {
-		case seen:
+		case seen[identity]:
 			errors[label] = []string{"此參數不可重複"}
-		case canonical != name && allowed[canonical]:
+		case len(errors[label]) > 0:
+		case canonical != name:
 			errors[label] = []string{wrongType}
 		case !allowed[canonical]:
 			errors[label] = []string{"不支援此欄位"}
 		}
+		seen[identity] = true
+		// 值仍嚴格驗 UTF-8；保留鍵的優先錯誤，不將非法文字交給資料庫。
 		raw := ""
 		if len(parts) == 2 {
 			raw = parts[1]
@@ -117,6 +130,7 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 	if e := noGetBody(r); e != nil {
 		return 0, 0, "", e
 	}
+	// 先處理原始鍵的重複／型態錯誤，值驗證不得覆蓋較優先的錯誤。
 	allowed := map[string]bool{"page": true, "per_page": true}
 	if filter != "" {
 		allowed["filters["+filter+"]"] = true
@@ -136,6 +150,7 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 			}
 		}
 	}
+	// 範圍值精確比對，搜尋則僅去除 U+0020 後計算 Unicode 碼點長度。
 	if value, ok := values["filters[scope]"]; ok && len(errors["filters.scope"]) == 0 && value != "management" {
 		errors["filters.scope"] = []string{invalid}
 	}
@@ -155,6 +170,7 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 
 // validSurrogates 拒絕未配對的 JSON UTF-16 escape，避免悄悄改成替代字元。
 func validSurrogates(raw []byte) bool {
+	// 跳過非 Unicode escape；高代理必須緊接低代理，孤立低代理一律拒絕。
 	for i := 0; i < len(raw); {
 		if raw[i] != '\\' {
 			i++
@@ -193,7 +209,7 @@ func validSurrogates(raw []byte) bool {
 	return true
 }
 
-// bodyInput 限制大小並逐鍵解析 JSON，同名鍵依最後值驗證以維持跨後端一致。
+// bodyInput 限制大小並逐鍵解析 JSON，讓端點共用型態、欄位及文字驗證。
 func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string]string, *apiError) {
 	// 先限制大小、UTF-8 與 JSON 結構；解析失敗不可留下部分欄位。
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
@@ -223,6 +239,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 		}
 		return nil, &apiError{code: "E0005"}
 	}
+	// 只保留端點允許的欄位；先判 null 與型態，再一起驗證格式並彙整錯誤。
 	allowed := map[string]bool{}
 	for _, field := range fields {
 		allowed[field] = true
@@ -231,7 +248,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 	present := map[string]bool{}
 	errors := map[string][]string{}
 	for decoder.More() {
-		// JSON object 同名鍵沿用其他後端的最後值，且只以最後值決定欄位錯誤。
+		// 同名鍵保留最後值與對應欄位錯誤；整份 JSON 仍須完整解析成功。
 		keyToken, err := decoder.Token()
 		if err != nil {
 			return nil, &apiError{code: "E0005"}
@@ -277,6 +294,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 	if _, err = decoder.Token(); err != io.EOF {
 		return nil, &apiError{code: "E0005"}
 	}
+	// 完整解析後才補必填錯誤，避免把 JSON 語法失敗回成部分欄位錯誤。
 	for _, field := range fields {
 		if !present[field] {
 			errors[field] = []string{required}

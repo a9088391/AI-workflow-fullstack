@@ -18,10 +18,21 @@ type content struct {
 	Created, Updated                           sql.NullTime
 }
 
-// contentData 只輸出公開作者與目前使用者可恢復的內容欄位。
+// contentData 限定公開欄位並重算恢復資格，避免洩漏作者帳號或沿用舊權限。
 func contentData(row content, viewer *account, article bool) gin.H {
+	// can_restore 只描述此筆 hidden 內容的恢復資格，不代表可繞過父文章下架讀取。
 	canRestore := row.Visibility == "hidden" && viewer != nil && (viewer.Role == "admin" || viewer.ID == row.AuthorID && row.Restore.String == "author")
-	result := gin.H{"id": row.ID, "author": gin.H{"id": row.AuthorID, "nickname": row.Nickname}, "body": row.Body, "version": row.Version, "created_backend": row.Backend, "created_at": businessTime(row.Created.Time), "updated_at": businessTime(row.Updated.Time), "visibility": row.Visibility, "can_restore": canRestore}
+	result := gin.H{
+		"id":              row.ID,
+		"author":          gin.H{"id": row.AuthorID, "nickname": row.Nickname},
+		"body":            row.Body,
+		"version":         row.Version,
+		"created_backend": row.Backend,
+		"created_at":      businessTime(row.Created.Time),
+		"updated_at":      businessTime(row.Updated.Time),
+		"visibility":      row.Visibility,
+		"can_restore":     canRestore,
+	}
 	if article {
 		result["title"] = row.Title
 	} else {
@@ -96,6 +107,7 @@ func (s *server) articles(c *gin.Context) {
 			failInternal(c, err)
 			return
 		}
+		// 中途掃描失敗也關閉資源；檢查迭代錯誤後才能回傳完整列表。
 		defer rows.Close()
 		for rows.Next() {
 			row, err := readArticleRow(rows)
@@ -133,6 +145,7 @@ func (s *server) article(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
+	// 不存在與無資格讀取的下架文章共用 404，回應不洩漏資源欄位。
 	row, err := readArticleRow(s.db.QueryRowContext(c.Request.Context(), "SELECT "+articleColumns+" FROM articles JOIN accounts ON accounts.id=articles.author_id WHERE articles.id=$1", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, &apiError{code: "E0004"})
@@ -166,6 +179,7 @@ func (s *server) comments(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
+	// 先以父文章裁決可讀性；作者預覽下架文章不會取得其他人的下架留言。
 	var authorID int64
 	var visibility string
 	err := s.db.QueryRowContext(c.Request.Context(), "SELECT author_id,visibility FROM articles WHERE id=$1", id).Scan(&authorID, &visibility)
@@ -201,6 +215,7 @@ func (s *server) comments(c *gin.Context) {
 			failInternal(c, err)
 			return
 		}
+		// 中途掃描失敗也關閉資源；檢查迭代錯誤後才能回傳完整列表。
 		defer rows.Close()
 		for rows.Next() {
 			row, err := readCommentRow(rows)

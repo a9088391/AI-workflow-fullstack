@@ -31,6 +31,7 @@ func settingsData(v lockoutSettings) gin.H {
 
 // settingsInput 保留 JSON 原始型態與最後同名鍵，區分語法、缺漏、型態及範圍錯誤。
 func settingsInput(r *http.Request) (lockoutSettings, *apiError) {
+	// 先限制本文大小與編碼，再區分 JSON 語法錯誤和合法非 object 的欄位錯誤。
 	var result lockoutSettings
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
 	if err != nil || len(raw) > 1<<20 || !utf8.Valid(raw) || !validSurrogates(raw) {
@@ -45,6 +46,7 @@ func settingsInput(r *http.Request) (lockoutSettings, *apiError) {
 	if len(bytes.TrimSpace(raw)) == 0 || bytes.TrimSpace(raw)[0] != '{' {
 		return result, fieldError("_body", "Request Body 必須為 JSON object")
 	}
+	// 保留原始 JSON 型態，避免把字串、指數或小數悄悄轉為設定整數。
 	var values map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &values); err != nil {
 		return result, &apiError{code: "E0005"}
@@ -143,6 +145,7 @@ func (s *server) members(c *gin.Context) {
 			return r
 		}, keyword))
 	}
+	// 計數與資料列共用相同範圍，排序及分頁留在資料庫而不全量載入。
 	var total int64
 	if err := s.db.QueryRowContext(c.Request.Context(), "SELECT count(*)"+base, args...).Scan(&total); err != nil {
 		failInternal(c, fmt.Errorf("count members: %w", err))
@@ -161,6 +164,7 @@ func (s *server) members(c *gin.Context) {
 			failInternal(c, fmt.Errorf("list members: %w", err))
 			return
 		}
+		// 掃描或迭代失敗都不得輸出部分成功列表，離開時仍關閉查詢資源。
 		defer rows.Close()
 		for rows.Next() {
 			item, err := memberData(rows)
@@ -209,6 +213,7 @@ func (s *server) member(c *gin.Context) {
 // lockedAdmin 在已啟動交易中依 ID 鎖帳號，再鎖 session 重驗管理員身分。
 func lockedAdmin(c *gin.Context, tx *sql.Tx, viewer *account, token *claims, targetID int64, all bool) (*account, *apiError, error) {
 	ctx := c.Request.Context()
+	// 多帳號一律按 ID 加鎖；關閉鎖定時先鎖全部帳號，後續清除不會反向取得鎖。
 	query := "SELECT id,role,status FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE"
 	args := []any{viewer.ID, targetID}
 	if all {
@@ -236,6 +241,7 @@ func lockedAdmin(c *gin.Context, tx *sql.Tx, viewer *account, token *claims, tar
 			target = a
 		}
 	}
+	// 先完成並關閉帳號查詢，才能在同一連線查核 session；列鎖維持到交易結束。
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
@@ -298,7 +304,9 @@ func (s *server) memberStatus(c *gin.Context) {
 		failInternal(c, fmt.Errorf("begin member status: %w", err))
 		return
 	}
+	// 任一錯誤出口都回滾整個狀態與副作用；只有 Commit 成功才送出成功。
 	defer tx.Rollback()
+	// 參數通過後鎖帳號與 session 重驗，再判定目標是否屬於可管理的一般會員。
 	target, apiErr, err := lockedAdmin(c, tx, viewer, token, id, false)
 	if err != nil {
 		failInternal(c, err)
@@ -332,7 +340,7 @@ func (s *server) memberStatus(c *gin.Context) {
 	respondOK(c, 200, nil)
 }
 
-// adminComments 列出所有留言，包括個別下架及父文章下架的留言。
+// adminComments 限管理員列出所有留言，避免下架內容在管理流程中遺漏。
 func (s *server) adminComments(c *gin.Context) {
 	viewer, _, ok := s.adminIdentity(c)
 	if !ok {
@@ -344,6 +352,7 @@ func (s *server) adminComments(c *gin.Context) {
 		return
 	}
 	base := " FROM comments JOIN accounts ON accounts.id=comments.author_id"
+	// 計數與資料列共用相同範圍，排序及分頁留在資料庫而不全量載入。
 	var total int64
 	if err := s.db.QueryRowContext(c.Request.Context(), "SELECT count(*)"+base).Scan(&total); err != nil {
 		failInternal(c, fmt.Errorf("count admin comments: %w", err))
@@ -357,6 +366,7 @@ func (s *server) adminComments(c *gin.Context) {
 			failInternal(c, fmt.Errorf("list admin comments: %w", err))
 			return
 		}
+		// 掃描或迭代失敗都不得輸出部分成功列表，離開時仍關閉查詢資源。
 		defer rows.Close()
 		for rows.Next() {
 			row, err := readCommentRow(rows)
@@ -374,7 +384,7 @@ func (s *server) adminComments(c *gin.Context) {
 	respondOK(c, 200, gin.H{"list": list, "pagination": pagination(page, perPage, total)})
 }
 
-// loginLockoutSettings 讓管理員讀取目前提交的四欄共用設定。
+// loginLockoutSettings 讓管理員讀取目前提交的完整設定，避免回傳資料庫內部欄位。
 func (s *server) loginLockoutSettings(c *gin.Context) {
 	if _, _, ok := s.adminIdentity(c); !ok {
 		return
@@ -419,7 +429,9 @@ func (s *server) updateLoginLockoutSettings(c *gin.Context) {
 		failInternal(c, fmt.Errorf("begin lockout settings: %w", err))
 		return
 	}
+	// 任一錯誤出口都回滾整個狀態與副作用；只有 Commit 成功才送出成功。
 	defer tx.Rollback()
+	// 設定列先於帳號及 session，加鎖順序與登入一致以序列化完整設定。
 	var old lockoutSettings
 	err = tx.QueryRowContext(ctx, "SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1 FOR UPDATE").Scan(&old.Enabled, &old.WindowMinutes, &old.FailureThreshold, &old.LockSeconds)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -430,6 +442,7 @@ func (s *server) updateLoginLockoutSettings(c *gin.Context) {
 		failInternal(c, fmt.Errorf("lock lockout settings: %w", err))
 		return
 	}
+	// 真正關閉才需鎖全部帳號；數值或同值更新只重驗目前管理員。
 	disabling := old.Enabled && !next.Enabled
 	if _, apiErr, err := lockedAdmin(c, tx, viewer, token, 0, disabling); err != nil {
 		failInternal(c, err)
