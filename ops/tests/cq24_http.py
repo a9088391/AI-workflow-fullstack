@@ -149,7 +149,7 @@ def cleanup_boundary(packet, *, backend=BACKEND, ticket=TICKET):
 
 # 先離線核對唯一 pending 與固定目錄；測試可傳暫存目錄，不必模擬 DB 或偷換全域值。
 def validate_restore(packet, path, *, backend=BACKEND, ticket=TICKET, recoveries=extra.RECOVERIES):
-    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"))
+    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"), ("echo", "cq27"))
                  and path.parent == recoveries[ticket]
                  and path.name == f"recovery-{packet['nonce']}.json" and not packet["restored"], "邊界恢復路徑或狀態不符")
     extra.validate_packet(packet, ticket=ticket)
@@ -169,7 +169,7 @@ def restore_baseline(packet, path, *, backend=BACKEND, ticket=TICKET):
     names = ",".join(f"'{packet['nonce']}-{mode}'" for mode in ("settings", "disable-first", "login-first"))
     shared.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() "
                f"AND usename='articles_owner' AND application_name IN ({names}) AND pid<>pg_backend_pid()")
-    if ticket == "cq26":
+    if ticket in ("cq26", "cq27"):
         content.cleanup_holders(packet["nonce"], ticket=ticket)
     cleanup_boundary(packet, backend=backend, ticket=ticket)
     extra.restore_baseline(packet, path, ticket=ticket)
@@ -177,7 +177,7 @@ def restore_baseline(packet, path, *, backend=BACKEND, ticket=TICKET):
 
 # 建立與 shared 精確左界中斷相同的持久狀態；這是獨立故障 fixture，沒有攔截 shared 函式。
 def interrupt_at_boundary(*, backend=BACKEND, ticket=TICKET):
-    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26")), "未核准的邊界 fixture 組合")
+    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"), ("echo", "cq27")), "未核准的邊界 fixture 組合")
     suite.pending_recovery()
     shared.guard()
     nonce = ticket + secrets.token_hex(4)

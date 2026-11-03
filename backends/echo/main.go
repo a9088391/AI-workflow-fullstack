@@ -22,7 +22,17 @@ var messages = map[string]struct {
 	status  int
 	message string
 }{
-	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E0201": {409, "內容已更新，請確認最新內容後再送出"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
+	"E0001": {422, "欄位資料不正確，請確認後再送出"},
+	"E0002": {401, "登入已逾期，請重新登入"},
+	"E0003": {403, "沒有權限使用此功能"},
+	"E0004": {404, "找不到指定資料或 API"},
+	"E0005": {400, "系統暫時無法處理，請稍後再試"},
+	"E0101": {401, "帳號或密碼錯誤"},
+	"E0102": {403, "此帳號已停用，請聯絡系統管理員"},
+	"E0104": {500, "後台認證設定異常，請聯絡系統管理員"},
+	"E0105": {429, "登入失敗次數過多，請稍後再試"},
+	"E0201": {409, "內容已更新，請確認最新內容後再送出"},
+	"E9999": {500, "系統暫時無法處理，請稍後再試"},
 }
 
 // server 持有唯一資料庫池與 Echo 專屬金鑰，避免請求間共用可變身分。
@@ -71,6 +81,7 @@ func logMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		id := fmt.Sprintf("%x-%x-%x-%x-%x", raw[:4], raw[4:6], raw[6:8], raw[8:10], raw[10:])
 		c.Set("log_id", id)
+		// 僅對設定的前端 Origin 開放瀏覽器跨來源讀取，並公開鎖定倒數所需標頭。
 		origin := env("CORS_ORIGIN", "http://localhost:8080")
 		if c.Request().Header.Get("Origin") == origin {
 			c.Response().Header().Set("Access-Control-Allow-Origin", origin)
@@ -85,6 +96,7 @@ func logMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		} else {
 			err = next(c)
 		}
+		// Echo 錯誤交由共同 HTTPErrorHandler 記錄；一般回應在此完成 EX／OUT。
 		if err != nil {
 			return err
 		}
@@ -112,6 +124,7 @@ func (s *server) register(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 先回報既有 Email，再計算雜湊；真正並行衝突仍由資料庫唯一索引決定。
 	var exists bool
 	err := s.db.QueryRowContext(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM accounts WHERE email=$1)", body["email"]).Scan(&exists)
 	if err != nil {
@@ -195,6 +208,7 @@ func (s *server) login(c *echo.Context) {
 		failInternal(c, err)
 		return
 	}
+	// 等待設定與帳號鎖後才取得實際時刻，停用檢查先於鎖定與密碼驗證。
 	var now time.Time
 	if err = tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		failInternal(c, err)
@@ -274,8 +288,8 @@ func (s *server) login(c *echo.Context) {
 		respondError(c, &apiError{code: "E0101"})
 		return
 	}
-	issued := now.Unix()
 	// JWT 與 session 使用同一資料庫時刻；重設計數與寫入 session 同交易。
+	issued := now.Unix()
 	random, err := randomBytes(16)
 	if err != nil {
 		failInternal(c, err)
@@ -301,7 +315,10 @@ func (s *server) login(c *echo.Context) {
 		failInternal(c, err)
 		return
 	}
-	respondOK(c, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_at": businessTime(time.Unix(issued+duration, 0)), "user": accountData(a)})
+	respondOK(c, 200, map[string]any{
+		"access_token": token, "token_type": "Bearer",
+		"expires_at": businessTime(time.Unix(issued+duration, 0)), "user": accountData(a),
+	})
 }
 
 // identity 對保護及條件式公開端點套用同一 JWT/session 查核順序。
@@ -418,6 +435,7 @@ func asHandler(handle func(*echo.Context)) echo.HandlerFunc {
 
 // run 註冊 Echo 的 22 個共同操作，未知路由與方法仍走共同錯誤格式。
 func run() error {
+	// 金鑰與資料庫初始化都須成功；失敗不改建金鑰或清理既有資料。
 	key, err := loadKey()
 	if err != nil {
 		return err
@@ -430,6 +448,7 @@ func run() error {
 	defer db.Close()
 	db.SetMaxOpenConns(20)
 	db.SetConnMaxLifetime(time.Hour)
+	// 啟動連線有獨立時限，請求 SQL 則各自沿用 Request Context 的取消訊號。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
@@ -456,6 +475,7 @@ func run() error {
 		log.Printf("EX log_id=%v status=%d", c.Get("log_id"), status)
 		log.Printf("OUT log_id=%v status=%d", c.Get("log_id"), status)
 	}
+	// 路由只銜接框架；各操作自行按公開、條件式公開與保護端點的順序驗證。
 	router.POST("/api/auth/register", asHandler(s.register))
 	router.POST("/api/auth/login", asHandler(s.login))
 	router.POST("/api/auth/logout", asHandler(s.logout))

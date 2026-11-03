@@ -38,7 +38,7 @@ func TestManagementQueryInput(t *testing.T) {
 	}
 }
 
-// TestAdministrationBodyInput 固定狀態與設定的 JSON 型態、範圍及多錯欄彙整。
+// TestAdministrationBodyInput 固定狀態與設定的 JSON 型態、範圍與必填規則，防止框架轉型。
 func TestAdministrationBodyInput(t *testing.T) {
 	cases := []struct {
 		name, raw, field, want string

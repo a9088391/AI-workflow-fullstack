@@ -20,9 +20,8 @@ func memberRow(scanner interface{ Scan(...any) error }) (account, error) {
 
 // asciiFold 只折疊 ASCII 大寫字母，其他 Unicode 字元保持精確比對。
 func asciiFold(value string) string {
-	// 逐字元只轉換 ASCII 大寫，讓搜尋詞與資料庫 translate 採相同規則。
+	// 此逐碼點 callback 僅轉 ASCII 大寫，讓搜尋詞與資料庫 translate 採相同規則。
 	return strings.Map(func(r rune) rune {
-		// PostgreSQL translate 使用同一對 ASCII 字母表。
 		if r >= 'A' && r <= 'Z' {
 			return r + ('a' - 'A')
 		}
@@ -53,11 +52,12 @@ func (s *server) members(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
-	// PostgreSQL text 無法表示 NUL，合法搜尋詞含 NUL 時不會命中任何帳號。
+	// 現行 NUL 分支直接回空列表，不將 PostgreSQL text 無法表示的字元送入查詢。
 	if strings.ContainsRune(keyword, 0) {
 		respondOK(c, 200, map[string]any{"list": []map[string]any{}, "pagination": pagination(page, perPage, 0)})
 		return
 	}
+	// 只列一般會員；strpos 讓百分比、底線與反斜線依字面比對，count 共用條件。
 	base := " FROM accounts WHERE role='member'"
 	args := []any{}
 	if keyword != "" {
@@ -141,6 +141,7 @@ func recheckAdmin(c *echo.Context, tx *sql.Tx, current account, token *claims) (
 	if err != nil {
 		return nil, fmt.Errorf("lock admin session: %w", err)
 	}
+	// 等待帳號與 session 鎖後再取資料庫時刻，不沿用交易開始時的時間。
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		return nil, fmt.Errorf("read admin clock: %w", err)
@@ -187,7 +188,7 @@ func (s *server) memberStatus(c *echo.Context) {
 		return
 	}
 	defer tx.Rollback()
-	// 多筆帳號按 ID 鎖住，然後才查 session；與 Laravel 停用及設定關閉同序。
+	// 多筆帳號按 ID 鎖住，然後才查 session，遵循帳號→session 的共同鎖序。
 	rows, err := tx.QueryContext(ctx, "SELECT id,role,status FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE", viewer.ID, id)
 	if err != nil {
 		failInternal(c, fmt.Errorf("lock member accounts: %w", err))
@@ -227,6 +228,7 @@ func (s *server) memberStatus(c *echo.Context) {
 		respondError(c, apiErr)
 		return
 	}
+	// 鎖後先重驗管理員身分，再處理目標範圍；管理員帳號不在會員管理內。
 	if target.ID == 0 || target.Role != "member" {
 		respondError(c, &apiError{code: "E0004"})
 		return
@@ -240,6 +242,7 @@ func (s *server) memberStatus(c *echo.Context) {
 		failInternal(c, fmt.Errorf("set member status: %w", err))
 		return
 	}
+	// 只有實際停用才撤銷既有登入；恢復不撤銷或重新啟用舊 session。
 	if body["status"] == "disabled" {
 		if _, err := tx.ExecContext(ctx, "UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE account_id=$1 AND revoked_at IS NULL", id); err != nil {
 			failInternal(c, fmt.Errorf("revoke member sessions: %w", err))
@@ -264,6 +267,7 @@ func (s *server) managementComments(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 管理範圍不排除任何下架狀態，計數與列表共用 JOIN，完整作者一次讀取。
 	base := " FROM comments JOIN accounts ON accounts.id=comments.author_id"
 	var total int64
 	if err := s.db.QueryRowContext(c.Request().Context(), "SELECT count(*)"+base).Scan(&total); err != nil {
@@ -313,6 +317,7 @@ func (s *server) lockoutSettings(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 缺少唯一設定列屬認證設定異常，資料庫失敗則保留系統錯誤。
 	var enabled bool
 	var window, threshold, seconds int
 	err := s.db.QueryRowContext(c.Request().Context(), "SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1").Scan(&enabled, &window, &threshold, &seconds)
@@ -342,6 +347,7 @@ func (s *server) updateLockoutSettings(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 四欄皆通過型態與範圍後才轉成 SQL 參數，交易完整覆寫同一份設定。
 	enabled := body["enabled"] == "true"
 	window, _ := strconv.Atoi(body["window_minutes"])
 	threshold, _ := strconv.Atoi(body["failure_threshold"])

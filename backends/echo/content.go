@@ -18,10 +18,15 @@ type content struct {
 	Created, Updated                           sql.NullTime
 }
 
-// contentData 只輸出公開作者與目前使用者可恢復的內容欄位。
+// contentData 輸出完整資源及公開作者並計算恢復權；可讀性由呼叫端先裁決。
 func contentData(row content, viewer *account, article bool) map[string]any {
 	canRestore := row.Visibility == "hidden" && viewer != nil && (viewer.Role == "admin" || viewer.ID == row.AuthorID && row.Restore.String == "author")
-	result := map[string]any{"id": row.ID, "author": map[string]any{"id": row.AuthorID, "nickname": row.Nickname}, "body": row.Body, "version": row.Version, "created_backend": row.Backend, "created_at": businessTime(row.Created.Time), "updated_at": businessTime(row.Updated.Time), "visibility": row.Visibility, "can_restore": canRestore}
+	result := map[string]any{
+		"id": row.ID, "author": map[string]any{"id": row.AuthorID, "nickname": row.Nickname},
+		"body": row.Body, "version": row.Version, "created_backend": row.Backend,
+		"created_at": businessTime(row.Created.Time), "updated_at": businessTime(row.Updated.Time),
+		"visibility": row.Visibility, "can_restore": canRestore,
+	}
 	if article {
 		result["title"] = row.Title
 	} else {
@@ -30,14 +35,14 @@ func contentData(row content, viewer *account, article bool) map[string]any {
 	return result
 }
 
-// readArticleRow 依固定欄位順序取單篇文章，避免 SQL 欄位流入 API。
+// readArticleRow 依 articleColumns 順序接收單列或列表資料，集中維護欄位對應。
 func readArticleRow(scanner interface{ Scan(...any) error }) (content, error) {
 	var row content
 	err := scanner.Scan(&row.ID, &row.AuthorID, &row.Title, &row.Body, &row.Visibility, &row.Restore, &row.Version, &row.Backend, &row.Created, &row.Updated, &row.Nickname)
 	return row, err
 }
 
-// readCommentRow 依固定欄位順序取單則留言與其父文章 ID。
+// readCommentRow 依 commentColumns 順序接收留言及父文章 ID，供列表與詳情共用。
 func readCommentRow(scanner interface{ Scan(...any) error }) (content, error) {
 	var row content
 	err := scanner.Scan(&row.ID, &row.AuthorID, &row.ArticleID, &row.Body, &row.Visibility, &row.Restore, &row.Version, &row.Backend, &row.Created, &row.Updated, &row.Nickname)
@@ -133,6 +138,7 @@ func (s *server) article(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 格式驗證完成才查目標；不存在與對目前讀者隱藏均回 404。
 	row, err := readArticleRow(s.db.QueryRowContext(c.Request().Context(), "SELECT "+articleColumns+" FROM articles JOIN accounts ON accounts.id=articles.author_id WHERE articles.id=$1", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, &apiError{code: "E0004"})
@@ -166,6 +172,7 @@ func (s *server) comments(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 先判定父文章可讀性，再建立留言與 count 共用的可見範圍。
 	var authorID int64
 	var visibility string
 	err := s.db.QueryRowContext(c.Request().Context(), "SELECT author_id,visibility FROM articles WHERE id=$1", id).Scan(&authorID, &visibility)
@@ -218,7 +225,7 @@ func (s *server) comments(c *echo.Context) {
 	respondOK(c, 200, map[string]any{"list": list, "pagination": pagination(page, perPage, total)})
 }
 
-// safeOffset 避免極端合法頁碼造成 int64 溢位。
+// safeOffset 將位移限制在共用安全整數範圍，極端合法頁碼直接回空頁而不溢位。
 func safeOffset(page, perPage int64) (int64, bool) {
 	if page-1 > 9007199254740991/perPage {
 		return 0, false

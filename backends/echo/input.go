@@ -21,6 +21,8 @@ var emailPattern = regexp.MustCompile(`^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@
 var passwordPattern = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
 var decimalPattern = regexp.MustCompile(`^[0-9]+$`)
 var jsonIntegerPattern = regexp.MustCompile(`^-?[0-9]+$`)
+var queryEscapePattern = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+var queryFieldPattern = regexp.MustCompile(`^filters\[([^]]+)\]$`)
 
 // apiError 保存固定錯誤碼及欄位細節，讓各端點共用相同回應。
 type apiError struct {
@@ -38,33 +40,45 @@ func fieldError(name, message string) *apiError {
 // oneQuery 逐個解析原始參數，以保留重複及陣列鍵的驗證資訊。
 func oneQuery(r *http.Request, allowed map[string]bool) (map[string]string, map[string][]string) {
 	values, errors := map[string]string{}, map[string][]string{}
+	seen := map[string]bool{}
 	if r.URL.RawQuery == "" {
 		return values, errors
 	}
 	for _, pair := range strings.Split(r.URL.RawQuery, "&") {
-		// 原始 Query 保留重複次數與陣列鍵，錯誤欄位改成 API15 的名稱。
+		// 解碼後的 bytes 判定身分；非法 UTF-8 只改顯示名稱，不能與字面百分比鍵混同。
 		parts := strings.SplitN(pair, "=", 2)
 		name, err := url.QueryUnescape(parts[0])
-		if err != nil || !utf8.ValidString(name) {
+		if err != nil {
 			name = parts[0]
+		}
+		identity := name
+		if !utf8.ValidString(name) {
+			// 百分比 escape 的 hex 大小寫不影響身分，原欄位的 ASCII 大小寫仍保留。
+			name = queryEscapePattern.ReplaceAllStringFunc(parts[0], strings.ToUpper)
 		}
 		canonical := name
 		for _, key := range []string{"page", "per_page", "filters[scope]", "filters[keyword]"} {
-			if strings.HasPrefix(name, key+"[") {
+			// 只有此端點支援的單值欄位才收攏陣列別名，未知巢狀鍵保留原名。
+			if allowed[key] && strings.HasPrefix(name, key+"[") {
 				canonical = key
+				identity = key
 				break
 			}
 		}
-		label := strings.ReplaceAll(strings.ReplaceAll(canonical, "filters[", "filters."), "]", "")
-		_, seen := values[canonical]
+		// 單層 filters[child] 顯示為點號欄位，未知 child 也相同；更深鍵不泛刪括號。
+		label := queryFieldPattern.ReplaceAllString(canonical, "filters.$1")
+		// 真重複優先於值驗證；不同身分共用顯示欄位時保留首個錯誤。
 		switch {
-		case seen:
+		case seen[identity]:
 			errors[label] = []string{"此參數不可重複"}
-		case canonical != name && allowed[canonical]:
+		case len(errors[label]) > 0:
+		case canonical != name:
 			errors[label] = []string{wrongType}
 		case !allowed[canonical]:
 			errors[label] = []string{"不支援此欄位"}
 		}
+		seen[identity] = true
+		// 值維持嚴格 UTF-8 驗證；鍵的較優先錯誤不被非法值覆蓋。
 		raw := ""
 		if len(parts) == 2 {
 			raw = parts[1]
@@ -112,11 +126,12 @@ func urlID(value, name string) (int64, *apiError) {
 	return n, nil
 }
 
-// pageInput 收集列表 Query 錯誤；文章可用 scope，會員可用 keyword，其餘列表不接受篩選。
+// pageInput 收集列表 Query 錯誤；filter 僅由端點指定 scope、keyword 或不篩選。
 func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError) {
 	if e := noGetBody(r); e != nil {
 		return 0, 0, "", e
 	}
+	// 先檢查鍵的重複與型態，再處理值；較低優先的錯誤不能覆蓋原錯誤。
 	allowed := map[string]bool{"page": true, "per_page": true}
 	if filter != "" {
 		allowed["filters["+filter+"]"] = true
@@ -136,6 +151,7 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 			}
 		}
 	}
+	// 管理範圍必須精確相等，只有會員搜尋會去除前後 U+0020。
 	if value, ok := values["filters[scope]"]; ok && len(errors["filters.scope"]) == 0 && value != "management" {
 		errors["filters.scope"] = []string{invalid}
 	}
@@ -155,6 +171,7 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 
 // validSurrogates 拒絕未配對的 JSON UTF-16 escape，避免悄悄改成替代字元。
 func validSurrogates(raw []byte) bool {
+	// 掃描反斜線 escape，跳過一般 escape，避免把字面上的 \\u 當成 Unicode escape。
 	for i := 0; i < len(raw); {
 		if raw[i] != '\\' {
 			i++
@@ -174,6 +191,7 @@ func validSurrogates(raw []byte) bool {
 		if err != nil {
 			return false
 		}
+		// 高 surrogate 必須緊接低 surrogate；孤立的低 surrogate 同樣拒絕。
 		if value >= 0xd800 && value <= 0xdbff {
 			if i+12 > len(raw) || raw[i+6] != '\\' || raw[i+7] != 'u' {
 				return false
@@ -209,6 +227,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 	if optionalEmpty && len(raw) == 0 {
 		return map[string]string{}, nil
 	}
+	// 空 Body 與非 JSON object 屬欄位錯誤；JSON 本身損壞仍保留解析錯誤。
 	if len(raw) == 0 || strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])) != "application/json" {
 		return nil, fieldError("_body", "Request Body 必須為 JSON object")
 	}
@@ -223,6 +242,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 		}
 		return nil, &apiError{code: "E0005"}
 	}
+	// 先以端點白名單收集存在性與型態，之後才彙整必填及格式錯誤。
 	allowed := map[string]bool{}
 	for _, field := range fields {
 		allowed[field] = true
@@ -231,7 +251,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 	present := map[string]bool{}
 	errors := map[string][]string{}
 	for decoder.More() {
-		// JSON object 同名鍵沿用其他後端的最後值，且只以最後值決定欄位錯誤。
+		// 同名鍵以最後值判定，先清除前值的資料與錯誤，避免殘留不一致結果。
 		keyToken, err := decoder.Token()
 		if err != nil {
 			return nil, &apiError{code: "E0005"}
@@ -280,6 +300,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 		}
 		values[key] = stringValue
 	}
+	// 完整結束且沒有尾端 JSON 值後，才檢查缺漏欄位與各欄格式。
 	if _, err = decoder.Token(); err != nil {
 		return nil, &apiError{code: "E0005"}
 	}

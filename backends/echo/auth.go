@@ -55,11 +55,18 @@ func businessTime(t time.Time) string { return t.In(taipei).Format("2006-01-02 1
 
 // accountData 限定可回傳的帳號欄位，避免洩漏密碼與鎖定內部值。
 func accountData(a account) map[string]any {
-	return map[string]any{"id": a.ID, "email": a.Email, "nickname": a.Nickname, "role": a.Role, "status": a.Status, "created_at": businessTime(a.Created)}
+	return map[string]any{
+		"id": a.ID, "email": a.Email, "nickname": a.Nickname,
+		"role": a.Role, "status": a.Status, "created_at": businessTime(a.Created),
+	}
 }
 
 // randomBytes 使用作業系統安全亂數，供密碼鹽與每次登入 jti 使用。
-func randomBytes(n int) ([]byte, error) { b := make([]byte, n); _, err := rand.Read(b); return b, err }
+func randomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	return b, err
+}
 
 // passwordHash 寫入標準 Argon2id PHC，讓所有後端可驗證同一密碼。
 func passwordHash(password string) (string, error) {
@@ -73,6 +80,7 @@ func passwordHash(password string) (string, error) {
 
 // verifyPassword 先限制 PHC 版本與成本，再以固定成本驗證跨後端雜湊。
 func verifyPassword(password, encoded string) (bool, *apiError) {
+	// 先限制 PHC 結構與 Base64 的唯一表示，避免異常資料改變雜湊成本。
 	match := phcPattern.FindStringSubmatch(encoded)
 	if match == nil {
 		return false, &apiError{code: "E0104"}
@@ -85,6 +93,7 @@ func verifyPassword(password, encoded string) (bool, *apiError) {
 	if err != nil || len(expected) != 32 || base64.RawStdEncoding.EncodeToString(expected) != match[2] {
 		return false, &apiError{code: "E0104"}
 	}
+	// 僅合法 PHC 才進入固定參數計算，等時比較不透露匹配的位元組數。
 	actual := argon2.IDKey([]byte(password), salt, 2, 19456, 1, 32)
 	return hmac.Equal(actual, expected), nil
 }
@@ -117,6 +126,7 @@ func issueToken(key []byte, id int64, jti string, issued int64) (string, error) 
 
 // uniqueObject 拒絕 JWT 的重複鍵，避免不同解析器對同一簽章得出不同身分。
 func uniqueObject(raw []byte) (map[string]json.RawMessage, bool) {
+	// 限定單一 object，逐鍵記錄原始值，避免解碼到 struct 時悄悄覆蓋重複鍵。
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('{') {
@@ -138,6 +148,7 @@ func uniqueObject(raw []byte) (map[string]json.RawMessage, bool) {
 		}
 		object[name] = value
 	}
+	// 完整結束後不得再有第二個 JSON 值或其他尾端內容。
 	end, err := decoder.Token()
 	if err != nil || end != json.Delim('}') {
 		return nil, false
@@ -172,6 +183,7 @@ func verifyToken(key []byte, token string) (claims, *apiError) {
 	if !hmac.Equal(mac.Sum(nil), signature) {
 		return c, &apiError{code: "E0002"}
 	}
+	// 簽章通過後才解析 header；演算法與格式固定，不依 token 選擇金鑰。
 	header, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil || base64.RawURLEncoding.EncodeToString(header) != parts[0] {
 		return c, &apiError{code: "E0002"}
@@ -184,9 +196,8 @@ func verifyToken(key []byte, token string) (claims, *apiError) {
 	if err != nil || base64.RawURLEncoding.EncodeToString(payload) != parts[1] {
 		return c, &apiError{code: "E0002"}
 	}
-	// RawMessage 先保留型態；反序列化後要求精確欄位集合，拒絕 null、陣列與浮點 NumericDate。
+	// RawMessage 保留型態；精確欄位集合拒絕額外授權資訊，後續再驗證字串及整數。
 	object, valid := uniqueObject(payload)
-	// 固定欄位、型態與時間關係，不容許 JWT 搭載額外授權資訊。
 	if !valid || len(object) != 7 {
 		return c, &apiError{code: "E0002"}
 	}
@@ -210,6 +221,7 @@ func verifyToken(key []byte, token string) (claims, *apiError) {
 			return c, &apiError{code: "E0002"}
 		}
 	}
+	// claims 的唯一身分表示、固定後端與八小時時間關係必須一起成立。
 	id, e := urlID(c.Sub, "sub")
 	jti, e2 := base64.RawURLEncoding.DecodeString(c.JTI)
 	// JWT sub 須為無前導零的唯一表示；URL ID 仍可按原契約接受前導零。
@@ -233,6 +245,7 @@ func authenticate(ctx context.Context, db *sql.DB, key []byte, authorization str
 	if e != nil {
 		return nil, nil, e, nil
 	}
+	// 角色與停用狀態取自目前帳號，不信任 JWT 搭載的授權資料。
 	id, _ := strconv.ParseInt(c.Sub, 10, 64)
 	var a account
 	err := db.QueryRowContext(ctx, "SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1", id).Scan(&a.ID, &a.Email, &a.Nickname, &a.Role, &a.Status, &a.Created)

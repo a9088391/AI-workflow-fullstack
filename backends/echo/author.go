@@ -11,7 +11,7 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// writeTx 依帳號、session 順序加鎖重驗，避免外層認證後被停用或撤銷仍寫入。
+// writeTx 鎖後重驗帳號與 session 以阻擋撤銷競爭；成功交易由呼叫端提交及回滾清理。
 func (s *server) writeTx(c *echo.Context, viewer *account, token *claims) (*sql.Tx, *account, bool) {
 	ctx := c.Request().Context()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -19,6 +19,7 @@ func (s *server) writeTx(c *echo.Context, viewer *account, token *claims) (*sql.
 		failInternal(c, fmt.Errorf("begin protected write: %w", err))
 		return nil, nil, false
 	}
+	// 外層驗證後可能等待其他寫入；鎖後重讀目前身分，失敗在此關閉交易。
 	var current account
 	err = tx.QueryRowContext(ctx, "SELECT id,role,status FROM accounts WHERE id=$1 FOR UPDATE", viewer.ID).Scan(&current.ID, &current.Role, &current.Status)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -72,6 +73,7 @@ func (s *server) writeTx(c *echo.Context, viewer *account, token *claims) (*sql.
 
 // createArticle 在認證鎖內寫入作者與實際建立後端，讓建立與更新時間相同。
 func (s *server) createArticle(c *echo.Context) {
+	// 先認證再驗證全部輸入，格式錯誤不進入寫入交易。
 	viewer, token, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -133,11 +135,13 @@ func (s *server) myComments(c *echo.Context) {
 
 // ownedList 沿用公開列表的排序、分頁與資源形狀，只將範圍限定為作者本人。
 func (s *server) ownedList(c *echo.Context, viewer *account, page, perPage int64, article bool) {
+	// 表名、欄位及讀取器只由內部布林選擇，不將用戶端文字插入 SQL。
 	table, columns := "comments", commentColumns
 	reader := readCommentRow
 	if article {
 		table, columns, reader = "articles", articleColumns, readArticleRow
 	}
+	// 計數與列表共用作者條件，JOIN 一次取得完整公開作者，避免 N+1。
 	base := " FROM " + table + " JOIN accounts ON accounts.id=" + table + ".author_id WHERE " + table + ".author_id=$1"
 	ctx := c.Request().Context()
 	var total int64
@@ -172,6 +176,7 @@ func (s *server) ownedList(c *echo.Context, viewer *account, page, perPage int64
 
 // createComment 鎖住公開父文章後新增留言，使文章下架與留言建立不能交錯通過。
 func (s *server) createComment(c *echo.Context) {
+	// 完成身分與格式檢查後，再於同一交易重驗身分及父文章狀態。
 	viewer, token, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -215,6 +220,7 @@ func (s *server) createComment(c *echo.Context) {
 		}
 		return
 	}
+	// 建立時間只取一次，確保 created_at 與 updated_at 相等，提交前仍持有父文章鎖。
 	_, err = tx.ExecContext(c.Request().Context(), "WITH t AS (SELECT clock_timestamp() AS value) INSERT INTO comments (article_id,author_id,body,visibility,restore_control,version,created_backend,created_at,updated_at) SELECT $1,$2,$3,'visible',NULL,1,'echo',t.value,t.value FROM t", id, current.ID, body["body"])
 	if err != nil {
 		failInternal(c, fmt.Errorf("create comment: %w", err))
@@ -246,6 +252,7 @@ func (s *server) commentDetail(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
+	// 一次 JOIN 取得留言與父文狀態，只有作者或管理員能繞過隱藏檢查。
 	var row content
 	var parentState string
 	query := "SELECT " + commentColumns + ",articles.visibility FROM comments JOIN accounts ON accounts.id=comments.author_id JOIN articles ON articles.id=comments.article_id WHERE comments.id=$1"
@@ -283,6 +290,7 @@ func (s *server) setCommentVisibility(c *echo.Context) { s.mutateContent(c, fals
 
 // mutateContent 共用四種版本寫入的驗證與鎖順序，避免同值或競爭繞過權限。
 func (s *server) mutateContent(c *echo.Context, article, visibility bool) {
+	// 四種寫入共用認證與格式檢查，呼叫端只選擇允許的 Body 欄位。
 	viewer, token, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -311,6 +319,7 @@ func (s *server) mutateContent(c *echo.Context, article, visibility bool) {
 		respondError(c, e)
 		return
 	}
+	// 輸入合法才進入交易；先鎖帳號與 session，之後才碰內容列。
 	version, _ := strconv.ParseInt(body["version"], 10, 64)
 	tx, current, ok := s.writeTx(c, viewer, token)
 	if !ok {
@@ -370,6 +379,7 @@ func (s *server) mutateContent(c *echo.Context, article, visibility bool) {
 			return
 		}
 	}
+	// 權限完整通過後才看版本，同值或恢復權未變也不能跳過 stale 檢查。
 	if row.Version != version {
 		respondError(c, &apiError{code: "E0201"})
 		return
@@ -398,6 +408,7 @@ func (s *server) mutateContent(c *echo.Context, article, visibility bool) {
 
 // contentAccess 依可讀性、操作權順序判定，防止對隱藏內容洩漏存在與版本。
 func contentAccess(row content, parentState string, viewer *account, article, visibility bool) *apiError {
+	// 隱藏內容先回 404；可讀後再查作者／管理操作權，父文下架仍禁止改留言內文。
 	if viewer.Role != "admin" && viewer.ID != row.AuthorID && (row.Visibility == "hidden" || parentState == "hidden") {
 		return &apiError{code: "E0004"}
 	}
@@ -409,6 +420,7 @@ func contentAccess(row content, parentState string, viewer *account, article, vi
 
 // visibilityControl 計算恢復控制者；管理員處理別人的下架會接管，作者不能解除限制。
 func visibilityControl(row content, viewer *account, target string) (string, *apiError) {
+	// 作者不能恢復由管理員控制的內容；管理員自己的內容仍按作者規則處理。
 	control := row.Restore.String
 	if target == "visible" && row.Visibility == "hidden" && viewer.Role != "admin" && control != "author" {
 		return "", &apiError{code: "E0003"}
@@ -439,6 +451,7 @@ func lockedComment(ctx context.Context, tx *sql.Tx, id int64) (content, error) {
 
 // saveContent 只更新允許的內容欄位，並以版本條件保護跨後端寫入。
 func saveContent(ctx context.Context, tx *sql.Tx, row content, body map[string]string, article, visibility bool, control string) error {
+	// 欄位與表名由操作種類決定；所有 UPDATE 都保留已鎖定版本的條件。
 	var result sql.Result
 	var err error
 	if visibility {
@@ -459,6 +472,7 @@ func saveContent(ctx context.Context, tx *sql.Tx, row content, body map[string]s
 	if err != nil {
 		return fmt.Errorf("update content: %w", err)
 	}
+	// 鎖內預期恰有一列，若不成立就讓呼叫端回滾，不可假稱更新成功。
 	n, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("check updated content: %w", err)
