@@ -10,11 +10,17 @@ function request(url, body) { return { originalUrl: url, body: body === undefine
 // API15 的重複參數優先於格式錯誤，陣列鍵也不得當單值使用。
 test('query validation preserves duplicate and array semantics', () => {
   assert.deepEqual(queryInput(request('/api/articles?page=01&per_page=20'), ['page', 'per_page']), { page: 1, per_page: 20 });
+  // 同名 page 同時含壞值時，先報重複而非格式，避免任取其中一值。
   assert.throws(() => queryInput(request('/api/articles?page=bad&page=1&per_page=20'), ['page', 'per_page']), { code: 'E0001', errors: { page: ['此參數不可重複'] } });
+  // 陣列語法不可轉成合法單值 page。
   assert.throws(() => queryInput(request('/api/articles?page[]=1&per_page=20'), ['page', 'per_page']), { code: 'E0001', errors: { page: ['欄位型態不正確'] } });
-  assert.throws(() => queryInput(request('/api/articles?__proto__=x'), []), error =>
-    Object.hasOwn(error.errors, '__proto__') && error.errors['__proto__'][0] === '不支援此欄位');
+  assert.throws(
+    // 特殊名稱仍須進入未知欄位驗證，不能透過原型屬性繞過。
+    () => queryInput(request('/api/articles?__proto__=x'), []),
+    // 以 own property 查核公開明細，避免讀到繼承的原型值而誤判通過。
+    error => Object.hasOwn(error.errors, '__proto__') && error.errors['__proto__'][0] === '不支援此欄位');
   for (const value of ['+1', '-1', ' 1', '1 ', '1e0', '1.0', '0', '9007199254740992']) {
+    // 每種非 ASCII 正整數詞形或超界值均須拒絕，不依 JavaScript 自動轉型。
     assert.throws(() => urlInteger(value, 'article_id'), { code: 'E0001', errors: { article_id: ['欄位格式或範圍不正確'] } });
   }
 });
@@ -37,10 +43,15 @@ test('query validation keeps malformed filter names exact', () => {
 
 // API14 先拒絕 GET 非空本文；POST 無本文與非 object 要回 _body。
 test('body boundary distinguishes GET, JSON syntax and object shape', () => {
+  // GET 即使收到合法空 object，仍以非空本文拒絕。
   assert.throws(() => getBody(request('/api/me', '{}')), { errors: { _body: ['此 API 不接受 Request Body'] } });
+  // 必要本文缺漏回根結構錯誤，不誤報 JSON 語法錯誤。
   assert.throws(() => bodyInput(request('/api/auth/login'), ['email', 'password']), { errors: { _body: ['Request Body 必須為 JSON object'] } });
+  // 可解析陣列不是業務所需 object，應歸為 422 結構錯誤。
   assert.throws(() => bodyInput(request('/api/auth/login', '[]'), ['email', 'password']), { errors: { _body: ['Request Body 必須為 JSON object'] } });
+  // 損壞 JSON 保留 400 分類，避免與欄位驗證混用。
   assert.throws(() => bodyInput(request('/api/auth/login', '{'), ['email', 'password']), { code: 'E0005' });
+  // 未配對 surrogate 不得被 JSON.parse 保留為看似可用的文字。
   assert.throws(() => bodyInput(request('/api/auth/login', '"\\ud800"'), ['email', 'password']), { code: 'E0005' });
   assert.deepEqual(bodyInput(request('/api/auth/logout', '{}'), [], true), {});
 });
@@ -49,6 +60,7 @@ test('body boundary distinguishes GET, JSON syntax and object shape', () => {
 test('registration field rules normalize only ASCII email', () => {
   const body = request('/api/auth/register', JSON.stringify({ email: ' USER+tag@EXAMPLE.TEST ', password: 'Ab12', nickname: '陳同學' }));
   assert.deepEqual(bodyInput(body, ['email', 'password', 'nickname']), { email: 'user+tag@example.test', password: 'Ab12', nickname: '陳同學' });
+  // 三個獨立欄位錯誤須一起回報，且不擅自移除 tab 或 NUL。
   assert.throws(() => bodyInput(request('/', JSON.stringify({ email: '\tuser@example.test', password: 'abc', nickname: '\u0000' })), ['email', 'password', 'nickname']), {
     errors: { email: ['欄位格式或範圍不正確'], password: ['欄位格式或範圍不正確'], nickname: ['欄位格式或範圍不正確'] },
   });
@@ -99,19 +111,24 @@ test('admin inputs preserve keyword and strict setting types', () => {
   const allowed = ['page', 'per_page', 'filters[keyword]'];
   assert.deepEqual(queryInput(request('/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%20A%25_%5C%C3%84%20'), allowed),
     { page: 1, per_page: 20, 'filters[keyword]': 'A%_\\Ä' });
+  // 關鍵字的陣列語法須拒絕，不能採其中一值搜尋。
   assert.throws(() => queryInput(request('/api/members?page=1&per_page=20&filters[keyword][]=x'), allowed),
     { errors: { 'filters.keyword': ['欄位型態不正確'] } });
+  // 真正重複的關鍵字優先回重複錯誤。
   assert.throws(() => queryInput(request('/api/members?page=1&per_page=20&filters[keyword]=x&filters[keyword]=y'), allowed),
     { errors: { 'filters.keyword': ['此參數不可重複'] } });
+  // status 不接受角色名稱，避免把會員狀態寫入誤當角色管理。
   assert.throws(() => bodyInput(request('/', '{"status":"admin"}'), ['status']),
     { errors: { status: ['欄位格式或範圍不正確'] } });
   const fields = ['enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'];
   assert.deepEqual(bodyInput(request('/', '{"enabled":false,"window_minutes":1,"failure_threshold":100,"lock_seconds":86400}'), fields),
     { enabled: false, window_minutes: 1, failure_threshold: 100, lock_seconds: 86400 });
   for (const raw of ['1.0', '1e0', '"1"', 'true']) {
+    // 設定數字依原始 JSON 詞形驗證，不接受等值小數、指數或轉型。
     assert.throws(() => bodyInput(request('/', `{"enabled":true,"window_minutes":${raw},"failure_threshold":5,"lock_seconds":300}`), fields),
       { errors: { window_minutes: ['欄位型態不正確'] } });
   }
+  // 型態與三個數值範圍錯誤一起回報，關閉設定也不能省略數值驗證。
   assert.throws(() => bodyInput(request('/', '{"enabled":"false","window_minutes":0,"failure_threshold":101,"lock_seconds":86401}'), fields),
     { errors: { enabled: ['欄位型態不正確'], window_minutes: ['欄位格式或範圍不正確'], failure_threshold: ['欄位格式或範圍不正確'], lock_seconds: ['欄位格式或範圍不正確'] } });
 });

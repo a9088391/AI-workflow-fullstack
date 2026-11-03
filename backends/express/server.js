@@ -73,7 +73,11 @@ function createApp(db, key, origin = 'http://localhost:8080') {
     res.sendStatus(204);
   });
   // 保留 GET 本文原始位元組與 JSON 錯誤分類，避免框架預設解析順序改變契約。
-  app.use('/api', express.raw({ type: () => true, limit: '1mb' }));
+  app.use('/api', express.raw({
+    // 所有媒體型態均保留原始位元組，讓端點自行套用共同 JSON／Body 契約。
+    type: () => true,
+    limit: '1mb',
+  }));
 
   // register 由唯一索引裁決跨後端並行重複 Email，成功後仍須自行登入。
   app.post('/api/auth/register', async (req, res) => {
@@ -337,13 +341,23 @@ async function run() {
   const server = createApp(db, key, process.env.CORS_ORIGIN || 'http://localhost:8080').listen(8000);
   // shutdown 停止接新請求，十秒後關閉殘留連線，再釋放資料庫池。
   function shutdown() {
+    // 超過寬限期便關閉 HTTP 連線，讓 close callback 能繼續清理資料庫池。
     const timer = setTimeout(() => server.closeAllConnections(), 10000);
     timer.unref();
-    server.close(() => { clearTimeout(timer); db.end().catch(error => console.error(`ERROR database shutdown: ${error.message}`)); });
+    // HTTP 關閉後取消計時器並啟動池關閉，避免關閉失敗成為未處理的拒絕。
+    server.close(() => {
+      clearTimeout(timer);
+      // 池關閉失敗仍須留下維運紀錄，此處已無 HTTP 回應可回傳。
+      db.end().catch(error => console.error(`ERROR database shutdown: ${error.message}`));
+    });
   }
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 }
 
-if (require.main === module) run().catch(error => { console.error(`Express startup failed: ${error.message}`); process.exitCode = 1; });
+// 直接執行才啟動服務；匯入 createApp 的離線測試不讀金鑰或建立正式連線池。
+if (require.main === module) {
+  // 啟動失敗設非零退出碼，讓容器與啟動入口能辨識未就緒。
+  run().catch(error => { console.error(`Express startup failed: ${error.message}`); process.exitCode = 1; });
+}
 module.exports = { createApp, loadKey };

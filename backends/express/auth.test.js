@@ -27,13 +27,19 @@ test('JWT only accepts the Express fixed claims and HS256', () => {
   const jti = randomBytes(16).toString('base64url');
   const token = issueToken(key, 42, jti, now);
   assert.equal(verifyToken(key, token).sub, '42');
+  // 更換驗證金鑰必須拒絕，證明成功不是跳過 HMAC。
   assert.throws(() => verifyToken(randomBytes(32), token), { code: 'E0002' });
   const header = { alg: 'HS256', typ: 'JWT' };
   const claims = { iss: 'ai-workflow-fullstack:express', aud: 'ai-workflow-fullstack-api:express', sub: '42', jti, iat: now, nbf: now, exp: now + 28800 };
+  // 即使重新用正確金鑰簽章，none header 仍不符合固定演算法。
   assert.throws(() => verifyToken(key, signed(key, { alg: 'none', typ: 'JWT' }, claims)), { code: 'E0002' });
+  // 正確簽章不能跨越後端 audience 界線。
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, aud: 'ai-workflow-fullstack-api:laravel' })), { code: 'E0002' });
+  // 多一秒也是不合法的八小時期限，不提供寬限。
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, exp: now + 28801 })), { code: 'E0002' });
+  // NumericDate 必須是 JSON 整數，不能自動轉換字串。
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, iat: String(now) })), { code: 'E0002' });
+  // sub 使用無前導零字串，以便與登入紀錄精確比對。
   assert.throws(() => verifyToken(key, signed(key, header, { ...claims, sub: '042' })), { code: 'E0002' });
 });
 
@@ -79,11 +85,15 @@ test('login uses database microsecond lock result', async () => {
       if (statement.includes('GREATEST(1,CEIL')) return { rows: [{ retry: 1 }] };
       return { rows: [] };
     },
+    // 假連線沒有外部資源；保留 release 讓登入走完整清理路徑。
     release() {},
   };
+  // connect callback 只借出同一假連線，不會接觸真資料庫。
   const db = { connect: async () => client };
   await assert.rejects(login(db, randomBytes(32), { email: 'a@example.test', password: 'Abcd1234' }), { code: 'E0105', retry: 1 });
+  // callback 尋找所有寫入，既有有效鎖定不得增加事件或延長期限。
   assert.equal(calls.some(([statement]) => statement.startsWith('UPDATE') || statement.startsWith('INSERT')), false);
+  // callback 取出鎖後時間查詢，確認傳入保留微秒的期限字串。
   assert.equal(calls.find(([statement]) => statement.includes('FROM (SELECT clock_timestamp()'))[1][0], until);
 });
 
@@ -104,24 +114,29 @@ test('expired lock uses exact database epoch and timestamp', async () => {
       if (statement.includes('count(*)::integer')) return { rows: [{ n: 1 }] };
       return { rows: [] };
     },
+    // 無外部資源可釋放；登入仍須呼叫與 pg 連線相同的清理介面。
     release() {},
   };
+  // connect callback 回傳固定交易資料，隔離資料庫依賴。
   const db = { connect: async () => client };
   await assert.rejects(login(db, randomBytes(32), { email: 'a@example.test', password: 'Wrong1234' }), { code: 'E0101' });
+  // callback 取得事件寫入，確認使用新世代與同一個精確資料庫時間。
   const inserted = calls.find(([statement]) => statement.startsWith('INSERT INTO login_failures'));
+  // callback 取得視窗查詢，避免事件和計數採不同基準。
   const counted = calls.find(([statement]) => statement.includes('count(*)::integer'));
   assert.deepEqual(inserted[1], [7, newEpoch, checkedAt]);
   assert.deepEqual(counted[1], [7, newEpoch, checkedAt, 5]);
   assert.match(counted[0], /occurred_at>\$3::timestamptz-\$4::integer\*interval '1 minute'/);
 });
 
-// fullPoolLogin 讓二十個登入先各占一條連線，再進入序列化設定鎖流程。
+// fullPoolLogin 讓二十個登入先各占一條假連線，驗證滿池時 Retry-After 不再向池借連線。
 async function fullPoolLogin(alreadyLocked) {
   const hash = alreadyLocked ? undefined : await hashPassword('Abcd1234');
   const until = '2026-01-01 00:00:30+00';
   let active = 0;
   let arrived = 0;
   let start;
+  // executor 保存解鎖函式，所有請求到齊後才放行，無須不穩定的 sleep。
   const barrier = new Promise(resolve => { start = resolve; });
   const db = {
     // 取得連線後等待所有二十個請求，模擬已達 max=20 的池。
@@ -140,6 +155,7 @@ async function fullPoolLogin(alreadyLocked) {
           if (statement.includes('GREATEST(1,CEIL')) return { rows: [{ retry: 30 }] };
           return { rows: [] };
         },
+        // 登入結束歸還容量，讓最終斷言偵測連線遺漏。
         release() { active--; },
       };
     },
@@ -149,6 +165,7 @@ async function fullPoolLogin(alreadyLocked) {
       return { rows: [{ retry: 30 }] };
     },
   };
+  // callback 為每個登入收集業務拒絕，若意外成功則讓測試失敗。
   const results = await Promise.all(Array.from({ length: 20 }, async (_, index) => {
     try { await login(db, randomBytes(32), { email: `member${index}@example.test`, password: 'Wrong1234' }); }
     catch (error) { return error; }
@@ -160,6 +177,7 @@ async function fullPoolLogin(alreadyLocked) {
   for (const result of results) assert.equal(result.retry, 30);
 }
 
-// 兩種 429 均須在滿池時成功計算 Retry-After 並釋放原連線。
+// 已鎖定分支不驗密碼，也須在滿池時計算 Retry-After 並歸還原連線。
 test('full pool returns Retry-After for an existing lock', async () => fullPoolLogin(true));
+// 門檻當次會保存失敗與期限，仍須沿原連線取得 Retry-After。
 test('full pool returns Retry-After when this failure reaches the threshold', async () => fullPoolLogin(false));

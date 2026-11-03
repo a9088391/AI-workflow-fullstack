@@ -1,4 +1,4 @@
-"""CQ26：預設 Gin，供明示 Echo／CQ27、Fiber／CQ28 重用兩階段案例及已知邊界 DDL 恢復。"""
+"""CQ26：預設 Gin，供明示 Echo／CQ27、Fiber／CQ28、Express／CQ29 重用兩階段案例及已知邊界 DDL 恢復。"""
 
 import argparse
 from contextlib import redirect_stderr
@@ -28,7 +28,7 @@ PARTS = ("account", "content", "query", "settings", "session", "account-race", "
 
 # CLI 固定本票路徑與有限案例；錯票、互斥模式及未知參數都在 guard 前拒絕。
 def arguments(argv=None, *, ticket=TICKET):
-    shared.check(ticket in ("cq26", "cq27", "cq28"), "未核准的編排票號")
+    shared.check(ticket in ("cq26", "cq27", "cq28", "cq29"), "未核准的編排票號")
     recovery_path = extra.RECOVERIES[ticket]
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
@@ -55,7 +55,7 @@ def report_failure(error, *, ticket=TICKET, modules=()):
 
 # 每個 phase 只用自己的 nonce；帳號與內容既有的 s／l／i marker 相同，不能共用同一組帳號。
 def run_cases(nonce, packet, path, part, *, backend=BACKEND, ticket=TICKET):
-    shared.check((backend, ticket) in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28")), "未核准的編排目標")
+    shared.check((backend, ticket) in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29")), "未核准的編排目標")
     shared.check(part in PARTS, "未核准的 phase")
     if part in ("account", "query", "settings", "session", "account-race"):
         regression = "race" if part == "account-race" else None if part == "account" else part
@@ -79,7 +79,7 @@ def run_cases(nonce, packet, path, part, *, backend=BACKEND, ticket=TICKET):
 
 # 離線檢查使用真 validator／renderer；暫存 recovery 不在 live 路徑，沒有 HTTP、Docker 或 DB。
 def self_check(*, backend=BACKEND, ticket=TICKET):
-    shared.check((backend, ticket) in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28")), "未核准的編排目標")
+    shared.check((backend, ticket) in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29")), "未核准的編排目標")
     recovery_path = extra.RECOVERIES[ticket]
     recovery.self_check(backend=backend, ticket=ticket)
     for operation in (account.run_cases, account.query_cases, cross.version_cases, cross.readback_cases):
@@ -95,6 +95,14 @@ def self_check(*, backend=BACKEND, ticket=TICKET):
     packet = {"nonce": ticket + "0123abcd", "settings": {
         "enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300,
     }, "members": [], "account_times": [], "session_times": [], "restored": False}
+    # 搜尋暱稱沿用原始碼點；先核 helper 附加 nonce／backend 後仍是合法測資，避免誤改非法期望。
+    for prefix in ("Aa%_\\Ä陳", "aa%_\\ä陳", "AaXY\\Ä陳"):
+        nickname = prefix + packet["nonce"] + backend
+        assert 1 <= len(nickname) <= 30 and json.loads(json.dumps(nickname).encode()) == nickname
+    # 以父列競爭最長 suffix 與最長 kind 作保守上界，涵蓋帳號、內容與跨端建立的 Email。
+    for writer in (backend, account.PEER):
+        email = f"t57-{packet['nonce']}{account.PEER}-create-0-{writer}-disable@example.test"
+        assert email.isascii() and len(email.split("@", 1)[0]) <= 64 and len(email) <= 254
     # 每個原 namespace 都走真正 validator，加入本票不能改壞舊票 recovery 的接受範圍。
     for old_ticket in extra.RECOVERIES:
         nonce = old_ticket + ("0123456789ab" if old_ticket == "cq18" else "0123abcd")
@@ -128,8 +136,8 @@ def self_check(*, backend=BACKEND, ticket=TICKET):
             assert error.code == 2
         else:
             raise AssertionError("CQ24 原 CLI 接受了其他票的恢復檔")
-    # Gin、Echo、Fiber 不得交換票號；各真 CLI 也都拒絕對方的完整固定路徑。
-    for other_backend, other_ticket in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28")):
+    # Gin、Echo、Fiber、Express 不得交換票號；各真 CLI 也都拒絕對方的完整固定路徑。
+    for other_backend, other_ticket in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29")):
         if other_ticket == ticket:
             continue
         for selected_ticket, foreign_path in (
@@ -142,7 +150,7 @@ def self_check(*, backend=BACKEND, ticket=TICKET):
                 except SystemExit as error:
                     assert error.code == 2
                 else:
-                    raise AssertionError("Gin／Echo／Fiber CLI 接受了對方恢復檔")
+                    raise AssertionError("Gin／Echo／Fiber／Express CLI 接受了對方恢復檔")
         try:
             main(["--self-check"], backend=other_backend, ticket=ticket)
         except AssertionError:
@@ -158,7 +166,7 @@ def self_check(*, backend=BACKEND, ticket=TICKET):
         path.write_text(json.dumps(packet), encoding="utf-8")
         recovery.validate_restore(packet, path, backend=backend, ticket=ticket, recoveries=folders)
         # 同一份合法 packet 也不能改用另一後端恢復，避免只有 nonce 驗證而漏掉目標配對。
-        for wrong_backend in ("fastapi", "gin", "echo", "fiber"):
+        for wrong_backend in ("fastapi", "gin", "echo", "fiber", "express"):
             if wrong_backend == backend:
                 continue
             try:
@@ -219,7 +227,7 @@ def self_check(*, backend=BACKEND, ticket=TICKET):
 
 # 完整模式依序建立兩份 baseline，帳號 phase 恢復成功才跑內容；避免既有 marker 衝突且不疊 pending。
 def main(argv=None, *, backend=BACKEND, ticket=TICKET):
-    shared.check((backend, ticket) in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28")), "未核准的編排目標")
+    shared.check((backend, ticket) in (("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29")), "未核准的編排目標")
     args = arguments(argv, ticket=ticket)
     content.guard_source()
     if args.self_check:
@@ -247,7 +255,7 @@ def main(argv=None, *, backend=BACKEND, ticket=TICKET):
             run_cases(nonce, packet, path, part, backend=backend, ticket=ticket)
         finally:
             recovery.restore_baseline(packet, path, backend=backend, ticket=ticket)
-    name = {"gin": "Gin", "echo": "Echo", "fiber": "Fiber"}[backend]
+    name = {"gin": "Gin", "echo": "Echo", "fiber": "Fiber", "express": "Express"}[backend]
     print(f"PASS {ticket.upper()} {name} 帳號及內容公開 HTTP／DB full suite" if args.regression is None
           else f"PASS {ticket.upper()} partial {args.regression}；其餘案例未執行", flush=True)
     print("限制：未驗瀏覽器、搜尋 U+0000；原 Flask／Laravel 預設相容性須另跑", flush=True)

@@ -9,6 +9,7 @@ const EMAIL = /^[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@(?:[A-Za-z0-9](?:[A-Za-z
 
 // ApiError 保存共同錯誤碼與欄位細節，避免 Express 預設 HTML 錯誤流出。
 class ApiError extends Error {
+  // 保存可安全回覆的錯誤資料，讓共同 middleware 統一決定 HTTP 格式。
   constructor(code, errors, retry, status) {
     super(code);
     this.code = code;
@@ -31,21 +32,65 @@ function urlInteger(value, name, max = MAX_ID) {
   return Number(digits);
 }
 
+// queryName 保留解碼後的位元組身分；非法 UTF-8 只在錯誤標籤轉為百分比表示。
+function queryName(raw) {
+  const encoded = Buffer.from(raw.replace(/\+/g, ' '));
+  const decoded = Buffer.alloc(encoded.length);
+  let length = 0;
+  for (let index = 0; index < encoded.length; index++) {
+    // 只解一層百分比；字面的 %FF 與位元組 FF 必須仍是不同參數。
+    const hex = encoded.subarray(index + 1, index + 3).toString('latin1');
+    if (encoded[index] === 37 && /^[0-9a-f]{2}$/i.test(hex)) {
+      decoded[length++] = Number.parseInt(hex, 16);
+      index += 2;
+    } else decoded[length++] = encoded[index];
+  }
+  const bytes = decoded.subarray(0, length);
+  const identity = bytes.toString('hex');
+  try {
+    const name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    return { name, identity, label: name };
+  } catch {
+    // 只有無效 UTF-8 名稱採百分比標籤；不能用替代字元與合法 U+FFFD 混成同一身分。
+    let label = '';
+    for (const byte of bytes) {
+      const char = String.fromCharCode(byte);
+      label += /[A-Za-z0-9_.~-]/.test(char) ? char : byte === 32 ? '+' : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+    return { name: null, identity, label };
+  }
+}
+
 // queryInput 讀原始 Query 而非 Express 解析結果，保留重複／陣列錯誤與關鍵字字面值。
 function queryInput(req, allowed = []) {
   const values = Object.create(null);
   const errors = Object.create(null);
+  const seen = new Set();
+  const priorities = Object.create(null);
   const raw = req.originalUrl.split('?').slice(1).join('?');
-  for (const [name, value] of new URLSearchParams(raw)) {
-    let canonical = name;
-    for (const key of ['page', 'per_page', 'filters[scope]', 'filters[keyword]']) {
-      if (name.startsWith(`${key}[`)) canonical = key;
+  for (const pair of raw.split('&')) {
+    if (!pair) continue;
+    const separator = pair.indexOf('=');
+    const decoded = queryName(separator < 0 ? pair : pair.slice(0, separator));
+    let canonical = decoded.name;
+    // 僅支援的單值欄位收攏陣列鍵；未知鍵及非法 UTF-8 名稱保留各自身分。
+    for (const key of allowed) {
+      if (canonical?.startsWith(`${key}[`)) canonical = key;
     }
-    // 只有完整的巢狀欄位名稱轉為共同點記法；畸形未知欄位保留原名。
-    const label = canonical.replace(/^filters\[([^\]]+)\]$/, 'filters.$1');
-    if (Object.hasOwn(values, canonical)) errors[label] = ['此參數不可重複'];
-    else if (canonical !== name && allowed.includes(canonical)) errors[label] = [TYPE];
-    else if (!allowed.includes(canonical)) errors[label] = ['不支援此欄位'];
+    const identity = canonical === null ? decoded.identity : Buffer.from(canonical).toString('hex');
+    // 單層 filters 子欄位使用點記法，未知深層括號不得被改寫。
+    const label = canonical === null ? decoded.label : canonical.replace(/^filters\[([^\[\]]+)\]$/, 'filters.$1');
+    let message, priority = 0;
+    if (seen.has(identity)) { message = '此參數不可重複'; priority = 4; }
+    else if (canonical !== decoded.name && allowed.includes(canonical)) { message = TYPE; priority = 3; }
+    else if (!allowed.includes(canonical)) { message = '不支援此欄位'; priority = 2; }
+    seen.add(identity);
+    // 顯示標籤可碰撞；保留較優先錯誤，不按顯示名稱判重複或受輸入順序影響。
+    if (priority > (priorities[label] || 0)) {
+      errors[label] = [message];
+      priorities[label] = priority;
+    }
+    const value = new URLSearchParams(`value=${separator < 0 ? '' : pair.slice(separator + 1)}`).get('value');
     values[canonical] = value;
   }
   if (allowed.includes('page')) {
@@ -142,6 +187,7 @@ function bodyInput(req, fields, optional = false) {
       else result[name] = value;
     } else if (typeof value !== 'string') errors[name] = [TYPE];
     else if (name === 'email') {
+      // callback 僅折疊 ASCII 大寫，避免 Unicode 大小寫規則放寬 Email 契約。
       const normalized = value.replace(/^ +| +$/g, '').replace(/[A-Z]/g, c => c.toLowerCase());
       const local = normalized.split('@')[0];
       if (normalized.length > 254 || local.length > 64 || !EMAIL.test(normalized)) errors[name] = [INVALID];

@@ -33,11 +33,11 @@ RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19"),
               "cq22": Path(".scratch/code-quality/cq22"), "cq23": Path(".scratch/code-quality/cq23"),
               "cq24": Path(".scratch/code-quality/cq24"), "cq25": Path(".scratch/code-quality/cq25"),
               "cq26": Path(".scratch/code-quality/cq26"), "cq27": Path(".scratch/code-quality/cq27"),
-              "cq28": Path(".scratch/code-quality/cq28")}
+              "cq28": Path(".scratch/code-quality/cq28"), "cq29": Path(".scratch/code-quality/cq29")}
 NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}",
           "cq20": r"cq20[0-9a-f]{8}", "cq21": r"cq21[0-9a-f]{8}", "cq22": r"cq22[0-9a-f]{8}",
           "cq23": r"cq23[0-9a-f]{8}", "cq24": r"cq24[0-9a-f]{8}", "cq25": r"cq25[0-9a-f]{8}",
-          "cq26": r"cq26[0-9a-f]{8}", "cq27": r"cq27[0-9a-f]{8}", "cq28": r"cq28[0-9a-f]{8}"}
+          "cq26": r"cq26[0-9a-f]{8}", "cq27": r"cq27[0-9a-f]{8}", "cq28": r"cq28[0-9a-f]{8}", "cq29": r"cq29[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
@@ -57,7 +57,7 @@ def arguments():
 # 保留原始 bytes、Query 與 HEAD 空內容，避免客戶端替框架改寫測資。
 def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_headers=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離 HTTP 目標")
-    shared.check(backend in ("laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber"), "未核准的額外 HTTP 後端")
+    shared.check(backend in ("laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber", "express"), "未核准的額外 HTTP 後端")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if origin is not None:
         headers["Origin"] = origin
@@ -375,7 +375,8 @@ def entry_cases(nonce, *, backend=BACKEND):
         observed.append((result[1]["log_id"], method, path, status))
     actor = shared.user(backend, nonce + "h", "member")
     before = state(actor["id"])
-    head_cases = ((None, 401), (actor["token"], 200)) if backend in (BACKEND, "flask") else ((None, 405), (actor["token"], 405))
+    # Laravel／Flask／Express 的既有 GET 路由接受 HEAD；仍核認證、空內容及讀取無副作用。
+    head_cases = ((None, 401), (actor["token"], 200)) if backend in (BACKEND, "flask", "express") else ((None, 405), (actor["token"], 405))
     for token, status in head_cases:
         result = raw_request("HEAD", "/api/me", token=token, backend=backend)
         shared.check(result[0] == status and result[1] == b""
@@ -537,7 +538,7 @@ def login_claims(login, account_id, role, *, backend=BACKEND):
 # 僅在原 guard 通過後讀對應後端已核對的 key，簽署 fixture；key、JWT 不落盤或印出。
 def signed_token(claims, header=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離金鑰")
-    shared.check(backend in ("laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber"), "未核准的簽署 fixture 後端")
+    shared.check(backend in ("laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber", "express"), "未核准的簽署 fixture 後端")
     key = base64.b64decode(Path(f".local/keys/{backend}.key").read_bytes().rstrip(b"\n"), validate=True)
     shared.check(len(key) == 32, "隔離金鑰長度不符")
     parts = [base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=")

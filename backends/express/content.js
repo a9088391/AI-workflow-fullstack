@@ -35,6 +35,7 @@ async function pageRows(db, columns, base, args, page, perPage, viewer, article)
   let list = [];
   if (offset < BigInt(total)) {
     const rows = await db.query(`SELECT ${columns} ${base} ORDER BY ${article ? 'articles' : 'comments'}.created_at DESC,${article ? 'articles' : 'comments'}.id DESC LIMIT $${args.length + 1} OFFSET $${args.length + 2}`, [...args, perPage, offset.toString()]);
+    // callback 只投影已分頁的資料，依目前身分計算恢復權而不多查作者。
     list = rows.rows.map(row => contentData(row, viewer, article));
   }
   return { list, pagination: pagination(page, perPage, total) };

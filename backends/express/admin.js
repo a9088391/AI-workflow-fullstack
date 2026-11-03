@@ -14,7 +14,7 @@ function asciiFold(value) {
 
 // members 在資料庫完成字面搜尋、精確計數與分頁，避免逐筆查詢與讀取敏感欄位。
 async function members(db, page, perPage, keyword = '') {
-  // PostgreSQL text 不接受 NUL；合法但不可能命中的關鍵字直接回空集合。
+  // PostgreSQL text 無法儲存 NUL；此現有分支不送 SQL，直接回空集合。
   if (keyword.includes('\0')) return { list: [], pagination: pagination(page, perPage, 0) };
   const base = `FROM accounts WHERE role='member'` + (keyword ? ` AND (
     strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0 OR
@@ -69,6 +69,7 @@ async function memberStatus(db, subject, id, status) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 尚未提交的狀態與撤銷一起回滾，保留原始錯誤並歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -91,6 +92,7 @@ async function updateLockoutSettings(db, subject, body) {
     if (!found.rows.length) throw new ApiError('E0104');
     const previous = found.rows[0];
     const disabling = previous.enabled && !body.enabled;
+    // 需要清除全體會員鎖定時，先按 ID 鎖帳號再重驗管理員，避免反向取鎖。
     if (disabling) await client.query('SELECT id FROM accounts ORDER BY id FOR UPDATE');
     const current = await client.query('SELECT id,role,status FROM accounts WHERE id=$1 FOR UPDATE', [subject.account.id]);
     if (!current.rows.length) throw new ApiError('E0002');
@@ -104,6 +106,7 @@ async function updateLockoutSettings(db, subject, body) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 四欄設定與關閉副作用不可部分提交；清理失敗不蓋掉原始操作錯誤。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }

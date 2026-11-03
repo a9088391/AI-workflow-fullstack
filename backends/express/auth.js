@@ -46,6 +46,7 @@ function issueToken(key, id, jti, issued) {
 
 // verifyToken 先驗本後端簽章，再嚴格檢查固定 header、claims 與時間邊界。
 function verifyToken(key, token) {
+  // 先驗形狀與固定 HMAC，避免未通過簽章的內容進入 claims 判定。
   if (token.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new ApiError('E0002');
   const parts = token.split('.');
   const signature = Buffer.from(parts[2], 'base64url');
@@ -63,6 +64,7 @@ function verifyToken(key, token) {
       !claims || Array.isArray(claims) || Object.keys(claims).length !== 7 ||
       claims.iss !== ISSUER || claims.aud !== AUDIENCE || typeof claims.sub !== 'string' ||
       typeof claims.jti !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(claims.jti)) throw new ApiError('E0002');
+  // claims 的身分與秒數均須符合共同格式，不能以可轉型的字串或到期寬限放行。
   let id;
   try { id = urlInteger(claims.sub, 'sub'); } catch { throw new ApiError('E0002'); }
   const jti = Buffer.from(claims.jti, 'base64url');
@@ -81,6 +83,7 @@ async function identity(db, key, req, required = false) {
   const parts = authorization.split(' ');
   if (parts.length !== 2 || !/^Bearer$/i.test(parts[0]) || !parts[1]) throw new ApiError('E0002');
   const claims = verifyToken(key, parts[1]);
+  // 查詢失敗交給共同系統錯誤處理，不把儲存不可用誤當登入逾期。
   const result = await db.query(`SELECT a.id,a.email,a.nickname,a.role,a.status,a.created_at,
     s.account_id,s.backend_id,s.issued_at,s.expires_at,s.revoked_at
     FROM login_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.jti=$1`, [claims.jti]);
@@ -126,8 +129,8 @@ async function login(db, key, body) {
       const reset = await client.query('UPDATE accounts SET failure_epoch=failure_epoch+1,locked_until=NULL WHERE id=$1 RETURNING failure_epoch', [account.id]);
       epoch = reset.rows[0].failure_epoch;
     }
-    let correct;
-    correct = await verifyPassword(body.password, account.password_hash);
+    // 只有格式有效、帳號可用且未鎖定的錯密碼能加入目前世代的失敗事件。
+    const correct = await verifyPassword(body.password, account.password_hash);
     if (!correct) {
       if (enabled && account.role === 'member') {
         await client.query('INSERT INTO login_failures (account_id,failure_epoch,occurred_at) VALUES ($1,$2,$3::timestamptz)', [account.id, epoch, now]);
@@ -140,6 +143,7 @@ async function login(db, key, body) {
           throw new ApiError('E0105', undefined, await lockRetry(client, locked.rows[0].until));
         }
       }
+      // 錯密碼是已完成的業務結果，先保存失敗事件才拋出共同認證錯誤。
       await client.query('COMMIT'); committed = true;
       throw new ApiError('E0101');
     }
@@ -152,6 +156,7 @@ async function login(db, key, body) {
     await client.query('COMMIT'); committed = true;
     return { access_token: token, token_type: 'Bearer', expires_at: businessTime(new Date((issued + DURATION) * 1000)), user: accountData(account) };
   } finally {
+    // 尚未提交才嘗試回滾；回滾失敗不遮蔽原錯誤，連線仍須歸還。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -171,6 +176,7 @@ async function logout(db, subject) {
     await client.query('UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE jti=$1', [subject.claims.jti]);
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 登出失敗不假稱撤銷完成，並讓所有成功／拒絕路徑都歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -200,9 +206,11 @@ async function writeTx(db, subject, operation) {
     if (!account.rows.length) throw new ApiError('E0002');
     const current = account.rows[0];
     await recheckSession(client, subject, current);
+    // 呼叫者只接收鎖內帳號；其內容操作失敗會連同本交易一起回滾。
     await operation(client, current);
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 保留最初操作錯誤；無論業務拒絕、SQL 失敗或成功均釋放借用連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
