@@ -38,7 +38,7 @@ func (c *requestContext) Request() *http.Request {
 			Header: header,
 			Body:   io.NopCloser(body),
 		}
-		// Fiber context 會重用；只在目前處理器內使用並讓資料庫呼叫有明確時限。
+		// Fiber context 會重用；只同步借用，另設資料庫期限。預設 parent 不會因客戶端斷線取消。
 		ctx, cancel := context.WithTimeout(c.c.Context(), 15*time.Second)
 		c.c.Locals("request_cancel", cancel)
 		c.request = request.WithContext(ctx)
@@ -94,7 +94,7 @@ func finishLog(c fiber.Ctx) {
 	log.Printf("OUT log_id=%s status=%d", id, status)
 }
 
-// logMiddleware 配置追查 ID、CORS 與 OPTIONS，回應前讀盡串流並記錄實際狀態。
+// logMiddleware 配置追查 ID、CORS 與 OPTIONS，回應前排空串流以安全重用連線並記錄實際狀態。
 func logMiddleware(c fiber.Ctx) error {
 	raw, err := randomBytes(16)
 	if err != nil {
@@ -104,6 +104,7 @@ func logMiddleware(c fiber.Ctx) error {
 	c.Locals("log_id", id)
 	setCORS(c)
 	log.Printf("IN log_id=%s method=%s path=%s", id, c.Method(), c.Path())
+	// 預檢不進入業務認證；其他請求交給 recover 與路由決定共同回應。
 	if c.Method() == http.MethodOptions {
 		c.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		c.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
@@ -111,7 +112,7 @@ func logMiddleware(c fiber.Ctx) error {
 	} else {
 		err = c.Next()
 	}
-	// 處理器已決定驗證結果；送出前讀盡本文，避免客戶端仍在上傳時被關閉或污染下一筆請求。
+	// 處理器只限量解析；這裡以固定緩衝排空其餘本文，讀取仍受伺服器 ReadTimeout 約束。
 	if stream := c.Request().BodyStream(); stream != nil {
 		if _, readErr := io.Copy(io.Discard, stream); readErr != nil {
 			// HTTP 本文不完整時不保留連線；不把不可信的解析內容寫進日誌。

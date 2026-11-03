@@ -83,8 +83,9 @@ def rejected(nonce, observed, method, path, payload, token, status, code, fields
     result = extra.decoded(extra.raw_request(method, path, raw, token, backend=backend))
     shared.expect(result, status, code, fields)
     shared.check(result[2].get("Access-Control-Allow-Origin") == extra.ORIGIN, "拒絕回應缺 CORS")
-    # 框架的 request.path 已解碼百分比；日誌仍對應原請求的同一資源，不改測試 URL。
-    observed.append((result[1]["log_id"], method, unquote(path.split("?", 1)[0]), status))
+    # Fiber 日誌保留百分比編碼路徑；其他後端沿用解碼對應，只調整追查期望、不改 HTTP URL。
+    log_path = path.split("?", 1)[0]
+    observed.append((result[1]["log_id"], method, log_path if backend == "fiber" else unquote(log_path), status))
     shared.check(snapshot(nonce, ticket=ticket) == before, "拒絕請求留下部分資料變更")
 
 

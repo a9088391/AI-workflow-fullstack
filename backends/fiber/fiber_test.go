@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,6 +64,154 @@ func TestRawInput(t *testing.T) {
 				t.Fatalf("got %#v; want code %s fields %#v", result, test.code, test.expected)
 			}
 		})
+	}
+}
+
+// TestQueryErrorIdentity 經公開路由區分參數身分與錯誤標籤，避免編碼碰撞誤報重複。
+func TestQueryErrorIdentity(t *testing.T) {
+	cases := []struct {
+		query  string
+		fields map[string][]string
+	}{
+		{"odd%5Bx%5D=1", map[string][]string{"odd[x]": {"不支援此欄位"}}},
+		{"odd%5Bx%5D=1&odd%5Bx%5D=2", map[string][]string{"odd[x]": {"此參數不可重複"}}},
+		{"filters%5Bunexpected%5D=1", map[string][]string{"filters.unexpected": {"不支援此欄位"}}},
+		{"filters%5Bunexpected%5D%5Bdeep%5D=1", map[string][]string{"filters[unexpected][deep]": {"不支援此欄位"}}},
+		{"%FF=x&%25FF=y", map[string][]string{"%FF": {"不支援此欄位"}}},
+		{"%25FF=x&%FF=y", map[string][]string{"%FF": {"不支援此欄位"}}},
+		{"%FF=x&%ff=y", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%25FF=x&%25FF=y", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%FF=x&%FF=y&%25FF=z", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%FF=x&%25FF=y&%FF=z", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%25FF=x&%FF=y&%FF=z", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%25FF=x&%25FF=y&%FF=z", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%25FF=x&%FF=y&%25FF=z", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%FF=x&%25FF=y&%25FF=z", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%FF=x&%25FF=y&%ff=z&%25FF=w", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%25FF=x&%FF=y&%25FF=z&%ff=w", map[string][]string{"%FF": {"此參數不可重複"}}},
+		{"%ff=x&%25ff=y", map[string][]string{"%FF": {"不支援此欄位"}, "%ff": {"不支援此欄位"}}},
+		{"%FF=x&%EF%BF%BD=y", map[string][]string{"%FF": {"不支援此欄位"}, "\uFFFD": {"不支援此欄位"}}},
+		{"%E6%9C%AA%E7%9F%A5=x", map[string][]string{"未知": {"不支援此欄位"}}},
+		{"page%5B%FF%5D=x", map[string][]string{"page%5B%FF%5D": {"不支援此欄位"}}},
+		{"filters%5B%FF%5D=x", map[string][]string{"filters%5B%FF%5D": {"不支援此欄位"}}},
+		{"filters%5Bunexpected%5D=x&filters.unexpected=y", map[string][]string{"filters.unexpected": {"不支援此欄位"}}},
+		{"filters%5Bunexpected%5D=x&filters%5Bunexpected%5D=y&filters.unexpected=z", map[string][]string{"filters.unexpected": {"此參數不可重複"}}},
+	}
+	app := newApp(&server{})
+	for _, test := range cases {
+		// 兩個公開寫入入口都應先拒絕 Query，不接觸資料庫或被損壞 JSON 改變優先序。
+		for _, path := range []string{"/api/auth/register", "/api/auth/login"} {
+			// 直接保留 RawQuery 百分比拼法，才能區分非法位元組與字面百分比。
+			t.Run(path+"?"+test.query, func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodPost, path+"?"+test.query, strings.NewReader("{"))
+				r.Header.Set("Content-Type", "application/json")
+				response, err := app.Test(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				var body struct {
+					Code   string              `json:"error_code"`
+					Fields map[string][]string `json:"errors"`
+				}
+				if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode != 422 || body.Code != "E0001" || !reflect.DeepEqual(body.Fields, test.fields) {
+					t.Fatalf("status=%d body=%+v; want fields=%v", response.StatusCode, body, test.fields)
+				}
+			})
+		}
+	}
+}
+
+// TestListQueryPriority 驗證支援欄位才收攏陣列，且共用顯示名稱不會掩蓋較優先錯誤。
+func TestListQueryPriority(t *testing.T) {
+	cases := []struct {
+		query  string
+		fields map[string][]string
+	}{
+		{"page[]=1&per_page=20", map[string][]string{"page": {wrongType}}},
+		{"page[0]=1&page[1]=2&per_page=20", map[string][]string{"page": {"此參數不可重複"}}},
+		{"page=1&page[0]=2&per_page=20", map[string][]string{"page": {"此參數不可重複"}}},
+		{"page=bad&per_page=101", map[string][]string{"page": {invalid}, "per_page": {invalid}}},
+		{"page=1&per_page=20&filters[scope][]=bad", map[string][]string{"filters.scope": {wrongType}}},
+		{"page=1&per_page=20&filters[scope]=bad&filters[scope][]=bad", map[string][]string{"filters.scope": {"此參數不可重複"}}},
+		{"page=1&per_page=20&filters[scope][]=bad&filters[scope]=bad", map[string][]string{"filters.scope": {"此參數不可重複"}}},
+		{"page=1&per_page=20&filters[scope][]=bad&filters.scope=x", map[string][]string{"filters.scope": {wrongType}}},
+		{"page=1&per_page=20&filters.scope=x&filters[scope][]=bad", map[string][]string{"filters.scope": {wrongType}}},
+		{"page=1&per_page=20&filters[scope]=bad&filters.scope=x", map[string][]string{"filters.scope": {"不支援此欄位"}}},
+		{"page=1&per_page=20&filters.scope=x&filters[scope]=bad", map[string][]string{"filters.scope": {"不支援此欄位"}}},
+		{"page=1&per_page=20&filters[scope][]=bad&filters.scope=x&filters.scope=y", map[string][]string{"filters.scope": {"此參數不可重複"}}},
+		{"page=1&per_page=20&filters[unexpected][deep]=x", map[string][]string{"filters[unexpected][deep]": {"不支援此欄位"}}},
+		{"page=1&per_page=20&filters[keyword][]=x", map[string][]string{"filters[keyword][]": {"不支援此欄位"}}},
+		{"page=1&per_page=20&page%5B%FF%5D=x", map[string][]string{"page%5B%FF%5D": {"不支援此欄位"}}},
+	}
+	app := newApp(&server{})
+	for _, test := range cases {
+		// 每筆均在 Query 驗證停止，不需資料庫，也不能被解析器靜默取第一或最後值。
+		t.Run(test.query, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/articles?"+test.query, nil)
+			response, err := app.Test(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			var body struct {
+				Code   string              `json:"error_code"`
+				Fields map[string][]string `json:"errors"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != 422 || body.Code != "E0001" || !reflect.DeepEqual(body.Fields, test.fields) {
+				t.Fatalf("status=%d body=%+v; want fields=%v", response.StatusCode, body, test.fields)
+			}
+		})
+	}
+}
+
+// TestRequestBridgeLifetime 經實際 Fiber handler 讀回輸入，確認請求期限與結束取消不污染下一筆。
+func TestRequestBridgeLifetime(t *testing.T) {
+	app := newApp(&server{})
+	contexts := make(chan context.Context, 2)
+	// 此同步讀回端點只存在測試，確保橋接不先解析 Query 或改寫本文、重複標頭及 Path 參數。
+	app.Post("/bridge/:id", asHandler(func(c *requestContext) {
+		r := c.Request()
+		contexts <- r.Context()
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		deadline, ok := r.Context().Deadline()
+		c.JSON(200, map[string]any{"method": r.Method, "path": r.URL.Path, "query": r.URL.RawQuery,
+			"body": string(raw), "header": r.Header.Values("X-Bridge"), "id": c.Param("id"),
+			"bounded": ok && time.Until(deadline) > 0 && time.Until(deadline) <= 15*time.Second, "active": r.Context().Err() == nil})
+	}))
+	for i := 0; i < 2; i++ {
+		// 相同輸入連續兩次，分別確認新 context 有效、離開 handler 後已取消。
+		r := httptest.NewRequest(http.MethodPost, "/bridge/0001?%FF=x&%25FF=y", strings.NewReader("原文\r\n下一行"))
+		r.Header.Add("X-Bridge", "first")
+		r.Header.Add("X-Bridge", "second")
+		response, err := app.Test(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		err = json.NewDecoder(response.Body).Decode(&body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"method": "POST", "path": "/bridge/0001", "query": "%FF=x&%25FF=y",
+			"body": "原文\r\n下一行", "header": []any{"first", "second"}, "id": "0001", "bounded": true, "active": true}
+		if response.StatusCode != 200 || !reflect.DeepEqual(body, want) {
+			t.Fatalf("bridge status=%d body=%v", response.StatusCode, body)
+		}
+		if ctx := <-contexts; ctx.Err() != context.Canceled {
+			t.Fatalf("handler context after response: %v", ctx.Err())
+		}
 	}
 }
 
@@ -292,6 +441,7 @@ func TestStreamedBodyConnection(t *testing.T) {
 
 // TestAuthPrimitives 固定 Argon2id 與本後端 JWT 的重要驗證邊界。
 func TestAuthPrimitives(t *testing.T) {
+	// 正確密碼、錯誤密碼與毀損 PHC 必須可區分，毀損不算登入失敗。
 	hash, err := passwordHash("abcd")
 	if err != nil {
 		t.Fatal(err)
@@ -305,6 +455,7 @@ func TestAuthPrimitives(t *testing.T) {
 	if _, failure := verifyPassword("abcd", "invalid"); failure == nil || failure.code != "E0104" {
 		t.Fatalf("corrupt PHC: %v", failure)
 	}
+	// 固定測試金鑰只驗本後端簽章與八小時 claims，不使用執行環境秘密。
 	key := []byte("12345678901234567890123456789012")
 	token, err := issueToken(key, 1, "AAAAAAAAAAAAAAAAAAAAAA", time.Now().Unix())
 	if err != nil {

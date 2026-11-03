@@ -51,12 +51,13 @@ func (s *server) members(c *requestContext) {
 		respondError(c, e)
 		return
 	}
-	// PostgreSQL text 無法表示 NUL，合法搜尋詞含 NUL 時不會命中任何帳號。
+	// PostgreSQL text 無法表示 NUL；此分支回空列表，避免送入無法編碼的查詢值。
 	if strings.ContainsRune(keyword, 0) {
 		respondOK(c, 200, map[string]any{"list": []map[string]any{}, "pagination": pagination(page, perPage, 0)})
 		return
 	}
 	base := " FROM accounts WHERE role='member'"
+	// 固定欄位與字面包含條件同時用於 count／列表，只有 ASCII 大寫參與折疊。
 	args := []any{}
 	if keyword != "" {
 		base += " AND (strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0 OR strpos(translate(email,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0)"
@@ -127,6 +128,7 @@ func (s *server) memberDetail(c *requestContext) {
 
 // recheckAdmin 在帳號鎖之後查核 session，防止驗證與寫入之間被撤銷。
 func recheckAdmin(c *requestContext, tx *sql.Tx, current account, token *claims) (*apiError, error) {
+	// 呼叫者已鎖目前帳號；接著鎖 session 並在等鎖後取實際時間，維持共同鎖序。
 	ctx := c.Request().Context()
 	var accountID int64
 	var backendID string
@@ -146,6 +148,7 @@ func recheckAdmin(c *requestContext, tx *sql.Tx, current account, token *claims)
 	if accountID != current.ID || backendID != backend || !issued.Equal(time.Unix(token.Iat, 0)) || !expires.Equal(time.Unix(token.Exp, 0)) || now.Unix() < token.Nbf || now.Unix() >= token.Exp {
 		return &apiError{code: "E0002"}, nil
 	}
+	// 登入紀錄身分可驗證後，停用優先於撤銷，最後才判管理角色。
 	if current.Status == "disabled" {
 		return &apiError{code: "E0102"}, nil
 	}
@@ -192,6 +195,7 @@ func (s *server) memberStatus(c *requestContext) {
 		return
 	}
 	var current, target account
+	// 完整收完鎖定結果再查 session，避免同一連線仍有未結束的 rows。
 	for rows.Next() {
 		var a account
 		if err := rows.Scan(&a.ID, &a.Role, &a.Status); err != nil {
@@ -216,6 +220,7 @@ func (s *server) memberStatus(c *requestContext) {
 		respondError(c, &apiError{code: "E0002"})
 		return
 	}
+	// 寫入前重驗管理員，外層認證不能取代取得鎖後的目前狀態。
 	apiErr, err := recheckAdmin(c, tx, current, token)
 	if err != nil {
 		failInternal(c, err)
@@ -253,6 +258,7 @@ func (s *server) memberStatus(c *requestContext) {
 
 // managementComments 向管理員列出全部留言，包含個別或父文章下架內容。
 func (s *server) managementComments(c *requestContext) {
+	// 角色先於格式，計數與完整留言列表都由 SQL 完成，不因父文章下架縮小範圍。
 	viewer, _, ok := s.adminViewer(c)
 	if !ok {
 		return
@@ -327,6 +333,7 @@ func (s *server) lockoutSettings(c *requestContext) {
 
 // updateLockoutSettings 原子覆寫四欄，僅啟用轉關閉時清除會員鎖定與計數世代。
 func (s *server) updateLockoutSettings(c *requestContext) {
+	// 先驗管理角色與全部四欄；即使關閉功能也必須保留合法的三個數值。
 	viewer, token, ok := s.adminViewer(c)
 	if !ok {
 		return

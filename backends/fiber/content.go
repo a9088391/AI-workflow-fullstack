@@ -131,6 +131,7 @@ func (s *server) article(c *requestContext) {
 		respondError(c, e)
 		return
 	}
+	// 輸入合法後才讀目標；不存在與無資格預覽下架文章都回相同的 404。
 	row, err := readArticleRow(s.db.QueryRowContext(c.Request().Context(), "SELECT "+articleColumns+" FROM articles JOIN accounts ON accounts.id=articles.author_id WHERE articles.id=$1", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, &apiError{code: "E0004"})

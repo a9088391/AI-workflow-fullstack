@@ -21,7 +21,16 @@ var messages = map[string]struct {
 	status  int
 	message string
 }{
-	"E0001": {422, "欄位資料不正確，請確認後再送出"}, "E0002": {401, "登入已逾期，請重新登入"}, "E0003": {403, "沒有權限使用此功能"}, "E0004": {404, "找不到指定資料或 API"}, "E0005": {400, "系統暫時無法處理，請稍後再試"}, "E0101": {401, "帳號或密碼錯誤"}, "E0102": {403, "此帳號已停用，請聯絡系統管理員"}, "E0104": {500, "後台認證設定異常，請聯絡系統管理員"}, "E0105": {429, "登入失敗次數過多，請稍後再試"}, "E9999": {500, "系統暫時無法處理，請稍後再試"},
+	"E0001": {422, "欄位資料不正確，請確認後再送出"},
+	"E0002": {401, "登入已逾期，請重新登入"},
+	"E0003": {403, "沒有權限使用此功能"},
+	"E0004": {404, "找不到指定資料或 API"},
+	"E0005": {400, "系統暫時無法處理，請稍後再試"},
+	"E0101": {401, "帳號或密碼錯誤"},
+	"E0102": {403, "此帳號已停用，請聯絡系統管理員"},
+	"E0104": {500, "後台認證設定異常，請聯絡系統管理員"},
+	"E0105": {429, "登入失敗次數過多，請稍後再試"},
+	"E9999": {500, "系統暫時無法處理，請稍後再試"},
 	"E0201": {409, "內容已更新，請確認最新內容後再送出"},
 }
 
@@ -156,6 +165,7 @@ func (s *server) login(c *requestContext) {
 		failInternal(c, err)
 		return
 	}
+	// 等設定與帳號鎖完成才取資料庫時間，避免等待使鎖定與失敗視窗失真。
 	var now time.Time
 	if err = tx.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		failInternal(c, err)
@@ -235,6 +245,7 @@ func (s *server) login(c *requestContext) {
 		respondError(c, &apiError{code: "E0101"})
 		return
 	}
+	// 成功登入只新增這次 session，不撤銷其他登入；以整秒時刻固定八小時期限。
 	issued := now.Unix()
 	// JWT 與 session 使用同一資料庫時刻；重設計數與寫入 session 同交易。
 	random, err := randomBytes(16)
@@ -327,6 +338,7 @@ func (s *server) logout(c *requestContext) {
 		respondError(c, &apiError{code: "E0002"})
 		return
 	}
+	// 只有提交撤銷後才回成功；任何提前離開由 defer 回滾，其他 jti 不受影響。
 	_, err = tx.ExecContext(ctx, "UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE jti=$1", claims.JTI)
 	if err != nil {
 		failInternal(c, err)
@@ -381,6 +393,7 @@ func newApp(s *server) *fiber.App {
 		DisableHeadAutoRegister:      true,
 		ErrorHandler:                 fiberError,
 	})
+	// 日誌包住 panic 轉錯誤的邊界，讓路由失敗也由同一入口產生 envelope 與完成紀錄。
 	app.Use(logMiddleware, recover.New())
 	app.Post("/api/auth/register", asHandler(s.register))
 	app.Post("/api/auth/login", asHandler(s.login))
@@ -423,6 +436,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// 共用連線池固定資料庫時區，啟動失敗或監聽結束時由本函式關閉。
 	dsn := fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=disable timezone=Asia/Taipei", env("DB_HOST", "db"), env("DB_PORT", "5432"), env("DB_DATABASE", "articles"), env("DB_USERNAME", "articles_app"), os.Getenv("DB_PASSWORD"))
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {

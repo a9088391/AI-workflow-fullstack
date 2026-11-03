@@ -7,6 +7,7 @@ import (
 
 // myArticles 只列目前登入者自己的文章，包含下架內容供作者恢復。
 func (s *server) myArticles(c *requestContext) {
+	// 作者身分先於分頁驗證，SQL 固定以目前帳號篩選，不能由 Query 指定他人。
 	viewer, _, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -50,6 +51,7 @@ func (s *server) myArticles(c *requestContext) {
 
 // myComments 只列登入者自己的留言；不讀取父文章內容或授予其讀取權。
 func (s *server) myComments(c *requestContext) {
+	// 作者身分先於分頁驗證；不 JOIN 父文章，保留父文下架時的本人讀取例外。
 	viewer, _, ok := s.identity(c, true)
 	if !ok {
 		return
@@ -93,6 +95,7 @@ func (s *server) myComments(c *requestContext) {
 
 // commentDetail 讓作者獨立讀自己的留言，即使父文章已下架也不洩漏其內文。
 func (s *server) commentDetail(c *requestContext) {
+	// 先認證與驗證輸入，再讀留言與父文狀態，避免對未登入者揭露目標存在。
 	viewer, _, ok := s.identity(c, true)
 	if !ok {
 		return

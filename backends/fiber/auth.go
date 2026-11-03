@@ -59,7 +59,11 @@ func accountData(a account) map[string]any {
 }
 
 // randomBytes 使用作業系統安全亂數，供密碼鹽與每次登入 jti 使用。
-func randomBytes(n int) ([]byte, error) { b := make([]byte, n); _, err := rand.Read(b); return b, err }
+func randomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	return b, err
+}
 
 // passwordHash 寫入標準 Argon2id PHC，讓所有後端可驗證同一密碼。
 func passwordHash(password string) (string, error) {
@@ -123,6 +127,7 @@ func uniqueObject(raw []byte) (map[string]json.RawMessage, bool) {
 		return nil, false
 	}
 	object := make(map[string]json.RawMessage)
+	// 逐鍵保留原始型態並拒絕重複，避免 struct 解碼靜默覆寫已簽署的值。
 	for decoder.More() {
 		key, err := decoder.Token()
 		if err != nil {
@@ -138,6 +143,7 @@ func uniqueObject(raw []byte) (map[string]json.RawMessage, bool) {
 		}
 		object[name] = value
 	}
+	// 必須完整結束且沒有第二份 JSON，不能只驗證前半段物件。
 	end, err := decoder.Token()
 	if err != nil || end != json.Delim('}') {
 		return nil, false
@@ -234,6 +240,7 @@ func authenticate(ctx context.Context, db *sql.DB, key []byte, authorization str
 		return nil, nil, e, nil
 	}
 	id, _ := strconv.ParseInt(c.Sub, 10, 64)
+	// 帳號與 session 查核失敗須保留系統錯誤，不能把資料庫不可用誤報為憑證逾期。
 	var a account
 	err := db.QueryRowContext(ctx, "SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1", id).Scan(&a.ID, &a.Email, &a.Nickname, &a.Role, &a.Status, &a.Created)
 	if errors.Is(err, sql.ErrNoRows) {

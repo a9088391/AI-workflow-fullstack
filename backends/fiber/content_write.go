@@ -24,6 +24,7 @@ func (s *server) writeIdentity(c *requestContext) (*sql.Tx, *account, *apiError,
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// 先鎖帳號再鎖 session；交付呼叫者前的任何失敗都由這裡回滾。
 	id, _ := strconv.ParseInt(claims.Sub, 10, 64)
 	var a account
 	err = tx.QueryRowContext(ctx, "SELECT id,nickname,role,status FROM accounts WHERE id=$1 FOR UPDATE", id).Scan(&a.ID, &a.Nickname, &a.Role, &a.Status)
@@ -66,6 +67,7 @@ func (s *server) writeIdentity(c *requestContext) (*sql.Tx, *account, *apiError,
 		tx.Rollback()
 		return nil, nil, &apiError{code: "E0002"}, nil
 	}
+	// 成功後交易仍開啟，呼叫者負責提交並以 defer 回滾其餘離開路徑。
 	return tx, &a, nil, nil
 }
 
@@ -98,7 +100,7 @@ func writeDone(c *requestContext, tx *sql.Tx, status int) {
 	respondOK(c, status, nil)
 }
 
-// writeInput 依 API08 在查資料前先彙整 Query、Path 與 Body 的格式錯誤。
+// writeInput 先依序檢查 Query、Path、Body，遇錯即停止，避免提前查詢內容目標。
 func writeInput(c *requestContext, pathName string, fields []string) (int64, map[string]string, bool) {
 	if e := noQuery(c.Request()); e != nil {
 		respondError(c, e)
@@ -143,6 +145,7 @@ func (s *server) createArticle(c *requestContext) {
 
 // createComment 鎖父文章後新增留言，避免下架與新增各讀到舊狀態。
 func (s *server) createComment(c *requestContext) {
+	// 先重驗登入並持有交易，格式失敗或權限拒絕都不留下部分新增。
 	tx, viewer := s.writeStart(c)
 	if tx == nil {
 		return
@@ -152,6 +155,7 @@ func (s *server) createComment(c *requestContext) {
 	if !ok {
 		return
 	}
+	// 與文章下架鎖同一父列，再分辨不可讀的 404 與可預覽但禁止新增的 403。
 	var authorID int64
 	var visibility string
 	err := tx.QueryRowContext(c.Request().Context(), "SELECT author_id,visibility FROM articles WHERE id=$1 FOR UPDATE", id).Scan(&authorID, &visibility)
@@ -177,6 +181,7 @@ func (s *server) createComment(c *requestContext) {
 
 // changeArticle 依鎖後的可讀性、操作權與版本次序決定編修或下架。
 func (s *server) changeArticle(c *requestContext, visibility bool) {
+	// 先認證並持有帳號與 session 鎖，之後的格式錯誤或拒絕統一回滾。
 	tx, viewer := s.writeStart(c)
 	if tx == nil {
 		return
@@ -190,6 +195,7 @@ func (s *server) changeArticle(c *requestContext, visibility bool) {
 	if !ok {
 		return
 	}
+	// 文章列鎖涵蓋可讀性、操作權、版本比對與更新，避免分開查核後被覆寫。
 	var row content
 	err := tx.QueryRowContext(c.Request().Context(), "SELECT author_id,title,body,visibility,restore_control,version FROM articles WHERE id=$1 FOR UPDATE", id).Scan(&row.AuthorID, &row.Title, &row.Body, &row.Visibility, &row.Restore, &row.Version)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && row.Visibility == "hidden" && viewer.Role != "admin" && viewer.ID != row.AuthorID {
@@ -210,10 +216,12 @@ func (s *server) changeArticle(c *requestContext, visibility bool) {
 			return
 		}
 	}
+	// 權限通過後才裁決版本；同值的過期請求也不能當成成功。
 	if strconv.FormatInt(row.Version, 10) != body["version"] {
 		respondError(c, &apiError{code: "E0201"})
 		return
 	}
+	// 恢復權變更也算實際更新；完全同值則不動版本與微秒時間。
 	if visibility {
 		control := nextRestore(row, viewer, body["visibility"])
 		if row.Visibility != body["visibility"] || row.Restore.String != control {
@@ -231,6 +239,7 @@ func (s *server) changeArticle(c *requestContext, visibility bool) {
 
 // changeComment 先鎖父文章再鎖留言，維持與下架文章一致的交易順序。
 func (s *server) changeComment(c *requestContext, visibility bool) {
+	// 先完成登入與格式檢查，避免無效請求提前查詢留言是否存在。
 	tx, viewer := s.writeStart(c)
 	if tx == nil {
 		return
@@ -275,6 +284,7 @@ func (s *server) changeComment(c *requestContext, visibility bool) {
 		failInternal(c, err)
 		return
 	}
+	// 先隱藏不可讀目標，再判操作權；作者的留言例外不允許在父文下架時改內文。
 	if viewer.Role != "admin" && viewer.ID != row.AuthorID && (row.Visibility == "hidden" || parentVisibility == "hidden") {
 		respondError(c, &apiError{code: "E0004"})
 		return
@@ -289,10 +299,12 @@ func (s *server) changeComment(c *requestContext, visibility bool) {
 			return
 		}
 	}
+	// 權限通過後才裁決版本；同值的過期請求也不能當成成功。
 	if strconv.FormatInt(row.Version, 10) != body["version"] {
 		respondError(c, &apiError{code: "E0201"})
 		return
 	}
+	// 恢復權變更也算實際更新；完全同值則不動版本與微秒時間。
 	if visibility {
 		control := nextRestore(row, viewer, body["visibility"])
 		if row.Visibility != body["visibility"] || row.Restore.String != control {

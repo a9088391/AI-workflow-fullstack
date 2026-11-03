@@ -38,33 +38,45 @@ func fieldError(name, message string) *apiError {
 // oneQuery 逐個解析原始參數，以保留重複及陣列鍵的驗證資訊。
 func oneQuery(r *http.Request, allowed map[string]bool) (map[string]string, map[string][]string) {
 	values, errors := map[string]string{}, map[string][]string{}
+	seen, priorities := map[string]bool{}, map[string]int{}
 	if r.URL.RawQuery == "" {
 		return values, errors
 	}
 	for _, pair := range strings.Split(r.URL.RawQuery, "&") {
-		// 原始 Query 保留重複次數與陣列鍵，錯誤欄位改成 API15 的名稱。
+		// 解碼後的原始位元組決定身分；非法 UTF-8 只在顯示時轉成大寫百分比表示。
 		parts := strings.SplitN(pair, "=", 2)
 		name, err := url.QueryUnescape(parts[0])
-		if err != nil || !utf8.ValidString(name) {
+		if err != nil {
 			name = parts[0]
 		}
 		canonical := name
-		for _, key := range []string{"page", "per_page", "filters[scope]", "filters[keyword]"} {
-			if strings.HasPrefix(name, key+"[") {
-				canonical = key
-				break
+		validName := utf8.ValidString(name)
+		if validName {
+			// 只有本端點支援的單值欄位才收攏陣列鍵；未知鍵仍保留完整身分。
+			for key := range allowed {
+				if strings.HasPrefix(name, key+"[") {
+					canonical = key
+					break
+				}
 			}
 		}
-		label := strings.ReplaceAll(strings.ReplaceAll(canonical, "filters[", "filters."), "]", "")
-		_, seen := values[canonical]
-		switch {
-		case seen:
-			errors[label] = []string{"此參數不可重複"}
-		case canonical != name && allowed[canonical]:
-			errors[label] = []string{wrongType}
-		case !allowed[canonical]:
-			errors[label] = []string{"不支援此欄位"}
+		label := canonical
+		if !validName {
+			label = url.QueryEscape(name)
+		} else if child, ok := strings.CutPrefix(canonical, "filters["); ok && strings.HasSuffix(child, "]") && !strings.ContainsAny(child[:len(child)-1], "[]") {
+			// 僅一層 filters 子欄位使用點記法，其他未知／更深的括號名稱原樣回覆。
+			label = "filters." + child[:len(child)-1]
 		}
+		message, priority := "", 0
+		switch {
+		case seen[canonical]:
+			message, priority = "此參數不可重複", 4
+		case canonical != name && allowed[canonical]:
+			message, priority = wrongType, 3
+		case !allowed[canonical]:
+			message, priority = "不支援此欄位", 2
+		}
+		seen[canonical] = true
 		raw := ""
 		if len(parts) == 2 {
 			raw = parts[1]
@@ -72,9 +84,13 @@ func oneQuery(r *http.Request, allowed map[string]bool) (map[string]string, map[
 		value, err := url.QueryUnescape(raw)
 		if err != nil || !utf8.ValidString(value) {
 			value = ""
-			if allowed[canonical] && len(errors[label]) == 0 {
-				errors[label] = []string{invalid}
+			if allowed[canonical] && priority == 0 {
+				message, priority = invalid, 1
 			}
+		}
+		// 顯示標籤可能碰撞，但不能據此判重複；保留較優先的錯誤且不受參數順序影響。
+		if priority > priorities[label] {
+			errors[label], priorities[label] = []string{message}, priority
 		}
 		values[canonical] = value
 	}
@@ -122,6 +138,7 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 		allowed["filters["+filter+"]"] = true
 	}
 	values, errors := oneQuery(r, allowed)
+	// 必填與數值範圍一起回覆；解析器已判定的重複、型態錯誤不可被值驗證蓋掉。
 	numbers := map[string]int64{}
 	for _, name := range []string{"page", "per_page"} {
 		value, ok := values[name]
@@ -175,6 +192,7 @@ func validSurrogates(raw []byte) bool {
 			return false
 		}
 		if value >= 0xd800 && value <= 0xdbff {
+			// 高代理字必須緊接低代理字；合法的一對代表單一 Unicode 碼點。
 			if i+12 > len(raw) || raw[i+6] != '\\' || raw[i+7] != 'u' {
 				return false
 			}
@@ -296,6 +314,7 @@ func bodyInput(r *http.Request, fields []string, optionalEmpty bool) (map[string
 	if _, err = decoder.Token(); err != nil {
 		return nil, &apiError{code: "E0005"}
 	}
+	// 根物件結束後不得再有其他 JSON，才能把語法錯誤與欄位錯誤分開。
 	if _, err = decoder.Token(); err != io.EOF {
 		return nil, &apiError{code: "E0005"}
 	}
