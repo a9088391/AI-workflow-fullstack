@@ -51,6 +51,7 @@ function verifyToken(key, token) {
   const signature = Buffer.from(parts[2], 'base64url');
   const expected = createHmac('sha256', key).update(`${parts[0]}.${parts[1]}`).digest();
   if (signature.length !== expected.length || signature.toString('base64url') !== parts[2] || !timingSafeEqual(signature, expected)) throw new ApiError('E0002');
+  // 簽章通過後才解析，並拒絕非正規 base64url，避免同內容出現多種表示。
   let header, claims;
   try {
     const head = Buffer.from(parts[0], 'base64url');
@@ -63,6 +64,7 @@ function verifyToken(key, token) {
       !claims || Array.isArray(claims) || Object.keys(claims).length !== 7 ||
       claims.iss !== ISSUER || claims.aud !== AUDIENCE || typeof claims.sub !== 'string' ||
       typeof claims.jti !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(claims.jti)) throw new ApiError('E0002');
+  // sub 必須是正規安全整數字串；時間及 jti 也須符合本後端固定契約。
   let id;
   try { id = urlInteger(claims.sub, 'sub'); } catch { throw new ApiError('E0002'); }
   const jti = Buffer.from(claims.jti, 'base64url');
@@ -88,6 +90,7 @@ async function identity(db, key, req, required = false) {
   const row = result.rows[0];
   if (String(row.id) !== claims.sub || row.backend_id !== 'fastify' ||
       row.issued_at.getTime() !== claims.iat * 1000 || row.expires_at.getTime() !== claims.exp * 1000) throw new ApiError('E0002');
+  // 身分與 session 時間相符後才判停用；可辨識的停用帳號優先於已撤銷。
   if (row.status === 'disabled') throw new ApiError('E0102');
   if (row.revoked_at) throw new ApiError('E0002');
   return { account: row, claims };
@@ -109,6 +112,7 @@ async function lockedIdentity(client, key, req) {
   if (String(row.account_id) !== claims.sub || row.backend_id !== 'fastify' ||
       row.issued_at.getTime() !== claims.iat * 1000 || row.expires_at.getTime() !== claims.exp * 1000 ||
       Number(now.rows[0].now) < claims.nbf || Number(now.rows[0].now) >= claims.exp) throw new ApiError('E0002');
+  // 完整 session 身分可辨識後，停用優先於撤銷，不將 DB 故障轉成登入逾期。
   if (account.status === 'disabled') throw new ApiError('E0102');
   if (row.revoked_at) throw new ApiError('E0002');
   return { account, claims };
@@ -147,20 +151,22 @@ async function login(db, key, body) {
       const reset = await client.query('UPDATE accounts SET failure_epoch=failure_epoch+1,locked_until=NULL WHERE id=$1 RETURNING failure_epoch', [account.id]);
       epoch = reset.rows[0].failure_epoch;
     }
-    let correct;
-    correct = await verifyPassword(body.password, account.password_hash);
+    const correct = await verifyPassword(body.password, account.password_hash);
     if (!correct) {
       if (enabled && account.role === 'member') {
         await client.query('INSERT INTO login_failures (account_id,failure_epoch,occurred_at) VALUES ($1,$2,$3::timestamptz)', [account.id, epoch, now]);
+        // 同世代只計 t−N < occurred_at ≤ t，包含本次；左邊界事件不可計入。
         const count = await client.query(`SELECT count(*)::integer AS n FROM login_failures
           WHERE account_id=$1 AND failure_epoch=$2 AND occurred_at>$3::timestamptz-$4::integer*interval '1 minute'
           AND occurred_at<=$3::timestamptz`, [account.id, epoch, now, window]);
         if (count.rows[0].n >= threshold) {
           const locked = await client.query("UPDATE accounts SET locked_until=$1::timestamptz+$2::integer*interval '1 second' WHERE id=$3 RETURNING locked_until::text AS until", [now, seconds, account.id]);
+          // 先提交失敗事件與鎖定，再用業務例外回 429，不能被 finally 回滾。
           await client.query('COMMIT'); committed = true;
           throw new ApiError('E0105', undefined, await lockRetry(client, locked.rows[0].until));
         }
       }
+      // 啟用鎖定的一般會員先保存未達門檻的失敗事件；其他錯密碼不計數，均提交後回 401。
       await client.query('COMMIT'); committed = true;
       throw new ApiError('E0101');
     }
@@ -173,6 +179,7 @@ async function login(db, key, body) {
     await client.query('COMMIT'); committed = true;
     return { access_token: token, token_type: 'Bearer', expires_at: businessTime(new Date((issued + DURATION) * 1000)), user: accountData(account) };
   } finally {
+    // 已提交的 401／429 不回滾；系統失敗盡力回滾後仍歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -192,6 +199,7 @@ async function logout(db, subject) {
     await client.query('UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE jti=$1', [subject.claims.jti]);
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 撤銷未提交時盡力回滾；任何出口都歸還連線並保留原始錯誤。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }

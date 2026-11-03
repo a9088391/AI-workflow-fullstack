@@ -15,7 +15,7 @@ function asciiFold(value) {
 
 // members 在 PostgreSQL 做篩選、精確計數與分頁，作者資料不逐筆查詢。
 async function members(db, page, perPage, keyword = '') {
-  // PostgreSQL text 不接受 NUL；包含 NUL 的合法關鍵字不可能命中任何資料。
+  // 保留目前 NUL 關鍵字回空列表的行為；共同接受／拒絕政策尚未定案。
   if (keyword.includes('\0')) return { list: [], pagination: pagination(page, perPage, 0) };
   const base = `FROM accounts WHERE role='member'` + (keyword ? ` AND (
     strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0 OR
@@ -62,12 +62,13 @@ async function memberStatus(db, key, req, subject, id, status) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 未提交才盡力回滾，且所有成功與失敗出口都必須歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
 }
 
-// managementComments 包含個別及父文章下架的留言，仍只以兩筆查詢完成分頁。
+// managementComments 包含個別及父文章下架的留言，以至多兩筆查詢完成分頁。
 async function managementComments(db, viewer, page, perPage) {
   const base = 'FROM comments JOIN accounts ON accounts.id=comments.author_id';
   const counted = await db.query(`SELECT count(*)::bigint AS total ${base}`);
@@ -103,7 +104,7 @@ async function updateLockoutSettings(db, key, req, body) {
     if (disabling) await client.query('SELECT id FROM accounts ORDER BY id FOR UPDATE');
     const current = await lockedIdentity(client, key, req);
     if (current.account.role !== 'admin') throw new ApiError('E0003');
-    // 同值不重做副作用；單純修改數值不改既有 locked_until。
+    // callback 比對完整四欄；同值不重做副作用，單純改數值不動既有 locked_until。
     if (Object.keys(body).some(name => body[name] !== previous[name])) {
       await client.query(`UPDATE login_lockout_settings SET enabled=$1,window_minutes=$2,failure_threshold=$3,lock_seconds=$4 WHERE id=1`,
         [body.enabled, body.window_minutes, body.failure_threshold, body.lock_seconds]);
@@ -111,6 +112,7 @@ async function updateLockoutSettings(db, key, req, body) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 未提交才盡力回滾，且所有成功與失敗出口都必須歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }

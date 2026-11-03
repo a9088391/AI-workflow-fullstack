@@ -83,8 +83,9 @@ function fixture() {
     },
   };
   return { key, db, token, accounts, sessions, article, comment, calls,
-    // getter 僅暴露觀測值，不讓測試改動 fixture 內部參照。
+    // getter 回報最近 INSERT 的 SQL 與參數，供公開回應以外的副作用核對。
     get inserted() { return inserted; },
+    // getter 回報所有交易出口歸還連線的次數，供失敗案例核對。
     get released() { return released; },
   };
 }
@@ -112,11 +113,13 @@ test('author article writes enforce validation, versions and restore ownership',
   const app = createApp(f.db, f.key);
   const owner = f.token(1), admin = f.token(2), other = f.token(3);
   try {
+    // 先驗缺少或錯誤登入與本文，無效請求不可落入 INSERT。
     error(await send(app, 'POST', '/api/articles', {}), 401, 'E0002');
     error(await send(app, 'POST', '/api/articles', { title: 'x', body: 'x' }, 'bad'), 401, 'E0002');
     error(await send(app, 'POST', '/api/articles', { title: '\u0000', body: 'x' }, owner), 422, 'E0001', { title: ['欄位格式或範圍不正確'] });
     error(await send(app, 'POST', '/api/articles', { title: '　', body: 'x' }, owner), 422, 'E0001', { title: ['欄位格式或範圍不正確'] });
     error(await send(app, 'POST', '/api/articles', { title: 'x', body: 'x', created_backend: 'evil' }, owner), 422, 'E0001', { created_backend: ['不支援此欄位'] });
+    // 合法建立須保留原始換行與目前後端來源，再核對個人列表仍讀共用舊資料。
     assert.equal((await send(app, 'POST', '/api/articles', { title: '新標題', body: '換\r\n行' }, owner)).status, 201);
     assert.match(f.inserted.sql, /'fastify'/);
     assert.deepEqual(f.inserted.args.slice(0, 3), [1, '新標題', '換\r\n行']);
@@ -124,6 +127,7 @@ test('author article writes enforce validation, versions and restore ownership',
     assert.equal(mine.status, 200);
     assert.equal(mine.data.data.list[0].created_backend, 'laravel');
     assert.equal(mine.data.data.list[0].author.id, 1);
+    // 先驗輸入格式；目標可讀但非作者回 403，通過操作權限後才比對過期版本。
     error(await send(app, 'PUT', '/api/articles/10', { title: '改', body: '文', version: 1 }, other), 403, 'E0003');
     error(await send(app, 'PUT', '/api/articles/10', { title: '改', body: '文', version: 1 }, admin), 403, 'E0003');
     error(await send(app, 'PUT', '/api/articles/10', { title: '改', body: '文', version: '1' }, owner), 422, 'E0001', { version: ['欄位型態不正確'] });
@@ -131,12 +135,15 @@ test('author article writes enforce validation, versions and restore ownership',
     error(await send(app, 'PUT', '/api/articles/10', { title: '改', body: '文', version: -1 }, owner), 422, 'E0001', { version: ['欄位格式或範圍不正確'] });
     error(await send(app, 'PUT', '/api/articles/10', '{"title":"改","body":"文","version":9007199254740992}', owner), 422, 'E0001', { version: ['欄位格式或範圍不正確'] });
     error(await send(app, 'PUT', '/api/articles/10', { title: '原標題', body: '原內文', version: 2 }, owner), 409, 'E0201');
+    // callback 記下更新次數，以同值請求沒有 UPDATE 證明版本與時間保留。
     const before = f.calls.filter(([sql]) => sql.startsWith('UPDATE articles')).length;
     assert.equal((await send(app, 'PUT', '/api/articles/10', { title: '原標題', body: '原內文', version: 1 }, owner)).status, 200);
+    // callback 只計文章 UPDATE，排除身分查核 SQL 的干擾。
     assert.equal(f.calls.filter(([sql]) => sql.startsWith('UPDATE articles')).length, before);
     assert.equal((await send(app, 'PUT', '/api/articles/10', { title: '改', body: '文', version: 1 }, owner)).status, 200);
     assert.equal(f.article.version, 2);
     assert.equal(f.article.created_backend, 'laravel');
+    // 作者先下架後由管理員接管，作者不得靠恢復請求解除管理限制。
     assert.equal((await send(app, 'PUT', '/api/articles/10/visibility', { visibility: 'hidden', version: 2 }, owner)).status, 200);
     error(await send(app, 'PUT', '/api/articles/10/visibility', { visibility: 'hidden', version: 3 }, other), 404, 'E0004');
     assert.equal((await send(app, 'PUT', '/api/articles/10/visibility', { visibility: 'hidden', version: 3 }, admin)).status, 200);
@@ -158,6 +165,7 @@ test('author comment writes respect parent visibility and independent detail', a
     error(await send(app, 'GET', '/api/comments/20', undefined, other), 403, 'E0003');
     assert.equal((await send(app, 'PUT', '/api/comments/20', { body: '編修', version: 1 }, owner)).status, 200);
     error(await send(app, 'PUT', '/api/comments/20', { body: '編修', version: 1 }, owner), 409, 'E0201');
+    // 父文章下架後，留言新增與內文修改必須拒絕，自己的詳情仍可讀。
     f.article.visibility = 'hidden';
     error(await send(app, 'POST', '/api/articles/10/comments', { body: '新增' }, owner), 403, 'E0003');
     error(await send(app, 'POST', '/api/articles/10/comments', { body: '新增' }, other), 404, 'E0004');
@@ -167,6 +175,7 @@ test('author comment writes respect parent visibility and independent detail', a
     const mine = await send(app, 'GET', '/api/me/comments?page=1&per_page=20', undefined, owner);
     assert.equal(mine.data.data.list[0].article_id, 10);
     error(await send(app, 'GET', '/api/me/comments?page=1&per_page=20&unknown=1', undefined, owner), 422, 'E0001', { unknown: ['不支援此欄位'] });
+    // 父文章下架不阻止留言自身可見性管理；恢復仍需正確控制權。
     assert.equal((await send(app, 'PUT', '/api/comments/20/visibility', { visibility: 'hidden', version: 2 }, owner)).status, 200);
     assert.equal((await send(app, 'PUT', '/api/comments/20/visibility', { visibility: 'hidden', version: 3 }, admin)).status, 200);
     error(await send(app, 'PUT', '/api/comments/20/visibility', { visibility: 'visible', version: 4 }, owner), 403, 'E0003');
@@ -184,7 +193,9 @@ test('author write rejects revoked session within transaction', async () => {
   try {
     error(await send(app, 'POST', '/api/articles', { title: 'x', body: 'x' }, token), 401, 'E0002');
     assert.equal(f.inserted, null);
+    // callback 檢查失敗沒有 COMMIT，不能只依錯誤回應推定未寫入。
     assert.equal(f.calls.some(([sql]) => sql === 'COMMIT'), false);
+    // callback 確認未提交的交易有回滾，再核對連線已歸還。
     assert.equal(f.calls.some(([sql]) => sql === 'ROLLBACK'), true);
     assert.equal(f.released, 1);
   } finally { await app.close(); }
@@ -205,6 +216,7 @@ test('versioned article and comment writes reject forged parser objects', async 
     ]) {
       error(await send(app, 'PUT', path, body, owner), 422, 'E0001', { version: ['欄位型態不正確'] });
     }
+    // callback 同時排除文章與留言 UPDATE，四個無效版本都不可落入更新。
     assert.equal(f.calls.some(([sql]) => sql.startsWith('UPDATE articles') || sql.startsWith('UPDATE comments')), false);
     assert.equal(f.article.version, 1);
     assert.equal(f.comment.version, 1);
@@ -232,7 +244,9 @@ test('author write rolls back and releases on rejected database I/O', async () =
   const app = createApp(f.db, f.key);
   try {
     error(await send(app, 'POST', '/api/articles', { title: '測試', body: '內文' }, f.token(1)), 500, 'E9999');
+    // callback 檢查失敗沒有 COMMIT，不能只依錯誤回應推定未寫入。
     assert.equal(f.calls.some(([sql]) => sql === 'COMMIT'), false);
+    // callback 確認未提交的交易有回滾，再核對連線已歸還。
     assert.equal(f.calls.some(([sql]) => sql === 'ROLLBACK'), true);
     assert.equal(f.released, 1);
   } finally { await app.close(); }

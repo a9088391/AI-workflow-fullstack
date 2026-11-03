@@ -119,18 +119,19 @@ def boundary_catalog():
     ))
 
 
-# 帳號／事件所有權確認後，在鎖住目標表的同一交易重驗並刪已知 DDL；呼叫端先核唯一 pending。
+# 先預檢帳號／事件所有權，再於取得目標表鎖的同一交易重驗並刪已知 DDL；呼叫端先核唯一 pending。
 def cleanup_boundary(packet, *, backend=BACKEND, ticket=TICKET):
     catalog = boundary_catalog()
     values = boundary_identity(catalog, packet["nonce"], ticket=ticket)
     if values is None:
         return
     email = f"t57-{packet['nonce']}x{values['microseconds']}-{backend}-member@example.test"
-    shared.check(shared.sql(
+    ownership = (
         "SELECT count(*) FROM accounts a JOIN login_failures f ON f.account_id=a.id "
         f"WHERE a.id={values['member_id']} AND a.email='{email}' AND a.role='member' "
         f"AND a.failure_epoch={values['epoch']} AND f.id={values['first_id']} AND f.failure_epoch={values['epoch']}"
-    ) == "1", "邊界帳號／世代／第一筆事件不屬於本 nonce")
+    )
+    shared.check(shared.sql(ownership) == "1", "邊界帳號／世代／第一筆事件不屬於本 nonce")
     function, trigger = catalog["function"], catalog["triggers"][0]
     definition = function["definition"].replace("'", "''")
     trigger_definition = trigger["definition"].replace("'", "''")
@@ -141,6 +142,8 @@ def cleanup_boundary(packet, *, backend=BACKEND, ticket=TICKET):
         f"OR pg_get_triggerdef({trigger['oid']}) IS DISTINCT FROM '{trigger_definition}' "
         f"OR (SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid={function['oid']}) "
         "IS DISTINCT FROM 'articles_owner' THEN RAISE EXCEPTION 'CQ24 boundary changed'; END IF; "
+        # 等待表鎖期間所有權可能改變；同交易重驗失敗即回滾，保留 DDL 與 pending 供查明。
+        f"IF ({ownership}) <> 1 THEN RAISE EXCEPTION 'CQ24 boundary ownership changed'; END IF; "
         "DROP TRIGGER ticket57_http_boundary_shift ON public.login_failures; "
         "DROP FUNCTION public.ticket57_http_boundary_shift() RESTRICT; END $cq24$; COMMIT;"
     )
@@ -149,7 +152,7 @@ def cleanup_boundary(packet, *, backend=BACKEND, ticket=TICKET):
 
 # 先離線核對唯一 pending 與固定目錄；測試可傳暫存目錄，不必模擬 DB 或偷換全域值。
 def validate_restore(packet, path, *, backend=BACKEND, ticket=TICKET, recoveries=extra.RECOVERIES):
-    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29"))
+    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29"), ("fastify", "cq30"))
                  and path.parent == recoveries[ticket]
                  and path.name == f"recovery-{packet['nonce']}.json" and not packet["restored"], "邊界恢復路徑或狀態不符")
     extra.validate_packet(packet, ticket=ticket)
@@ -170,7 +173,7 @@ def restore_baseline(packet, path, *, backend=BACKEND, ticket=TICKET):
     shared.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() "
                f"AND usename='articles_owner' AND application_name IN ({names}) AND pid<>pg_backend_pid()")
     # 只有含內容 phase 的有限編排票需要額外收束既有 cq10 holder。
-    if ticket in ("cq26", "cq27", "cq28", "cq29"):
+    if ticket in ("cq26", "cq27", "cq28", "cq29", "cq30"):
         content.cleanup_holders(packet["nonce"], ticket=ticket)
     cleanup_boundary(packet, backend=backend, ticket=ticket)
     extra.restore_baseline(packet, path, ticket=ticket)
@@ -178,7 +181,7 @@ def restore_baseline(packet, path, *, backend=BACKEND, ticket=TICKET):
 
 # 建立與 shared 精確左界中斷相同的持久狀態；這是獨立故障 fixture，沒有攔截 shared 函式。
 def interrupt_at_boundary(*, backend=BACKEND, ticket=TICKET):
-    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29")), "未核准的邊界 fixture 組合")
+    shared.check((backend, ticket) in (("fastapi", "cq24"), ("gin", "cq26"), ("echo", "cq27"), ("fiber", "cq28"), ("express", "cq29"), ("fastify", "cq30")), "未核准的邊界 fixture 組合")
     suite.pending_recovery()
     shared.guard()
     nonce = ticket + secrets.token_hex(4)

@@ -96,9 +96,11 @@ function createApp(db, key, origin = 'http://localhost:8080') {
   app.post('/api/auth/register', async function register(req, reply) {
     queryInput(req);
     const body = bodyInput(req, ['email', 'password', 'nickname']);
+    // 格式完整通過後才查唯一性與雜湊，格式錯誤不觸發昂貴密碼工作。
     const exists = await db.query('SELECT EXISTS(SELECT 1 FROM accounts WHERE email=$1) AS found', [body.email]);
     if (exists.rows[0].found) throw fieldError('email', '此 Email 已註冊');
     const hash = await hashPassword(body.password);
+    // 預查不能排除並行註冊；唯一索引衝突仍須回相同 Email 欄位錯誤。
     try {
       await db.query("INSERT INTO accounts (email,password_hash,nickname,role,status) VALUES ($1,$2,$3,'member','active')", [body.email, hash, body.nickname]);
     } catch (error) {

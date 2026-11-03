@@ -31,10 +31,60 @@ function expectError(result, status, code, errors) {
   if (errors) assert.deepEqual(result.body.errors, errors);
 }
 
+// Query 名稱須保留解碼後的位元組身分，避免非法 UTF-8 被合併成合法替代字元。
+test('raw query names preserve identity before body validation', async t => {
+  const app = createApp(fakeDb(), randomBytes(32));
+  try {
+    for (const [query, errors] of [
+      ['%FF=x', { '%FF': ['不支援此欄位'] }],
+      ['%FF=x&%ff=y', { '%FF': ['此參數不可重複'] }],
+      ['%EF%BF%BD=x', { '�': ['不支援此欄位'] }],
+      ['%FF=x&%EF%BF%BD=y', { '%FF': ['不支援此欄位'], '�': ['不支援此欄位'] }],
+      ['%FF=x&%25FF=y', { '%FF': ['不支援此欄位'] }],
+      ['%25FF=x&%FF=y', { '%FF': ['不支援此欄位'] }],
+      ['%FF=x&%FF=y&%25FF=z', { '%FF': ['此參數不可重複'] }],
+      ['%25FF=x&%FF=y&%25FF=z', { '%FF': ['此參數不可重複'] }],
+      ['%ff=x&%25ff=y', { '%FF': ['不支援此欄位'], '%ff': ['不支援此欄位'] }],
+      ['page[0]=x&page[1]=y', { 'page[0]': ['不支援此欄位'], 'page[1]': ['不支援此欄位'] }],
+      ['page%5B%FF%5D=x', { 'page%5B%FF%5D': ['不支援此欄位'] }],
+      ['filters%5B%FF%5D=x', { 'filters%5B%FF%5D': ['不支援此欄位'] }],
+      ['filters[x][y]=x', { 'filters[x][y]': ['不支援此欄位'] }],
+    ]) {
+      // 每個輸入獨立回報，讓一個解碼錯誤不遮住其他身分與標籤回歸。
+      await t.test(query, async () => {
+        for (const path of ['/api/auth/register', '/api/auth/login']) {
+          expectError(await request(app, 'POST', `${path}?${query}`, '{', { 'content-type': 'application/json' }), 422, 'E0001', errors);
+        }
+      });
+    }
+  } finally { await app.close(); }
+});
+
+// 錯誤標籤可相同，但未知鍵不可覆蓋同一單值欄位的陣列或重複錯誤。
+test('query labels preserve duplicate and array priority independently of order', async t => {
+  const app = createApp(fakeDb(), randomBytes(32));
+  try {
+    for (const [query, errors] of [
+      ['page[0]=x', { page: ['此參數不可重複'] }],
+      ['page%5B%FF%5D=x', { 'page%5B%FF%5D': ['不支援此欄位'] }],
+      ['filters[scope][]=x&filters.scope=y', { 'filters.scope': ['欄位型態不正確'] }],
+      ['filters.scope=y&filters[scope][]=x', { 'filters.scope': ['欄位型態不正確'] }],
+      ['filters[scope]=x&filters[scope]=y&filters.scope=z', { 'filters.scope': ['此參數不可重複'] }],
+      ['filters.scope=z&filters[scope]=x&filters[scope]=y', { 'filters.scope': ['此參數不可重複'] }],
+    ]) {
+      // 個別驗證兩種順序，避免標籤碰撞只在其中一個排列通過。
+      await t.test(query, async () => {
+        expectError(await request(app, 'GET', `/api/articles?page=1&per_page=20&${query}`), 422, 'E0001', errors);
+      });
+    }
+  } finally { await app.close(); }
+});
+
 // 原始 JSON、GET Body、Query 與管理門禁須按共同順序回應。
 test('Fastify routes preserve validation and safe envelopes', async () => {
   const app = createApp(fakeDb(), randomBytes(32));
   try {
+    // 公開列表先驗合法分頁，再對照重複 Query、GET 本文與帶入失效憑證。
     const page = await request(app, 'GET', '/api/articles?page=1&per_page=20');
     assert.equal(page.status, 200);
     assert.deepEqual(page.body.data, { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } });
@@ -42,17 +92,20 @@ test('Fastify routes preserve validation and safe envelopes', async () => {
     expectError(await request(app, 'GET', '/api/articles?page=bad&per_page=20', '{}', { 'content-type': 'application/json' }), 422, 'E0001', { _body: ['此 API 不接受 Request Body'] });
     expectError(await request(app, 'GET', '/api/articles?page=1&per_page=20', undefined, { authorization: 'Bearer bad' }), 401, 'E0002');
     expectError(await request(app, 'GET', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management'), 401, 'E0002');
+    // 本文解析錯誤與欄位錯誤分開，不能被 Fastify 預設 parser 改成不同格式。
     expectError(await request(app, 'POST', '/api/auth/login', '{', { 'content-type': 'application/json' }), 400, 'E0005');
     expectError(await request(app, 'POST', '/api/auth/login', '{}', { 'content-type': 'application/json', 'content-encoding': 'not-supported' }), 415, 'E0005');
     expectError(await request(app, 'POST', '/api/auth/login'), 422, 'E0001', { _body: ['Request Body 必須為 JSON object'] });
     expectError(await request(app, 'POST', '/api/auth/login', '{}', { 'content-type': 'application/json' }), 422, 'E0001', { email: ['此欄位為必填'], password: ['此欄位為必填'] });
     expectError(await request(app, 'POST', '/api/auth/login', '[]', { 'content-type': 'application/json' }), 422, 'E0001', { _body: ['Request Body 必須為 JSON object'] });
     expectError(await request(app, 'POST', '/api/auth/login', '{"email":"a@example.test","password":"abc"}', { 'content-type': 'text/plain' }), 422, 'E0001', { _body: ['Request Body 必須為 JSON object'] });
+    // 入口錯誤也必須保留共同 envelope，包含路由器提前攔截的壞 URL。
     expectError(await request(app, 'GET', '/api/me'), 401, 'E0002');
     expectError(await request(app, 'GET', '/api/no-such-route'), 404, 'E0004');
     expectError(await request(app, 'GET', '/api/articles/' + '9'.repeat(101)), 422, 'E0001', { article_id: ['欄位格式或範圍不正確'] });
     expectError(await request(app, 'GET', '/api/articles/%ZZ'), 400, 'E0005');
     expectError(await request(app, 'PUT', '/api/auth/login'), 405, 'E0005');
+    // 預檢只授予核准前端來源，且不需要登入。
     const preflight = await app.inject({ method: 'OPTIONS', url: '/api/auth/login', headers: { origin: 'http://localhost:8080' } });
     assert.equal(preflight.statusCode, 204);
     assert.equal(preflight.headers['access-control-allow-origin'], 'http://localhost:8080');
@@ -66,6 +119,7 @@ test('Argon2id and Fastify JWT reject incompatible values', async () => {
   assert.equal(await verifyPassword('Ab12', hash), true);
   assert.equal(await verifyPassword('wrong', hash), false);
   await assert.rejects(verifyPassword('Ab12', hash.replace('m=19456', 'm=1')), { code: 'E0104' });
+  // JWT 時間與身分由同一簽發輸入建立，再核對專屬金鑰及 issuer 邊界。
   const key = randomBytes(32);
   const now = Math.floor(Date.now() / 1000);
   const token = issueToken(key, 7, randomBytes(16).toString('base64url'), now);

@@ -102,6 +102,7 @@ async function saveChanges(client, kind, row, version, changes) {
   const table = kind === 'article' ? 'articles' : 'comments';
   // 欄名只來自伺服器建立的白名單物件；版本條件另保護意外的競爭更新。
   const set = changed.map(([name], index) => `${name}=$${index + 1}`).join(',');
+  // 維持與 SET 相同順序取值，所有資料仍交給 pg 綁定參數。
   const values = changed.map(([, value]) => value);
   const result = await client.query(`UPDATE ${table} SET ${set},version=version+1,updated_at=clock_timestamp()
     WHERE id=$${values.length + 1} AND version=$${values.length + 2}`, [...values, row.id, version]);
@@ -114,6 +115,7 @@ async function write(db, key, req, kind, action) {
   let committed = false;
   try {
     await client.query('BEGIN');
+    // 認證先於輸入；鎖內身分重驗避免等待期間撤銷後仍寫入。
     const { account: viewer } = await lockedIdentity(client, key, req);
     queryInput(req);
     const id = kind === 'article' && action === 'create' ? null :
@@ -152,6 +154,7 @@ async function write(db, key, req, kind, action) {
       const found = await client.query(`SELECT * FROM ${table} WHERE id=$1 FOR UPDATE`, [id]);
       const row = found.rows[0];
       if (kind === 'comment' && (!row || !parent || Number(row.article_id) !== Number(parent.id))) throw new ApiError('E0004');
+      // 先以 404 隱藏不可讀目標，再判 403 操作權；版本由 saveChanges 最後判定。
       readable(row, parent, viewer);
       if (Number(viewer.id) !== Number(row.author_id) && (action === 'edit' || viewer.role !== 'admin') ||
           kind === 'comment' && action === 'edit' && parent.visibility === 'hidden') throw new ApiError('E0003');
@@ -169,6 +172,7 @@ async function write(db, key, req, kind, action) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 未提交才盡力回滾；即使回滾失敗也歸還連線，不覆蓋原始例外。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }

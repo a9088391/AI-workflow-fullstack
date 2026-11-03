@@ -45,17 +45,31 @@ function fixture() {
     if (sql.startsWith('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1 FOR UPDATE')) return { rows: [accounts.get(Number(args[0]))].filter(Boolean) };
     if (sql.startsWith('SELECT account_id,backend_id,issued_at,expires_at,revoked_at FROM login_sessions')) return { rows: [sessions.get(args[0])].filter(Boolean) };
     if (sql.startsWith('SELECT floor(extract(epoch FROM clock_timestamp()))')) return { rows: [{ now: String(Math.floor(Date.now() / 1000)) }] };
-    if (sql.startsWith('SELECT id,role,status FROM accounts WHERE id IN')) return { rows: [...new Set(args)].sort((a, b) => a - b).map(id => accounts.get(Number(id))).filter(Boolean) };
+    if (sql.startsWith('SELECT id,role,status FROM accounts WHERE id IN')) return { rows: [...new Set(args)]
+      // 數值排序模擬帳號 ID 鎖序，避免字串排序產生錯誤先後。
+      .sort((a, b) => a - b)
+      // 只回查詢要求的帳號，不用其他 fixture 掩蓋不存在情境。
+      .map(id => accounts.get(Number(id))).filter(Boolean) };
+    // callback 只投影 ID，模擬設定關閉前鎖住全部帳號的查詢。
     if (sql.startsWith('SELECT id FROM accounts ORDER BY id FOR UPDATE')) return { rows: [...accounts.values()].map(row => ({ id: row.id })) };
     if (sql.startsWith('SELECT count(*)::bigint AS total FROM accounts')) {
+      // callback 僅計一般會員，依 nickname 或 email 任一字面命中模擬 count。
       const matched = [...accounts.values()].filter(row => row.role === 'member' && (!args.length ||
-        [row.email, row.nickname].some(value => value.replace(/[A-Z]/g, letter => letter.toLowerCase()).includes(args[0]))));
+        // callback 保留任一欄位匹配；內層只折疊 ASCII，避免 fixture 掩蓋 Unicode 差異。
+        [row.email, row.nickname].some(value => value.replace(/[A-Z]/g,
+          // callback 不使用 Unicode 大小寫轉換，與核准的搜尋語意一致。
+          letter => letter.toLowerCase()).includes(args[0]))));
       return { rows: [{ total: String(matched.length) }] };
     }
     if (sql.startsWith('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE role=')) {
       const keyword = args.length === 3 ? args[0] : '';
+      // callback 沿用 count 的一般會員與字面條件，讓總數可與列表比較。
       const matched = [...accounts.values()].filter(row => row.role === 'member' && (!keyword ||
-        [row.email, row.nickname].some(value => value.replace(/[A-Z]/g, letter => letter.toLowerCase()).includes(keyword))));
+        // callback 檢查任一公開搜尋欄位，不把符號解讀成萬用字元。
+        [row.email, row.nickname].some(value => value.replace(/[A-Z]/g,
+          // callback 只折疊 ASCII，保留中文與非 ASCII 字元的差異。
+          letter => letter.toLowerCase()).includes(keyword))));
+      // callback 依 ID 降冪打破相同建立時間的平手，再切出要求頁面。
       return { rows: matched.sort((a, b) => b.id - a.id).slice(Number(args.at(-1)), Number(args.at(-1)) + Number(args.at(-2))) };
     }
     if (sql.startsWith('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=$1 AND role=')) {
@@ -128,18 +142,21 @@ test('admin routes enforce role, validation order and member visibility', async 
   const f = fixture(), app = createApp(f.db, f.key);
   const admin = f.token(1), member = f.token(2);
   try {
+    // 認證與管理角色優先，只有管理員才可收到精確的格式錯誤。
     error(await send(app, 'GET', '/api/members?page=bad&per_page=20'), 401, 'E0002');
     error(await send(app, 'GET', '/api/members?page=bad&per_page=20', undefined, member), 403, 'E0003');
     error(await send(app, 'GET', '/api/members?page=bad&per_page=20', undefined, admin), 422, 'E0001', { page: ['欄位格式或範圍不正確'] });
     error(await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=a&filters[keyword]=b', undefined, admin), 422, 'E0001', { 'filters.keyword': ['此參數不可重複'] });
     error(await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword][]=a', undefined, admin), 422, 'E0001', { 'filters.keyword': ['欄位型態不正確'] });
     error(await send(app, 'GET', `/api/members?page=1&per_page=20&filters[keyword]=${'x'.repeat(255)}`, undefined, admin), 422, 'E0001', { 'filters.keyword': ['欄位格式或範圍不正確'] });
+    // 管理員 ID 與缺少的會員都回 404，避免跨越一般會員管理範圍。
     error(await send(app, 'GET', '/api/members/1', undefined, admin), 404, 'E0004');
     error(await send(app, 'GET', '/api/members/999', undefined, admin), 404, 'E0004');
     assert.equal((await send(app, 'GET', '/api/members/2', undefined, admin)).body.data.email, 'ALICE@example.test');
     error(await send(app, 'PUT', '/api/members/1/status', { status: 'disabled' }, member), 403, 'E0003');
     error(await send(app, 'PUT', '/api/members/1/status', { status: 'disabled' }, admin), 404, 'E0004');
     error(await send(app, 'PUT', '/api/members/2/status', { status: 'paused' }, admin), 422, 'E0001', { status: ['欄位格式或範圍不正確'] });
+    // 相同管理角色門禁也適用文章管理範圍及設定，不能先回格式明細。
     error(await send(app, 'GET', '/api/articles?page=1&per_page=20&filters[scope]=management', undefined, member), 403, 'E0003');
     assert.equal((await send(app, 'GET', '/api/articles?page=1&per_page=20&filters[scope]=management', undefined, admin)).status, 200);
     error(await send(app, 'GET', '/api/settings/login-lockout?unknown=1', undefined, member), 403, 'E0003');
@@ -154,16 +171,20 @@ test('member search keeps literal contains and exact pagination without per-row 
   try {
     const match = await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=%20ICE%25_%5C%20', undefined, admin);
     assert.equal(match.status, 200);
+    // callback 只取 ID，以公開列表結果核對字面搜尋命中對象。
     assert.deepEqual(match.body.data.list.map(row => row.id), [2]);
     assert.equal(match.body.data.pagination.total, 1);
+    // callback 只計會員列表 SQL，排除認證查詢而核對沒有 N+1。
     const search = f.calls.filter(([sql]) => sql.includes("FROM accounts WHERE role='member'"));
     assert.equal(search.length, 2);
+    // callback 確認 count 與列表都採字面搜尋，不能套用 LIKE 萬用字元。
     assert.ok(search.every(([sql]) => sql.includes('strpos(translate(') && !/\bILIKE\b|\bLIKE\b/.test(sql)));
     assert.deepEqual(search[0][1], ['ice%_\\']);
     assert.equal((await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=ä', undefined, admin)).body.data.pagination.total, 0);
     assert.equal((await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=陳', undefined, admin)).body.data.pagination.total, 1);
     const deep = await send(app, 'GET', '/api/members?page=9007199254740991&per_page=20', undefined, admin);
     assert.deepEqual(deep.body.data, { list: [], pagination: { page: 9007199254740991, per_page: 20, total: 2, total_pages: 1 } });
+    // 只保留既有行為回歸；NUL 搜尋接受／拒絕政策仍待另案決定。
     assert.equal((await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=%00', undefined, admin)).body.data.pagination.total, 0);
   } finally { await app.close(); }
 });
@@ -174,10 +195,13 @@ test('member status revokes old sessions once and preserves locks on restore', a
   try {
     assert.equal((await send(app, 'PUT', '/api/members/2/status', { status: 'disabled' }, admin)).status, 200);
     assert.equal(f.accounts.get(2).status, 'disabled');
+    // callback 找出被停用會員的舊登入，核對實際撤銷而非只看 200。
     assert.equal([...f.sessions.values()].find(row => row.account_id === 2).revoked_at?.getTime(), created.getTime());
     error(await send(app, 'GET', '/api/me', undefined, old), 403, 'E0102');
+    // callback 記錄首次撤銷次數，供同值操作比較副作用。
     const revokes = f.calls.filter(([sql]) => sql.startsWith('UPDATE login_sessions SET revoked_at=')).length;
     assert.equal((await send(app, 'PUT', '/api/members/2/status', { status: 'disabled' }, admin)).status, 200);
+    // callback 只計撤銷 SQL，確保重複停用不重做副作用。
     assert.equal(f.calls.filter(([sql]) => sql.startsWith('UPDATE login_sessions SET revoked_at=')).length, revokes);
     assert.equal((await send(app, 'PUT', '/api/members/2/status', { status: 'active' }, admin)).status, 200);
     error(await send(app, 'GET', '/api/me', undefined, old), 401, 'E0002');
@@ -202,15 +226,19 @@ test('lockout settings validate types and apply atomic disable effects once', as
       lock_seconds: ['欄位格式或範圍不正確'],
     });
     error(await send(app, 'PUT', '/api/settings/login-lockout', { ...valid, extra: true }, admin), 422, 'E0001', { extra: ['不支援此欄位'] });
+    // 數值變更只覆寫設定，不影響既有鎖定到期時間。
     assert.equal((await send(app, 'PUT', '/api/settings/login-lockout', { ...valid, window_minutes: 10 }, admin)).status, 200);
     assert.equal(f.accounts.get(2).locked_until, created);
     assert.equal(f.settings.window_minutes, 10);
+    // 真正關閉才清鎖換世代；重複同值由下方 SQL 次數確認沒有再次副作用。
     assert.equal((await send(app, 'PUT', '/api/settings/login-lockout', { ...valid, enabled: false }, admin)).status, 200);
     assert.deepEqual(f.settings, { ...valid, enabled: false });
     assert.equal(f.accounts.get(2).failure_epoch, 2);
     assert.equal(f.accounts.get(2).locked_until, null);
+    // callback 記下首次清鎖換世代的 SQL 次數。
     const clearCount = f.calls.filter(([sql]) => sql.startsWith('UPDATE accounts SET failure_epoch=')).length;
     assert.equal((await send(app, 'PUT', '/api/settings/login-lockout', { ...valid, enabled: false }, admin)).status, 200);
+    // callback 只計清鎖 SQL，確保再次關閉不增加世代。
     assert.equal(f.calls.filter(([sql]) => sql.startsWith('UPDATE accounts SET failure_epoch=')).length, clearCount);
     assert.deepEqual((await send(app, 'GET', '/api/settings/login-lockout', undefined, admin)).body.data, { ...valid, enabled: false });
   } finally { await app.close(); }
@@ -222,8 +250,11 @@ test('management comments include hidden rows with content contract fields', asy
   try {
     const found = await send(app, 'GET', '/api/comments?page=1&per_page=20', undefined, admin);
     assert.equal(found.status, 200);
+    // callback 僅取可觀察的狀態與恢復權，驗證管理列表包含下架留言。
     assert.deepEqual(found.body.data.list.map(row => [row.id, row.visibility, row.can_restore]), [[7, 'hidden', true]]);
+    // callback 只計留言讀取 SQL，核對列表與 count 各一次。
     assert.equal(f.calls.filter(([sql]) => sql.includes('FROM comments JOIN accounts')).length, 2);
+    // callback 核對管理列表不以父文章 JOIN 過濾留言。
     assert.ok(f.calls.every(([sql]) => !sql.includes('JOIN articles ON articles.id=comments.article_id')));
   } finally { await app.close(); }
 });
@@ -234,7 +265,9 @@ test('admin write rolls back and releases connection on database failure', async
   f.failUpdate = true;
   try {
     error(await send(app, 'PUT', '/api/settings/login-lockout', { enabled: false, window_minutes: 5, failure_threshold: 5, lock_seconds: 300 }, admin), 500, 'E9999');
+    // callback 確認失敗沒有提交，避免只驗錯誤碼卻漏掉持久化副作用。
     assert.equal(f.calls.some(([sql]) => sql === 'COMMIT'), false);
+    // callback 確認交易走回滾出口，再另外核對連線釋放。
     assert.equal(f.calls.some(([sql]) => sql === 'ROLLBACK'), true);
     assert.equal(f.released, 1);
   } finally { await app.close(); }
@@ -248,12 +281,14 @@ test('admin writes recheck session after a concurrent revocation', async () => {
   try {
     error(await send(app, 'PUT', '/api/members/2/status', { status: 'disabled' }, admin), 401, 'E0002');
     assert.equal(f.accounts.get(2).status, 'active');
+    // callback 核對撤銷後沒有執行會員狀態更新。
     assert.equal(f.calls.some(([sql]) => sql.startsWith('UPDATE accounts SET status=')), false);
+    // callback 確認交易走回滾出口，再另外核對連線釋放。
     assert.equal(f.calls.some(([sql]) => sql === 'ROLLBACK'), true);
     assert.equal(f.released, 1);
   } finally { await app.close(); }
   const g = fixture(), settingsApp = createApp(g.db, g.key), settingsAdmin = g.token(1);
-  // callback 於設定列鎖後、帳號／session 重查前撤銷登入，模擬競爭提交。
+  // callback 在 BEGIN 時撤銷登入，讓後續設定列鎖與 session 重查讀到已撤銷狀態。
   g.beginAction = () => { [...g.sessions.values()][0].revoked_at = created; };
   try {
     error(await send(settingsApp, 'PUT', '/api/settings/login-lockout', {
@@ -261,6 +296,7 @@ test('admin writes recheck session after a concurrent revocation', async () => {
     }, settingsAdmin), 401, 'E0002');
     assert.equal(g.settings.enabled, true);
     assert.equal(g.accounts.get(2).locked_until, created);
+    // callback 核對撤銷後沒有進入設定更新，原值與會員鎖都必須保留。
     assert.equal(g.calls.some(([sql]) => sql.startsWith('UPDATE login_lockout_settings SET')), false);
     assert.equal(g.released, 1);
   } finally { await settingsApp.close(); }
