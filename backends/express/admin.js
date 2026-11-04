@@ -14,8 +14,6 @@ function asciiFold(value) {
 
 // members 在資料庫完成字面搜尋、精確計數與分頁，避免逐筆查詢與讀取敏感欄位。
 async function members(db, page, perPage, keyword = '') {
-  // PostgreSQL text 無法儲存 NUL；此現有分支不送 SQL，直接回空集合。
-  if (keyword.includes('\0')) return { list: [], pagination: pagination(page, perPage, 0) };
   const base = `FROM accounts WHERE role='member'` + (keyword ? ` AND (
     strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0 OR
     strpos(translate(email,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0)` : '');

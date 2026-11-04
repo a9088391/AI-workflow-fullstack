@@ -51,11 +51,6 @@ func (s *server) members(c *requestContext) {
 		respondError(c, e)
 		return
 	}
-	// PostgreSQL text 無法表示 NUL；此分支回空列表，避免送入無法編碼的查詢值。
-	if strings.ContainsRune(keyword, 0) {
-		respondOK(c, 200, map[string]any{"list": []map[string]any{}, "pagination": pagination(page, perPage, 0)})
-		return
-	}
 	base := " FROM accounts WHERE role='member'"
 	// 固定欄位與字面包含條件同時用於 count／列表，只有 ASCII 大寫參與折疊。
 	args := []any{}

@@ -52,11 +52,6 @@ func (s *server) members(c *echo.Context) {
 		respondError(c, e)
 		return
 	}
-	// 現行 NUL 分支直接回空列表，不將 PostgreSQL text 無法表示的字元送入查詢。
-	if strings.ContainsRune(keyword, 0) {
-		respondOK(c, 200, map[string]any{"list": []map[string]any{}, "pagination": pagination(page, perPage, 0)})
-		return
-	}
 	// 只列一般會員；strpos 讓百分比、底線與反斜線依字面比對，count 共用條件。
 	base := " FROM accounts WHERE role='member'"
 	args := []any{}

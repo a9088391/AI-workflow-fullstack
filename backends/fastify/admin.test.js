@@ -184,8 +184,6 @@ test('member search keeps literal contains and exact pagination without per-row 
     assert.equal((await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=陳', undefined, admin)).body.data.pagination.total, 1);
     const deep = await send(app, 'GET', '/api/members?page=9007199254740991&per_page=20', undefined, admin);
     assert.deepEqual(deep.body.data, { list: [], pagination: { page: 9007199254740991, per_page: 20, total: 2, total_pages: 1 } });
-    // 只保留既有行為回歸；NUL 搜尋接受／拒絕政策仍待另案決定。
-    assert.equal((await send(app, 'GET', '/api/members?page=1&per_page=20&filters[keyword]=%00', undefined, admin)).body.data.pagination.total, 0);
   } finally { await app.close(); }
 });
 
@@ -300,4 +298,58 @@ test('admin writes recheck session after a concurrent revocation', async () => {
     assert.equal(g.calls.some(([sql]) => sql.startsWith('UPDATE login_lockout_settings SET')), false);
     assert.equal(g.released, 1);
   } finally { await settingsApp.close(); }
+});
+
+// 管理員會員搜尋拒絕解碼後 NUL，並保留欄位優先序、聚合及合法字面搜尋。
+test('member keyword rejects decoded NUL without changing query precedence', async () => {
+  const f = fixture(), app = createApp(f.db, f.key);
+  const admin = f.token(1), member = f.token(2);
+  const invalid = ['欄位格式或範圍不正確'];
+  const base = '/api/members?page=1&per_page=20&';
+  try {
+    // 身分與角色先於本文，本文先於 Query；同時無效時不得洩漏後續驗證明細。
+    const bad = '/api/members?page=bad&per_page=20&filters[keyword]=%00';
+    error(await send(app, 'GET', bad, '{}'), 401, 'E0002');
+    error(await send(app, 'GET', bad, '{}', member), 403, 'E0003');
+    error(await send(app, 'GET', bad, '{}', admin), 422, 'E0001', { _body: ['此 API 不接受 Request Body'] });
+    const before = f.calls.length;
+    // 明確先確認編碼承載真正 U+0000，再分別驗證開頭、中間、結尾及 U+0020 包覆。
+    for (const keyword of ['\0', '\0abc', 'ab\0cd', 'abc\0', ' \0 ']) {
+      const encoded = encodeURIComponent(keyword);
+      assert.ok(decodeURIComponent(encoded).includes('\0'));
+      const result = await send(app, 'GET', `${base}filters[keyword]=${encoded}`, undefined, admin);
+      error(result, 422, 'E0001', { 'filters.keyword': invalid });
+      assert.equal(result.body.success, false);
+      assert.equal(result.body.message, '欄位資料不正確，請確認後再送出');
+    }
+    // 其他欄位仍獨立彙整；同欄位重複與陣列型態優先於 NUL 值檢查。
+    for (const [query, errors] of [
+      ['page=bad&per_page=20&filters[keyword]=%00', { page: invalid, 'filters.keyword': invalid }],
+      ['per_page=20&filters[keyword]=%00', { page: ['此欄位為必填'], 'filters.keyword': invalid }],
+      ['page=1&per_page=20&filters[keyword]=%00&filters[keyword]=x', { 'filters.keyword': ['此參數不可重複'] }],
+      ['page=1&per_page=20&filters[keyword]=x&filters[keyword]=%00', { 'filters.keyword': ['此參數不可重複'] }],
+      ['page=1&per_page=20&filters[keyword][]=%00', { 'filters.keyword': ['欄位型態不正確'] }],
+      ['page=1&per_page=20&filters[keyword][x]=%00', { 'filters.keyword': ['欄位型態不正確'] }],
+    ]) {
+      error(await send(app, 'GET', `/api/members?${query}`, undefined, admin), 422, 'E0001', errors);
+    }
+    const long = encodeURIComponent(` ${'😀'.repeat(255)} `);
+    error(await send(app, 'GET', `${base}filters[keyword]=${long}`, undefined, admin), 422, 'E0001', { 'filters.keyword': invalid });
+    // some callback 區分認證讀取與搜尋計數，拒絕案例不得送出搜尋 SQL 或任何寫入。
+    assert.equal(f.calls.slice(before).some(([sql]) => sql.includes("FROM accounts WHERE role=") || sql.startsWith('UPDATE')), false);
+    // 文字形式的反斜線 u0000 及 254 個非 BMP 碼點合法；只裁兩端 U+0020。
+    for (const keyword of ['\\u0000', ` ${'😀'.repeat(254)} `]) {
+      const start = f.calls.length;
+      const encoded = encodeURIComponent(keyword);
+      assert.equal(keyword.includes('\0'), false);
+      const result = await send(app, 'GET', `${base}filters[keyword]=${encoded}`, undefined, admin);
+      assert.equal(result.status, 200);
+      assert.equal(result.body.success, true);
+      // find callback 核對真正交給搜尋 SQL 的參數，不讓成功空列表掩蓋錯誤正規化。
+      const counted = f.calls.slice(start).find(([sql]) => sql.startsWith('SELECT count(*)::bigint AS total FROM accounts'));
+      assert.equal(counted[1][0], keyword.replace(/^ +| +$/g, ''));
+    }
+  } finally {
+    await app.close();
+  }
 });

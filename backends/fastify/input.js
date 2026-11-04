@@ -109,9 +109,9 @@ function queryInput(req, allowed = []) {
     errors['filters.scope'] = [INVALID];
   }
   if (Object.hasOwn(values, 'filters[keyword]') && !errors['filters.keyword']) {
-    // 關鍵字只裁 U+0020；Unicode 字元與萬用符號仍須按字面搜尋。
+    // 關鍵字只裁 U+0020；拒絕實際 NUL，反斜線文字與其他 Unicode 字元仍按字面值驗證。
     values['filters[keyword]'] = values['filters[keyword]'].replace(/^ +| +$/g, '');
-    if ([...values['filters[keyword]']].length > 254) errors['filters.keyword'] = [INVALID];
+    if (values['filters[keyword]'].includes('\0') || [...values['filters[keyword]']].length > 254) errors['filters.keyword'] = [INVALID];
   }
   if (Object.keys(errors).length) throw new ApiError('E0001', Object.fromEntries(Object.entries(errors)));
   return Object.fromEntries(Object.entries(values));

@@ -474,9 +474,6 @@ def members(request, _):
     with connect() as connection:
         management_identity(request, connection)
         page, per_page, keyword = list_input(request, allow_keyword=True)
-        # PostgreSQL text 無法保存 NUL；先保留既有空結果，共同搜尋接受／拒絕政策仍待定案。
-        if "\0" in keyword:
-            return success({"list": [], "pagination": pagination(page, per_page, 0)})
         folded = keyword.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
         from_sql = "FROM accounts WHERE role = 'member'"
         params = ()

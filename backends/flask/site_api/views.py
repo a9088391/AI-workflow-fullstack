@@ -341,8 +341,9 @@ def list_input(request, allow_scope=False, allow_keyword=False):
                     numbers[name] = number
     if allow_scope and "filters[scope]" in values and "filters.scope" not in errors and values["filters[scope]"] != "management":
         errors["filters.scope"] = [INVALID]
+    # 只裁切 ASCII 空格；拒絕 NUL 與超長值，同欄既有型態錯誤仍優先保留。
     keyword = values.get("filters[keyword]", "").strip(" ")
-    if allow_keyword and "filters[keyword]" in values and "filters.keyword" not in errors and len(keyword) > 254:
+    if allow_keyword and "filters[keyword]" in values and "filters.keyword" not in errors and ("\0" in keyword or len(keyword) > 254):
         errors["filters.keyword"] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
@@ -783,9 +784,6 @@ def members(request):
     with connect() as connection:
         management_identity(request, connection)
         page, per_page, keyword = list_input(request, allow_keyword=True)
-        # PostgreSQL text 不能包含 NUL，且資料欄位也不會包含它。
-        if "\0" in keyword:
-            return success({"list": [], "pagination": pagination(page, per_page, 0)})
         folded = keyword.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
         where = "FROM accounts WHERE role = 'member'"
         params = ()

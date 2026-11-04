@@ -15,9 +15,9 @@ function ErrorNotice({ error, retry, focusRef }) {
   return <div className="notice error" role="alert" tabIndex={-1} ref={focusRef}>
     <strong>{error.message}</strong>
     {error.errors && Object.keys(error.errors).length > 0 && <ul>{Object.entries(error.errors).map(
-      // 已知欄位可聚焦，其他伺服器明細仍須完整顯示。
-      ([name, messages]) => <li key={name}>{['email', 'password', 'nickname', 'title', 'body', 'keyword', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)
-        ? <button type="button" className="text-button" data-field={name} onClick={focusField}>{name}：{messages.join('；')}</button>
+      // 已知欄位可聚焦；filters.keyword 對應會員搜尋框，其餘明細仍完整顯示。
+      ([name, messages]) => <li key={name}>{['email', 'password', 'nickname', 'title', 'body', 'keyword', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds', 'filters.keyword'].includes(name)
+        ? <button type="button" className="text-button" data-field={name === 'filters.keyword' ? 'keyword' : name} onClick={focusField}>{name}：{messages.join('；')}</button>
         : `${name}：${messages.join('；')}`}</li>,
     )}</ul>}
     {error.logId && <p>追蹤編號：<span className="break">{error.logId}</span> <button type="button" className="text-button" onClick={copyLogId}>複製</button></p>}
@@ -45,7 +45,8 @@ function useApiRead(backend, credential, path, kind, expected, articleId, enable
         if (controller.signal.aborted) return
         const data = successData(response.status, response.body, kind, expected, articleId)
         if (data) { setResult({ key, loading: false, data, error: null }); return }
-        const failure = apiFailure(response.status, response.body)
+        // 會員列表保留 Query 錯誤鍵以連回欄位，其他讀取仍沿用一般摘要。
+        const failure = apiFailure(response.status, response.body, kind === 'members' ? ['filters.keyword'] : [])
         if (response.status === 401 && failure.code === 'E0002' || response.status === 403 && failure.code === 'E0102') failureRef.current(backend, credential, failure)
         setResult({ key, loading: false, data: null, error: failure })
       } catch {
@@ -722,16 +723,19 @@ function AdminAccess({ ready, authStatus, account }) {
   </p>
 }
 
-// 會員搜尋只保留核准的 keyword；網址頁碼在搜尋時回第一頁。
+// 會員搜尋只保留核准的 keyword；伺服器錯誤聚焦摘要並連回欄位。
 function AdminMembers({ backend, credential, account, authStatus, ready, page, keyword: rawKeyword, onAuthFailure }) {
   const keyword = memberKeyword(rawKeyword)
   const [input, setInput] = useState(rawKeyword)
   const [searchError, setSearchError] = useState(null)
   const searchRef = useRef(null)
+  const readErrorRef = useRef(null)
   const filter = keyword ? `&filters%5Bkeyword%5D=${encodeURIComponent(keyword)}` : ''
   const read = useApiRead(backend, credential, `/api/members?page=${page}&per_page=20${filter}`, 'members', page, null, ready && keyword !== null, onAuthFailure)
   // 搜尋驗證失敗時聚焦摘要，可由其中的欄位按鈕回到輸入。
   useEffect(() => { if (searchError) searchRef.current?.focus() }, [searchError])
+  // API 讀取失敗時聚焦獨立摘要，避免與本地搜尋錯誤互相覆蓋焦點。
+  useEffect(() => { if (read.error) readErrorRef.current?.focus() }, [read.error])
   // 只將修剪後的字面值放進網址，未知字元由 URL 編碼而非自行解讀。
   function search(event) {
     event.preventDefault()
@@ -741,20 +745,23 @@ function AdminMembers({ backend, credential, account, authStatus, ready, page, k
   }
   // 搜尋字串變動後移除舊的長度錯誤，保留輸入直到送出。
   function changeSearch(event) { setInput(event.target.value); setSearchError(null) }
+  // 輸入仍是送出中的查詢時才把伺服器欄位錯誤連到欄位。
+  const serverKeywordError = input === rawKeyword ? read.error?.errors?.['filters.keyword']?.[0] : null
+  const fieldError = searchError?.errors?.keyword?.[0] || serverKeywordError
   // 指定超頁優先顯示此頁無資料，首頁才區分搜尋無結果與尚無會員。
   return <AdminFrame title="會員管理">
     <AdminAccess ready={ready} authStatus={authStatus} account={account} />
     {ready && <>
       <form className="admin-toolbar" onSubmit={search}>
         <label htmlFor="keyword">搜尋暱稱或 Email</label>
-        <input id="keyword" value={input} onChange={changeSearch} aria-invalid={Boolean(searchError)} aria-describedby={searchError ? 'keyword-error' : undefined} />
+        <input id="keyword" value={input} onChange={changeSearch} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? 'keyword-error' : undefined} />
         <button className="outline-button" type="submit">搜尋會員</button>
-        {searchError && <p id="keyword-error" className="field-error">最多 254 個 Unicode 字元</p>}
+        {fieldError && <p id="keyword-error" className="field-error">{fieldError}</p>}
       </form>
       <ErrorNotice error={searchError || (keyword === null ? { message: '網址中的搜尋關鍵字過長，請修正後再搜尋。' } : null)} focusRef={searchRef} />
       {keyword !== null && <>
         {read.loading && <p className="notice" role="status">正在載入會員…</p>}
-        <ErrorNotice error={read.error} retry={read.reload} />
+        <ErrorNotice error={read.error} retry={read.reload} focusRef={readErrorRef} />
         {read.data && <>
           {read.data.list.length ? <ol className="admin-list">{read.data.list.map(
             // 列表只連到一般會員詳情，不在前端推測狀態寫入結果。

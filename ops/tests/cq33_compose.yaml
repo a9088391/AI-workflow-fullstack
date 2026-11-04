@@ -1,0 +1,45 @@
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.251.133.0/24
+services:
+  db:
+    environment:
+      CQ33_FIXTURE: isolated-cq33
+  laravel:
+    volumes:
+      - ./.local/cq33-keys/laravel.key:/run/secrets/laravel-jwt.key:ro
+  symfony:
+    volumes:
+      - ./.local/cq33-keys/symfony.key:/run/secrets/symfony-jwt.key:ro
+  aspnet-core:
+    volumes:
+      - ./.local/cq33-keys/aspnet-core.key:/run/secrets/aspnet-core-jwt.key:ro
+  django:
+    volumes:
+      - ./.local/cq33-keys/django.key:/run/secrets/django-jwt.key:ro
+  flask:
+    volumes:
+      - ./.local/cq33-keys/flask.key:/run/secrets/flask-jwt.key:ro
+  fastapi:
+    volumes:
+      - ./.local/cq33-keys/fastapi.key:/run/secrets/fastapi-jwt.key:ro
+  gin:
+    volumes:
+      - ./.local/cq33-keys/gin.key:/run/secrets/gin-jwt.key:ro
+  echo:
+    volumes:
+      - ./.local/cq33-keys/echo.key:/run/secrets/echo-jwt.key:ro
+  fiber:
+    volumes:
+      - ./.local/cq33-keys/fiber.key:/run/secrets/fiber-jwt.key:ro
+  express:
+    volumes:
+      - ./.local/cq33-keys/express.key:/run/secrets/express-jwt.key:ro
+  fastify:
+    volumes:
+      - ./.local/cq33-keys/fastify.key:/run/secrets/fastify-jwt.key:ro
+  nestjs:
+    volumes:
+      - ./.local/cq33-keys/nestjs.key:/run/secrets/nestjs-jwt.key:ro

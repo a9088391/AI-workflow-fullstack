@@ -15,7 +15,20 @@ class AdminInputTests(unittest.TestCase):
     def test_member_keyword_boundaries(self):
         request = SimpleNamespace(body=b"", META={"QUERY_STRING": "page=1&per_page=20&filters%5Bkeyword%5D=++%25_%5C++"})
         self.assertEqual(list_input(request, allow_keyword=True), (1, 20, "%_\\"))
+        # 文字 escape 與 254 個 Unicode 碼點仍可搜尋，且只裁切前後 U+0020。
+        for encoded, keyword in (("+%5Cu0000+", "\\u0000"), ("+%09A+", "\tA"), ("+" + "%F0%9F%98%80" * 254 + "+", "😀" * 254)):
+            with self.subTest(encoded=encoded):
+                request.META["QUERY_STRING"] = "page=1&per_page=20&filters[keyword]=" + encoded
+                self.assertEqual(list_input(request, allow_keyword=True), (1, 20, keyword))
+        # NUL 與分頁錯誤應逐欄彙整，不能蓋掉同欄先判定的重複或陣列錯誤。
         for query, expected in (
+            ("page=1&per_page=20&filters[keyword]=%00abc", {"filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("page=1&per_page=20&filters[keyword]=ab%00c", {"filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("page=1&per_page=20&filters[keyword]=abc%00", {"filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("page=bad&per_page=20&filters[keyword]=%00", {"page": ["欄位格式或範圍不正確"], "filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("per_page=20&filters[keyword]=%00", {"page": ["此欄位為必填"], "filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("page=1&per_page=20&filters[keyword]=a&filters[keyword]=%00", {"filters.keyword": ["此參數不可重複"]}),
+            ("page=1&per_page=20&filters[keyword][0]=%00", {"filters.keyword": ["欄位型態不正確"]}),
             ("page=1&per_page=20&filters%5Bkeyword%5D=%FF", {"filters.keyword": ["欄位格式或範圍不正確"]}),
             ("page=1&per_page=20&filters%5Bkeyword%5D=a&filters%5Bkeyword%5D=b", {"filters.keyword": ["此參數不可重複"]}),
             ("page=1&per_page=20&filters%5Bkeyword%5D%5B0%5D=a", {"filters.keyword": ["欄位型態不正確"]}),
@@ -116,8 +129,16 @@ class AdminAuthorizationTests(unittest.TestCase):
         manager.__enter__.return_value = connection
         request = SimpleNamespace(
             method="GET", path="/api/members", headers={}, body=b"unexpected",
-            META={"QUERY_STRING": "page=bad"},
+            META={"QUERY_STRING": "page=bad&filters[keyword]=%00"},
         )
+        # 未登入也須先拒絕，不讓 Body 或 NUL 改成驗證錯誤。
+        with patch("site_api.views.connect", return_value=manager), patch(
+            "site_api.views.authenticate", side_effect=ApiError("E0002")
+        ):
+            response = members(request)
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(json.loads(response.content)["error_code"], "E0002")
+            connection.execute.assert_not_called()
         with patch("site_api.views.connect", return_value=manager), patch(
             "site_api.views.authenticate", return_value=({"id": 1, "role": "member"}, {})
         ):
@@ -131,8 +152,8 @@ class AdminAuthorizationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 403)
             connection.execute.assert_not_called()
 
-    # PostgreSQL text 無法包含 NUL；有效管理員搜尋此字元應得空結果而非 500。
-    def test_nul_keyword_has_no_matches(self):
+    # 管理員的 NUL 搜尋回共同欄位錯誤且不查資料；非空 Body 仍優先於 Query。
+    def test_nul_keyword_is_rejected_before_search(self):
         connection = MagicMock()
         manager = MagicMock()
         manager.__enter__.return_value = connection
@@ -144,8 +165,14 @@ class AdminAuthorizationTests(unittest.TestCase):
             "site_api.views.authenticate", return_value=({"id": 1, "role": "admin"}, {})
         ):
             response = members(request)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.content)["data"], {
-            "list": [], "pagination": {"page": 3, "per_page": 2, "total": 0, "total_pages": 0},
-        })
+            payload = json.loads(response.content)
+            self.assertEqual(response.status_code, 422)
+            self.assertIs(payload["success"], False)
+            self.assertEqual(payload["error_code"], "E0001")
+            self.assertEqual(payload["message"], "欄位資料不正確，請確認後再送出")
+            self.assertEqual(payload["errors"], {"filters.keyword": ["欄位格式或範圍不正確"]})
+            request.body = b"{}"
+            response = members(request)
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(json.loads(response.content)["errors"], {"_body": ["此 API 不接受 Request Body"]})
         connection.execute.assert_not_called()

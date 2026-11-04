@@ -79,12 +79,12 @@ function fixture() {
     // filter callback 使管理員 ID 與不存在 ID 都落到空結果。
     if (sql.startsWith('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE id=')) return { rows: [accounts.get(Number(args[0]))].filter(row => row?.role === 'member') };
     if (sql.startsWith('SELECT count(*)::bigint AS total FROM accounts')) {
-      const ids = args.length ? ({ 'a%_\\': [2], a: [2], '%': [2], _: [2], '\\': [2], '陳': [2], 'É': [3], 'é': [] })[args[0]] : [3, 2];
+      const ids = args.length ? ({ 'a%_\\': [2], a: [2], '%': [2], _: [2], '\\': [2], '陳': [2], 'É': [3], 'é': [], '\\u0000': [], ['😀'.repeat(254)]: [] })[args[0]] : [3, 2];
       if (!ids) throw Error(`unknown search fixture: ${args[0]}`);
       return { rows: [{ total: String(ids.length) }] };
     }
     if (sql.startsWith('SELECT id,email,nickname,role,status,created_at FROM accounts WHERE role=')) {
-      const ids = args.length > 2 ? ({ 'a%_\\': [2], a: [2], '%': [2], _: [2], '\\': [2], '陳': [2], 'É': [3], 'é': [] })[args[0]] : [3, 2];
+      const ids = args.length > 2 ? ({ 'a%_\\': [2], a: [2], '%': [2], _: [2], '\\': [2], '陳': [2], 'É': [3], 'é': [], '\\u0000': [], ['😀'.repeat(254)]: [] })[args[0]] : [3, 2];
       if (!ids) throw Error(`unknown search fixture: ${args[0]}`);
       // map callback 以測資指定的命中 ID 輸出列，和實際 SQL 字串斷言分開。
       return { rows: ids.map(id => accounts.get(id)) };
@@ -190,9 +190,7 @@ test('administration reads enforce role, validation and list contracts', async (
     const deep = await send(app, 'GET', '/api/members?page=9007199254740991&per_page=100&filters%5Bkeyword%5D=a', undefined, admin);
     assert.deepEqual(deep.body.data.list, []);
     assert.deepEqual(deep.body.data.pagination, { page: 9007199254740991, per_page: 100, total: 1, total_pages: 1 });
-    // 這是既有 U+0000 行為觀測；共同政策仍待 CQ33 決定，不能作契約符合證據。
-    const nul = await send(app, 'GET', '/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%00', undefined, admin);
-    assert.deepEqual(nul.body.data.pagination, { page: 1, per_page: 20, total: 0, total_pages: 0 });
+    // NUL 現由 Query 驗證拒絕，空白搜尋仍沿用未篩選語意。
     const all = await send(app, 'GET', '/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%20%20', undefined, admin);
     // map callback 驗證空字搜尋同未篩選且固定排序。
     assert.deepEqual(all.body.data.list.map(row => row.id), [3, 2]);
@@ -302,4 +300,59 @@ test('administration writes preserve sessions and atomic lockout settings', asyn
     assert.equal(f.calls.some(([sql]) => sql.includes('FROM accounts ORDER BY id FOR UPDATE')), true);
     assert.equal(f.released > 0, true);
   } finally { await app.close(); }
+});
+
+// 管理員會員搜尋拒絕解碼後 NUL，並保留欄位優先序、聚合及合法字面搜尋。
+test('member keyword rejects decoded NUL without changing query precedence', async () => {
+  const f = fixture(), app = await createApp(f.db, f.key);
+  await app.listen(0, '127.0.0.1');
+  const admin = f.token(1), member = f.token(2);
+  const invalid = ['欄位格式或範圍不正確'];
+  const base = '/api/members?page=1&per_page=20&';
+  try {
+    // 身分與角色先於本文，本文先於 Query；同時無效時不得洩漏後續驗證明細。
+    const bad = '/api/members?page=bad&per_page=20&filters[keyword]=%00';
+    failure(await send(app, 'GET', bad, '{}'), 401, 'E0002');
+    failure(await send(app, 'GET', bad, '{}', member), 403, 'E0003');
+    failure(await send(app, 'GET', bad, '{}', admin), 422, 'E0001', { _body: ['此 API 不接受 Request Body'] });
+    const before = f.calls.length;
+    // 明確先確認編碼承載真正 U+0000，再分別驗證開頭、中間、結尾及 U+0020 包覆。
+    for (const keyword of ['\0', '\0abc', 'ab\0cd', 'abc\0', ' \0 ']) {
+      const encoded = encodeURIComponent(keyword);
+      assert.ok(decodeURIComponent(encoded).includes('\0'));
+      const result = await send(app, 'GET', `${base}filters[keyword]=${encoded}`, undefined, admin);
+      failure(result, 422, 'E0001', { 'filters.keyword': invalid });
+      assert.equal(result.body.success, false);
+      assert.equal(result.body.message, '欄位資料不正確，請確認後再送出');
+    }
+    // 其他欄位仍獨立彙整；同欄位重複與陣列型態優先於 NUL 值檢查。
+    for (const [query, errors] of [
+      ['page=bad&per_page=20&filters[keyword]=%00', { page: invalid, 'filters.keyword': invalid }],
+      ['per_page=20&filters[keyword]=%00', { page: ['此欄位為必填'], 'filters.keyword': invalid }],
+      ['page=1&per_page=20&filters[keyword]=%00&filters[keyword]=x', { 'filters.keyword': ['此參數不可重複'] }],
+      ['page=1&per_page=20&filters[keyword]=x&filters[keyword]=%00', { 'filters.keyword': ['此參數不可重複'] }],
+      ['page=1&per_page=20&filters[keyword][]=%00', { 'filters.keyword': ['欄位型態不正確'] }],
+      ['page=1&per_page=20&filters[keyword][x]=%00', { 'filters.keyword': ['欄位型態不正確'] }],
+    ]) {
+      failure(await send(app, 'GET', `/api/members?${query}`, undefined, admin), 422, 'E0001', errors);
+    }
+    const long = encodeURIComponent(` ${'😀'.repeat(255)} `);
+    failure(await send(app, 'GET', `${base}filters[keyword]=${long}`, undefined, admin), 422, 'E0001', { 'filters.keyword': invalid });
+    // some callback 區分認證讀取與搜尋計數，拒絕案例不得送出搜尋 SQL 或任何寫入。
+    assert.equal(f.calls.slice(before).some(([sql]) => sql.includes("FROM accounts WHERE role=") || sql.startsWith('UPDATE')), false);
+    // 文字形式的反斜線 u0000 及 254 個非 BMP 碼點合法；只裁兩端 U+0020。
+    for (const keyword of ['\\u0000', ` ${'😀'.repeat(254)} `]) {
+      const start = f.calls.length;
+      const encoded = encodeURIComponent(keyword);
+      assert.equal(keyword.includes('\0'), false);
+      const result = await send(app, 'GET', `${base}filters[keyword]=${encoded}`, undefined, admin);
+      assert.equal(result.status, 200);
+      assert.equal(result.body.success, true);
+      // find callback 核對真正交給搜尋 SQL 的參數，不讓成功空列表掩蓋錯誤正規化。
+      const counted = f.calls.slice(start).find(([sql]) => sql.startsWith('SELECT count(*)::bigint AS total FROM accounts'));
+      assert.equal(counted[1][0], keyword.replace(/^ +| +$/g, ''));
+    }
+  } finally {
+    await app.close();
+  }
 });

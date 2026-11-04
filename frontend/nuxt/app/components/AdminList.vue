@@ -94,7 +94,12 @@ async function load(_value, _old, onCleanup = noCleanup) {
       fieldError.value = failure.errors['filters.keyword']?.join('；') || ''
       error.value = failure.message
       logId.value = failure.logId
-      if (response.status === 422) { await nextTick(); errorSummary.value?.focus() }
+      if (response.status === 422) {
+        // 先結束載入狀態讓錯誤摘要渲染；await 後重驗請求歸屬，避免舊回應搶焦點。
+        loading.value = false
+        await nextTick()
+        if (!request.signal.aborted && !site.leaving.value && token === site.token.value && backend === site.backend.value) errorSummary.value?.focus()
+      }
     }
     // 連線失敗不清 JWT 或改選來源；取消的舊請求也不能寫回錯誤。
   } catch {

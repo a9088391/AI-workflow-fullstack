@@ -7,30 +7,35 @@
       </div>
       <span class="heading-flower" aria-hidden="true">❀</span>
     </div>
-    <form class="admin-search" (submit)="content.search($event)" novalidate>
+    <form class="admin-search" (submit)="search($event)" novalidate>
       <label for="member-keyword">搜尋會員</label>
       <div class="inline-actions">
-        <input id="member-keyword" name="keyword" [(ngModel)]="content.keywordDraft" placeholder="暱稱或 Email" [attr.aria-invalid]="content.fieldErrors()['keyword'] ? 'true' : null">
+        <input #keywordInput id="member-keyword" name="keyword" [(ngModel)]="content.keywordDraft" (ngModelChange)="content.fieldErrors.set({})" placeholder="暱稱或 Email" [attr.aria-invalid]="content.keywordErrors() ? 'true' : null" [attr.aria-describedby]="content.keywordErrors() ? 'member-keyword-error' : null">
         <button type="submit">搜尋</button>
         @if (content.query.has('keyword')) {
             <a href="/angular/admin/members">清除搜尋</a>
         }
       </div>
-      @if (content.fieldErrors()['keyword']) {
-          <small class="field-error" role="alert">{{ content.fieldErrors()['keyword'].join('；') }}</small>
+      @if (content.keywordErrors(); as errors) {
+          <small id="member-keyword-error" class="field-error">{{ errors.join('；') }}</small>
       }
     </form>
     @if (content.request.loading()) {
         <p class="notice" role="status">正在載入會員…</p>
     }
-    @if (content.request.error(); as failure) {
-        <div class="notice error" role="alert">
-          <p>{{ failure.message }}</p>
-          @if (failure.logId) {
+    @if (content.request.error() || content.fieldErrors()['keyword']) {
+        <div #summary class="notice error" role="alert" tabindex="-1">
+          <p>{{ content.request.error()?.message || '請先修正標示的欄位。' }}</p>
+          @if (content.keywordErrors(); as errors) {
+              <button type="button" (click)="keywordInput.focus()">搜尋會員：{{ errors.join('；') }}</button>
+          }
+          @if (content.request.error(); as failure) {
+            @if (failure.logId) {
               <small>log_id：{{ failure.logId }}</small>
               <button type="button" (click)="copyLog.emit(failure.logId)">複製 log_id</button>
+            }
+            <button type="button" (click)="content.read()">重新讀取</button>
           }
-          <button type="button" (click)="content.read()">重新讀取</button>
         </div>
     }
     <!-- 搜尋首頁零筆顯示無符合結果；超頁保留返回入口。 -->

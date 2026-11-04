@@ -135,6 +135,68 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(payload["error_code"], "E0001")
                 self.assertEqual(payload["errors"], fields)
 
+        # 會員搜尋的原始 Query 走正式路由；欄位錯誤彙整但不覆蓋重複、陣列判定。
+        for query, fields in (
+            (b"page=1&per_page=20&filters[keyword]=%00abc", {"filters.keyword": [core.INVALID]}),
+            (b"page=1&per_page=20&filters[keyword]=ab%00c", {"filters.keyword": [core.INVALID]}),
+            (b"page=1&per_page=20&filters[keyword]=abc%00", {"filters.keyword": [core.INVALID]}),
+            (b"page=bad&per_page=20&filters[keyword]=%00", {"page": [core.INVALID], "filters.keyword": [core.INVALID]}),
+            (b"per_page=20&filters[keyword]=%00", {"page": [core.REQUIRED], "filters.keyword": [core.INVALID]}),
+            (b"page=1&per_page=20&filters[keyword]=a&filters[keyword]=%00", {"filters.keyword": ["此參數不可重複"]}),
+            (b"page=1&per_page=20&filters[keyword][0]=%00", {"filters.keyword": [core.TYPE]}),
+            (b"page=1&per_page=20&filters[keyword]=" + b"%F0%9F%98%80" * 255, {"filters.keyword": [core.INVALID]}),
+        ):
+            connection = Connection([])
+            with self.subTest(query=query), patch.object(app, "connect", return_value=connection), patch.object(
+                app, "authenticate", return_value=({"id": 9, "role": "admin"}, {})
+            ):
+                response = asyncio.run(call("GET", "/api/members", query=query))
+                self.assertEqual(response[0]["status"], 422)
+                payload = json.loads(response[1]["body"])
+                self.assertIs(payload["success"], False)
+                self.assertEqual(payload["error_code"], "E0001")
+                self.assertEqual(payload["message"], "欄位資料不正確，請確認後再送出")
+                self.assertEqual(payload["errors"], fields)
+                self.assertEqual(connection.queries, [])
+
+        # 身分與角色先於 Body，管理員的非空 Body 再優先於 NUL 與分頁錯誤。
+        for identity, status, code, fields in (
+            (core.ApiError("E0002"), 401, "E0002", None),
+            (({"id": 1, "role": "member"}, {}), 403, "E0003", None),
+            (({"id": 9, "role": "admin"}, {}), 422, "E0001", {"_body": ["此 API 不接受 Request Body"]}),
+        ):
+            connection = Connection([])
+            with self.subTest(status=status), patch.object(app, "connect", return_value=connection), patch.object(app, "authenticate") as authenticate:
+                if isinstance(identity, core.ApiError):
+                    authenticate.side_effect = identity
+                else:
+                    authenticate.return_value = identity
+                response = asyncio.run(call("GET", "/api/members", b"{}", query=b"page=bad&filters[keyword]=%00"))
+                payload = json.loads(response[1]["body"])
+                self.assertEqual((response[0]["status"], payload["error_code"]), (status, code))
+                self.assertEqual(payload.get("errors"), fields)
+                self.assertEqual(connection.queries, [])
+
+    # 文字 escape、ASCII 空格與碼點上限仍沿用原規則，合法值直接交給字面搜尋 SQL。
+    def test_member_keyword_accepted_boundaries(self):
+        for encoded, keyword in (
+            (b"+%5Cu0000+", "\\u0000"),
+            (b"+%09A+", "\tA"),
+            (b"+" + b"%F0%9F%98%80" * 254 + b"+", "😀" * 254),
+        ):
+            request = Request(query=b"page=1&per_page=20&filters[keyword]=" + encoded)
+            connection = Connection([{"count": 0}])
+            with self.subTest(encoded=encoded), patch.object(app, "connect", return_value=connection), patch.object(
+                app, "authenticate", return_value=({"id": 9, "role": "admin"}, {})
+            ):
+                self.assertEqual(list_input(request, allow_keyword=True), (1, 20, keyword))
+                response = app.members(request, None)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(json.loads(response.body)["data"]["pagination"], {"page": 1, "per_page": 20, "total": 0, "total_pages": 0})
+                self.assertEqual(len(connection.queries), 1)
+                folded = keyword.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+                self.assertEqual(connection.queries[0][1], (folded, folded))
+
     # 驗證原始 Query、JSON 型態、媒體型態與 GET Body 的邊界。
     def test_raw_input_validation(self):
         with self.assertRaises(core.ApiError) as duplicate:

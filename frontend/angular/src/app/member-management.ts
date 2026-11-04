@@ -1,4 +1,4 @@
-import { Component, Injectable, inject, output, signal } from '@angular/core';
+import { afterNextRender, Component, effect, ElementRef, Injectable, inject, Injector, output, signal, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AccountSession } from './account-session';
 import { isReadingPage, Page, positiveNumber } from './contracts';
@@ -50,11 +50,19 @@ export class MemberManagement {
     }
   }
 
-  // 搜尋只修剪 ASCII 空格並回第一頁；不新增未決字元政策。
+  // 本機與後端拒絕共用同一欄位提示；已改字的草稿不沿用舊 Query 錯誤。
+  keywordErrors(): string[] | undefined {
+    const failure = this.request.error();
+    return this.fieldErrors()['keyword'] || (this.keywordDraft === (this.query.get('keyword') || '')
+      && failure?.code === 'E0001' ? failure.errors?.['filters.keyword'] : undefined);
+  }
+
+  // 搜尋只修剪 ASCII 空格並回第一頁；字元是否合法仍由共同 API 契約判定。
   search(event: Event): void {
     event.preventDefault();
     const keyword = memberKeyword(this.keywordDraft);
     if ([...keyword].length > 254) { this.fieldErrors.set({ keyword: ['搜尋文字最多 254 個字。'] }); return; }
+    this.fieldErrors.set({});
     this.navigate?.(`/angular/admin/members${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ''}`);
   }
 
@@ -90,4 +98,35 @@ export class MemberManagement {
 export class MemberManagementPage {
   readonly content = inject(MemberManagement);
   readonly copyLog = output<string>();
+  private readonly injector = inject(Injector);
+  @ViewChild('summary') private summary?: ElementRef<HTMLElement>;
+
+  // 新的 API 拒絕才安排聚焦；改字清除欄位錯誤不能再次搶走輸入焦點。
+  constructor() {
+    // 只觀察請求錯誤，避免每次清除本機驗證結果都重播舊的伺服器錯誤。
+    effect((onCleanup) => {
+      const failure = this.content.request.error();
+      if (this.content.validMemberId || !failure) return;
+      const render = afterNextRender(
+        // 只聚焦仍屬這次拒絕的摘要，不把焦點拉回已清除的錯誤。
+        () => {
+          if (failure === this.content.request.error()) this.summary?.nativeElement.focus();
+        }, { injector: this.injector },
+      );
+      // effect 重跑或卸載時撤掉尚未執行的渲染回呼。
+      onCleanup(() => render.destroy());
+    });
+  }
+
+  // 本機長度驗證只在送出遭拒時聚焦，清除錯誤及連續輸入不觸發聚焦。
+  search(event: Event): void {
+    this.content.search(event);
+    const errors = this.content.fieldErrors()['keyword'];
+    if (!errors) return;
+    afterNextRender(
+      // 渲染前若已修正或卸下表單，就不再把焦點帶回舊錯誤。
+      () => { if (errors === this.content.fieldErrors()['keyword']) this.summary?.nativeElement.focus(); },
+      { injector: this.injector },
+    );
+  }
 }

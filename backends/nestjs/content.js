@@ -49,8 +49,6 @@ async function articles(db, viewer, page, perPage, management) {
 
 // members 在 SQL 完成 ASCII 折疊的字面搜尋、精確計數與排序分頁，不載入整張會員表。
 async function members(db, page, perPage, keyword) {
-  // PostgreSQL text 不接受 NUL；此字面關鍵字不可能命中合法的暱稱或 Email。
-  if (keyword?.includes('\0')) return { list: [], pagination: pagination(page, perPage, 0) };
   // replace callback 只將 ASCII 大寫字母轉小寫，其他 Unicode 原樣比對。
   const folded = keyword?.replace(/[A-Z]/g, letter => letter.toLowerCase());
   const condition = folded ? ` AND (strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0

@@ -23,7 +23,7 @@ func TestAdminInput(t *testing.T) {
 	for _, tc := range []struct{ query, wantKeyword, field, message string }{
 		{"page=1&per_page=20&filters%5Bkeyword%5D=+A%25_%5C+", "A%_\\", "", ""},
 		{"page=1&per_page=20&filters%5Bkeyword%5D=" + strings.Repeat("a", 254), strings.Repeat("a", 254), "", ""},
-		{"page=1&per_page=20&filters%5Bkeyword%5D=%00", "\x00", "", ""},
+		{"page=1&per_page=20&filters%5Bkeyword%5D=%00", "", "filters.keyword", invalid},
 		{"page=1&per_page=20&filters%5Bkeyword%5D%5B%5D=x", "", "filters.keyword", wrongType},
 		{"page=1&per_page=20&filters%5Bkeyword%5D=a&filters%5Bkeyword%5D=b", "", "filters.keyword", "此參數不可重複"},
 		{"page=1&per_page=20&filters%5Bkeyword%5D=" + strings.Repeat("a", 255), "", "filters.keyword", invalid},

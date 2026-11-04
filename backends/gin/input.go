@@ -150,11 +150,11 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 			}
 		}
 	}
-	// 範圍值精確比對，搜尋則僅去除 U+0020 後計算 Unicode 碼點長度。
+	// 範圍值精確比對；會員搜尋只裁 U+0020，並拒絕 NUL 與超過 254 個 Unicode 碼點。
 	if value, ok := values["filters[scope]"]; ok && len(errors["filters.scope"]) == 0 && value != "management" {
 		errors["filters.scope"] = []string{invalid}
 	}
-	if value, ok := values["filters[keyword]"]; ok && len(errors["filters.keyword"]) == 0 && utf8.RuneCountInString(strings.Trim(value, " ")) > 254 {
+	if value, ok := values["filters[keyword]"]; ok && len(errors["filters.keyword"]) == 0 && (strings.ContainsRune(value, 0) || utf8.RuneCountInString(strings.Trim(value, " ")) > 254) {
 		errors["filters.keyword"] = []string{invalid}
 	}
 	if len(errors) > 0 {

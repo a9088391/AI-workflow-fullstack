@@ -6,14 +6,16 @@ const http = require('node:http');
 const { once } = require('node:events');
 const { randomBytes } = require('node:crypto');
 const { createApp } = require('./server');
+const { issueToken } = require('./auth');
 
 // request 經真正 Express HTTP 入口保留原始 Query 拼法；假資料庫只用來偵測不該發生的查詢。
-async function request(server, path, method = 'POST', raw = '{') {
+async function request(server, path, method = 'POST', raw = '{', token) {
   // Promise 追蹤連線及回應錯誤，讓測試不會把傳輸失敗當成 API 拒絕。
   return new Promise((resolve, reject) => {
     // 完整收齊小型測試回應後再解析，以觀察共同 envelope 而非私有函式。
     const req = http.request({ host: '127.0.0.1', port: server.address().port, path, method,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw) } }, res => {
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(raw),
+        ...(token ? { authorization: `Bearer ${token}` } : {}) } }, res => {
       const chunks = [];
       // 保留每段回應位元組，避免網路分段影響 JSON 判讀。
       res.on('data', chunk => chunks.push(chunk));
@@ -123,5 +125,85 @@ test('HTTP list query errors retain supported array and aggregation semantics', 
       assert.equal(response.body.error_code, 'E0001');
       assert.deepEqual(response.body.errors, errors);
     });
+  }
+});
+
+// 管理員會員搜尋拒絕解碼後 NUL，並保留欄位優先序、聚合及合法字面搜尋。
+test('member keyword rejects decoded NUL without changing query precedence', async () => {
+  const key = randomBytes(32), calls = [];
+  const issued = Math.floor(Date.now() / 1000);
+  const adminJti = randomBytes(16).toString('base64url'), memberJti = randomBytes(16).toString('base64url');
+  const db = {
+    // 只模擬認證與合法搜尋計數；其餘 SQL 立即失敗，避免錯誤請求進入資料查詢。
+    async query(sql, args) {
+      calls.push([sql, args]);
+      if (sql.startsWith('SELECT a.id,a.email,a.nickname')) return { rows: [{
+        id: args[0] === memberJti ? 2 : 1, role: args[0] === memberJti ? 'member' : 'admin', status: 'active',
+        backend_id: 'express', issued_at: new Date(issued * 1000), expires_at: new Date((issued + 28800) * 1000), revoked_at: null,
+      }] };
+      if (sql.startsWith('SELECT count(*)::bigint AS total FROM accounts')) return { rows: [{ total: '0' }] };
+      assert.fail(`unexpected query: ${sql}`);
+    },
+  };
+  const app = createApp(db, key).listen(0, '127.0.0.1');
+  await once(app, 'listening');
+  const admin = issueToken(key, 1, adminJti, issued), member = issueToken(key, 2, memberJti, issued);
+  // send 沿用原始 HTTP 測試工具，保留 GET Body 及百分比編碼供順序驗證。
+  const send = (server, method, path, body, token) => request(server, path, method, body ?? '', token);
+  // failure 檢查共同公開錯誤，避免只看狀態碼而漏掉訊息或欄位差異。
+  function failure(result, status, code, errors) {
+    assert.equal(result.status, status);
+    assert.equal(result.body.success, false);
+    assert.equal(result.body.error_code, code);
+    if (errors) assert.deepEqual(result.body.errors, errors);
+  }
+  const invalid = ['欄位格式或範圍不正確'];
+  const base = '/api/members?page=1&per_page=20&';
+  try {
+    // 身分與角色先於本文，本文先於 Query；同時無效時不得洩漏後續驗證明細。
+    const bad = '/api/members?page=bad&per_page=20&filters[keyword]=%00';
+    failure(await send(app, 'GET', bad, '{}'), 401, 'E0002');
+    failure(await send(app, 'GET', bad, '{}', member), 403, 'E0003');
+    failure(await send(app, 'GET', bad, '{}', admin), 422, 'E0001', { _body: ['此 API 不接受 Request Body'] });
+    const before = calls.length;
+    // 明確先確認編碼承載真正 U+0000，再分別驗證開頭、中間、結尾及 U+0020 包覆。
+    for (const keyword of ['\0', '\0abc', 'ab\0cd', 'abc\0', ' \0 ']) {
+      const encoded = encodeURIComponent(keyword);
+      assert.ok(decodeURIComponent(encoded).includes('\0'));
+      const result = await send(app, 'GET', `${base}filters[keyword]=${encoded}`, undefined, admin);
+      failure(result, 422, 'E0001', { 'filters.keyword': invalid });
+      assert.equal(result.body.success, false);
+      assert.equal(result.body.message, '欄位資料不正確，請確認後再送出');
+    }
+    // 其他欄位仍獨立彙整；同欄位重複與陣列型態優先於 NUL 值檢查。
+    for (const [query, errors] of [
+      ['page=bad&per_page=20&filters[keyword]=%00', { page: invalid, 'filters.keyword': invalid }],
+      ['per_page=20&filters[keyword]=%00', { page: ['此欄位為必填'], 'filters.keyword': invalid }],
+      ['page=1&per_page=20&filters[keyword]=%00&filters[keyword]=x', { 'filters.keyword': ['此參數不可重複'] }],
+      ['page=1&per_page=20&filters[keyword]=x&filters[keyword]=%00', { 'filters.keyword': ['此參數不可重複'] }],
+      ['page=1&per_page=20&filters[keyword][]=%00', { 'filters.keyword': ['欄位型態不正確'] }],
+      ['page=1&per_page=20&filters[keyword][x]=%00', { 'filters.keyword': ['欄位型態不正確'] }],
+    ]) {
+      failure(await send(app, 'GET', `/api/members?${query}`, undefined, admin), 422, 'E0001', errors);
+    }
+    const long = encodeURIComponent(` ${'😀'.repeat(255)} `);
+    failure(await send(app, 'GET', `${base}filters[keyword]=${long}`, undefined, admin), 422, 'E0001', { 'filters.keyword': invalid });
+    // some callback 區分認證讀取與搜尋計數，拒絕案例不得送出搜尋 SQL 或任何寫入。
+    assert.equal(calls.slice(before).some(([sql]) => sql.includes("FROM accounts WHERE role=") || sql.startsWith('UPDATE')), false);
+    // 文字形式的反斜線 u0000 及 254 個非 BMP 碼點合法；只裁兩端 U+0020。
+    for (const keyword of ['\\u0000', ` ${'😀'.repeat(254)} `]) {
+      const start = calls.length;
+      const encoded = encodeURIComponent(keyword);
+      assert.equal(keyword.includes('\0'), false);
+      const result = await send(app, 'GET', `${base}filters[keyword]=${encoded}`, undefined, admin);
+      assert.equal(result.status, 200);
+      assert.equal(result.body.success, true);
+      // find callback 核對真正交給搜尋 SQL 的參數，不讓成功空列表掩蓋錯誤正規化。
+      const counted = calls.slice(start).find(([sql]) => sql.startsWith('SELECT count(*)::bigint AS total FROM accounts'));
+      assert.equal(counted[1][0], keyword.replace(/^ +| +$/g, ''));
+    }
+  } finally {
+    // close callback 等待 listener 完整釋放，避免測試結束殘留 socket。
+    await new Promise(resolve => app.close(resolve));
   }
 });

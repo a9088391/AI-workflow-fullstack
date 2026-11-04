@@ -51,7 +51,7 @@ class FlaskContractTests(unittest.TestCase):
     # 管理專用端點先驗角色，非法參數不得先觸發管理資料查詢。
     def test_management_role_precedes_validation(self):
         paths = (
-            ("get", "/api/members?x=1", None),
+            ("get", "/api/members?page=bad&filters[keyword]=%00", {"unexpected": True}),
             ("get", "/api/members/bad?x=1", None),
             ("put", "/api/members/bad/status?x=1", {"status": "invalid"}),
             ("get", "/api/comments?x=1", None),
@@ -83,7 +83,7 @@ class FlaskContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertNotIn("visibility = 'visible'", connection.execute.call_args.args[0])
 
-    # 搜尋保留特殊字元為字面值，NUL 不送入 PostgreSQL，深頁仍回精確總數。
+    # 搜尋保留特殊字元為字面值，NUL 回驗證錯誤且不查資料，深頁仍回精確總數。
     def test_member_search_sql_and_pagination(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
@@ -100,8 +100,15 @@ class FlaskContractTests(unittest.TestCase):
             self.assertIn("strpos(translate", statements[0].args[0])
             self.assertEqual(statements[0].args[1], ("a%_\\", "a%_\\"))
         with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
-            response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%00")
-            self.assertEqual((response.status_code, response.json["data"]["pagination"]["total"]), (200, 0))
+            # 原始百分比編碼經 Flask 邊界解碼後，開頭、中間與結尾 NUL 都必須拒絕。
+            for encoded in ("%00abc", "ab%00c", "abc%00"):
+                with self.subTest(encoded=encoded):
+                    response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=" + encoded)
+                    self.assertEqual(response.status_code, 422)
+                    self.assertIs(response.json["success"], False)
+                    self.assertEqual(response.json["error_code"], "E0001")
+                    self.assertEqual(response.json["message"], "欄位資料不正確，請確認後再送出")
+                    self.assertEqual(response.json["errors"], {"filters.keyword": ["欄位格式或範圍不正確"]})
             connect.return_value.__enter__.return_value.execute.assert_not_called()
 
     # 非空結果只執行計數與列表兩個業務 SQL，暱稱與 Email 均由同一條查詢提供。
@@ -125,6 +132,26 @@ class FlaskContractTests(unittest.TestCase):
     # 254 碼依 trim 後長度；只裁 U+0020，Tab 留在搜尋字面值中。
     def test_member_keyword_codepoint_boundary(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
+        # 同時回傳其他欄錯誤；同欄重複或陣列錯誤優先於 NUL 的值錯誤。
+        for query, fields in (
+            ("page=bad&per_page=20&filters[keyword]=%00", {"page": ["欄位格式或範圍不正確"], "filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("per_page=20&filters[keyword]=%00", {"page": ["此欄位為必填"], "filters.keyword": ["欄位格式或範圍不正確"]}),
+            ("page=1&per_page=20&filters[keyword]=a&filters[keyword]=%00", {"filters.keyword": ["此參數不可重複"]}),
+            ("page=1&per_page=20&filters[keyword][0]=%00", {"filters.keyword": ["欄位型態不正確"]}),
+        ):
+            with self.subTest(query=query), patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+                response = self.client.get("/api/members?" + query)
+                self.assertEqual((response.status_code, response.json["errors"]), (422, fields))
+                connect.return_value.__enter__.return_value.execute.assert_not_called()
+        # 已驗管理員的非空 Body 優先拒絕，不合併 Query 錯誤。
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            response = self.client.get("/api/members?page=bad&filters[keyword]=%00", data=b"{}")
+            self.assertEqual((response.status_code, response.json["errors"]), (422, {"_body": ["此 API 不接受 Request Body"]}))
+            connect.return_value.__enter__.return_value.execute.assert_not_called()
+        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", side_effect=ApiError("E0002")):
+            response = self.client.get("/api/members?page=bad&filters[keyword]=%00", data=b"{}")
+            self.assertEqual((response.status_code, response.json["error_code"]), (401, "E0002"))
+            connect.return_value.__enter__.return_value.execute.assert_not_called()
         with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
             response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=" + "界" * 255)
             self.assertEqual((response.status_code, response.json["errors"]["filters.keyword"]),
@@ -136,6 +163,14 @@ class FlaskContractTests(unittest.TestCase):
             response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=+%09A+%C3%89+")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(connection.execute.call_args_list[0].args[1], ("\ta É", "\ta É"))
+        # 文字 escape 不是 NUL；254 個非 BMP 碼點在裁切 ASCII 空格後仍合法。
+        for encoded, keyword in (("+%5Cu0000+", "\\u0000"), ("+" + "%F0%9F%98%80" * 254 + "+", "😀" * 254)):
+            with self.subTest(encoded=encoded), patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+                connection = connect.return_value.__enter__.return_value
+                connection.execute.return_value.fetchone.return_value = {"count": 0}
+                response = self.client.get("/api/members?page=1&per_page=20&filters[keyword]=" + encoded)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(connection.execute.call_args.args[1], (keyword, keyword))
 
     # 管理員帳號與不存在 ID 均隱藏，且詳情只輸出公開的會員欄位。
     def test_member_detail_hides_admin(self):

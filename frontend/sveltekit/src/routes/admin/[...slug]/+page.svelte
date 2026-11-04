@@ -103,6 +103,11 @@
       }
       fieldErrors = errors;
       message = failure?.code === 'E0001' ? '請先修正標示的欄位。' : '';
+      if (mode === 'members' && errors.keyword) {
+        // 摘要渲染後才聚焦；等待期間若離頁、重讀或換身分，就不搶新畫面的焦點。
+        await tick();
+        if (alive && current === readId && generation === site.version() && get(account)?.id === reader) summary?.focus();
+      }
       return false;
     } finally { if (alive && current === readId) loading = false; }
   }

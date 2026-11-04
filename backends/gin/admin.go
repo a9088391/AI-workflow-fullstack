@@ -128,11 +128,6 @@ func (s *server) members(c *gin.Context) {
 		respondError(c, e)
 		return
 	}
-	// PostgreSQL text 不能含 NUL；合法關鍵字不可能命中，直接回空列表。
-	if strings.ContainsRune(keyword, 0) {
-		respondOK(c, 200, gin.H{"list": []gin.H{}, "pagination": pagination(page, perPage, 0)})
-		return
-	}
 	base := " FROM accounts WHERE role='member'"
 	args := []any{}
 	if keyword != "" {

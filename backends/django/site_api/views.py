@@ -335,8 +335,9 @@ def list_input(request, allow_scope=False, allow_keyword=False):
     if allow_scope and "filters[scope]" in values and "filters.scope" not in errors and values["filters[scope]"] != "management":
         errors["filters.scope"] = [INVALID]
     if allow_keyword and "filters[keyword]" in values and "filters.keyword" not in errors:
+        # 只裁切 ASCII 空格；拒絕 NUL 與超長值，同欄既有型態錯誤仍優先保留。
         values["filters[keyword]"] = values["filters[keyword]"].strip(" ")
-        if len(values["filters[keyword]"]) > 254:
+        if "\0" in values["filters[keyword]"] or len(values["filters[keyword]"]) > 254:
             errors["filters.keyword"] = [INVALID]
     if errors:
         raise ApiError("E0001", errors)
@@ -654,9 +655,6 @@ def members(request):
         page, per_page, keyword = list_input(request, allow_keyword=True)
         # translate 僅折疊 ASCII，strpos 將百分號、底線及反斜線視為普通字元。
         folded = (keyword or "").translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
-        # PostgreSQL text 無法包含 NUL；此分支保留目前回空列表的既有處理。
-        if "\0" in folded:
-            return success({"list": [], "pagination": pagination(page, per_page, 0)})
         condition = "WHERE role = 'member'"
         params = ()
         if folded:

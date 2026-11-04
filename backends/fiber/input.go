@@ -157,9 +157,9 @@ func pageInput(r *http.Request, filter string) (int64, int64, string, *apiError)
 		errors["filters.scope"] = []string{invalid}
 	}
 	if value, ok := values["filters[keyword]"]; ok && len(errors["filters.keyword"]) == 0 {
-		// 會員搜尋只裁 U+0020，其他 Unicode 與萬用字元皆視為字面內容。
+		// 會員搜尋只裁 U+0020；NUL 與超過 254 個 Unicode 碼點皆為欄位錯誤。
 		value = strings.Trim(value, " ")
-		if utf8.RuneCountInString(value) > 254 {
+		if strings.ContainsRune(value, 0) || utf8.RuneCountInString(value) > 254 {
 			errors["filters.keyword"] = []string{invalid}
 		}
 		values["filters[keyword]"] = value

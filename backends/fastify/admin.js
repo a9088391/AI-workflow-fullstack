@@ -15,8 +15,6 @@ function asciiFold(value) {
 
 // members 在 PostgreSQL 做篩選、精確計數與分頁，作者資料不逐筆查詢。
 async function members(db, page, perPage, keyword = '') {
-  // 保留目前 NUL 關鍵字回空列表的行為；共同接受／拒絕政策尚未定案。
-  if (keyword.includes('\0')) return { list: [], pagination: pagination(page, perPage, 0) };
   const base = `FROM accounts WHERE role='member'` + (keyword ? ` AND (
     strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0 OR
     strpos(translate(email,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),$1)>0)` : '');

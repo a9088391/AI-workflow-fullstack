@@ -38,11 +38,11 @@ function ErrorNotice({ error, retry, focusRef }) {
       {error.errors && Object.entries(error.errors).length > 0 && (
         <ul className="error-fields">
           {Object.entries(error.errors).map(
-            // 已知欄位可直接聚焦；未知欄位完整呈現，避免遺失後端明細。
+            // 已知欄位連回對應輸入；filters.keyword 對應會員搜尋框，其餘明細保留文字。
             ([name, messages]) => (
               <li key={name}>
-                {['email', 'password', 'nickname', 'title', 'body', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds'].includes(name)
-                  ? <button type="button" className="text-button" data-field={name} onClick={focusField}>{name}：{messages.join('；')}</button>
+                {['email', 'password', 'nickname', 'title', 'body', 'enabled', 'window_minutes', 'failure_threshold', 'lock_seconds', 'filters.keyword'].includes(name)
+                  ? <button type="button" className="text-button" data-field={name === 'filters.keyword' ? 'member-keyword' : name} onClick={focusField}>{name}：{messages.join('；')}</button>
                   : `${name}：${messages.join('；')}`}
               </li>
             ),
@@ -704,15 +704,18 @@ function AdminGate({ status, account }) {
   )
 }
 
-// 會員列表只送已核准的字面 keyword 與分頁參數；網址只保存本頁搜尋與頁碼。
+// 會員列表只送已核准的字面 keyword 與分頁參數；422 明細同時連回搜尋框。
 function Members({ backend, credential, enabled, status, account, onAuthFailure, switchEpoch }) {
   const search = params.get('filters[keyword]') || ''
   const [keyword, setKeyword] = useState(search)
   const [keywordError, setKeywordError] = useState(null)
   const ownerAccount = useRef(null)
+  const errorSummaryRef = useRef(null)
   const accountChanged = enabled && ownerAccount.current && ownerAccount.current !== account?.id
   const query = search ? `&filters%5Bkeyword%5D=${encodeURIComponent(search)}` : ''
   const read = useRead(backend, credential, `/api/members?page=${listPage}&per_page=20${query}`, listPage, enabled && !accountChanged, onAuthFailure, switchEpoch, 'member')
+  // 搜尋讀取失敗時先聚焦摘要，讓鍵盤使用者取得欄位明細與追蹤資訊。
+  useEffect(() => { if (read.error) errorSummaryRef.current?.focus() }, [read.error])
   // 換成其他帳號時先隱藏舊搜尋，清除網址後才以新身分讀取。
   useEffect(() => { if (!enabled || !account) return; if (accountChanged) { window.location.replace('/react/admin/members'); return } ownerAccount.current = account.id }, [enabled, account, accountChanged])
   // 搜尋只提交本頁 keyword；重新開啟第一頁，讓返回與刷新還原對應查詢。
@@ -727,8 +730,10 @@ function Members({ backend, credential, enabled, status, account, onAuthFailure,
   }
   if (!enabled) return <AdminGate status={status} account={account} />
   if (accountChanged) return <section className="content"><p role="status">正在載入會員管理…</p></section>
-  // 搜尋輸入不在每個按鍵發出 API 請求，亦保留原字供使用者修正。
+  // 輸入保留原字並清除本地長度錯誤；舊伺服器錯誤只標記原查詢。
   function editKeyword(event) { setKeyword(event.target.value); setKeywordError(null) }
+  const serverKeywordError = keyword === search ? read.error?.errors?.['filters.keyword']?.[0] : null
+  const fieldError = keywordError || serverKeywordError
   const pagination = read.data?.pagination
   return (
     <section className="content admin-page">
@@ -737,12 +742,12 @@ function Members({ backend, credential, enabled, status, account, onAuthFailure,
       <p className="intro">查詢一般會員並管理帳號狀態。</p>
       <form className="admin-toolbar" onSubmit={submit}>
         <label htmlFor="member-keyword">暱稱或 Email 關鍵字</label>
-        <input id="member-keyword" value={keyword} onChange={editKeyword} aria-invalid={Boolean(keywordError)} aria-describedby={keywordError ? 'member-keyword-error' : undefined} />
+        <input id="member-keyword" value={keyword} onChange={editKeyword} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? 'member-keyword-error' : undefined} />
         <button type="submit" className="secondary">搜尋</button>
-        {keywordError && <p className="field-error" id="member-keyword-error">{keywordError}</p>}
+        {fieldError && <p className="field-error" id="member-keyword-error">{fieldError}</p>}
       </form>
       {read.loading && <p role="status">正在載入會員…</p>}
-      <ErrorNotice error={read.error} retry={read.retry} />
+      <ErrorNotice error={read.error} retry={read.retry} focusRef={errorSummaryRef} />
       {read.data && <>
         {read.data.list.length === 0 ? (
           <p className="notice">{listPage > 1 || pagination.total > 0 ? '此頁沒有會員。' : search ? '找不到符合關鍵字的會員。' : '目前尚無會員。'}</p>

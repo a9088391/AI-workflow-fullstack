@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,7 +18,7 @@ func TestManagementQueryInput(t *testing.T) {
 		{"short keyword", "page=1&per_page=20&filters%5Bkeyword%5D=A", "A", "", ""},
 		{"spaces only", "page=1&per_page=20&filters%5Bkeyword%5D=++", "", "", ""},
 		{"tab retained", "page=1&per_page=20&filters%5Bkeyword%5D=+%09+", "\t", "", ""},
-		{"NUL remains literal", "page=1&per_page=20&filters%5Bkeyword%5D=%00", "\x00", "", ""},
+		{"NUL rejected", "page=1&per_page=20&filters%5Bkeyword%5D=%00", "", "filters.keyword", invalid},
 		{"unicode too long", "page=1&per_page=20&filters%5Bkeyword%5D=" + strings.Repeat("%E4%B8%AD", 255), "", "filters.keyword", invalid},
 		{"keyword array", "page=1&per_page=20&filters%5Bkeyword%5D%5B0%5D=x", "", "filters.keyword", wrongType},
 		{"keyword duplicate", "page=1&per_page=20&filters%5Bkeyword%5D=x&filters%5Bkeyword%5D=y", "", "filters.keyword", "此參數不可重複"},
@@ -115,5 +116,50 @@ func TestAdministrationRoutePriority(t *testing.T) {
 				t.Fatalf("status=%d body=%v", response.StatusCode, result)
 			}
 		})
+	}
+}
+
+// TestMemberKeywordValidation 區分實際 NUL 與字面跳脫文字，並固定長度、錯誤優先順序及跨欄位彙整。
+func TestMemberKeywordValidation(t *testing.T) {
+	const query = "page=1&per_page=20&filters%5Bkeyword%5D="
+	cases := []struct {
+		name, raw, wantKeyword string
+		want                   map[string][]string
+	}{
+		{"NUL only", query + "%00", "", map[string][]string{"filters.keyword": {invalid}}},
+		{"NUL start", query + "%00abc", "", map[string][]string{"filters.keyword": {invalid}}},
+		{"NUL middle", query + "ab%00c", "", map[string][]string{"filters.keyword": {invalid}}},
+		{"NUL end", query + "abc%00", "", map[string][]string{"filters.keyword": {invalid}}},
+		{"NUL with spaces", query + "+%00+", "", map[string][]string{"filters.keyword": {invalid}}},
+		{"literal escape", query + "%5Cu0000", `\u0000`, nil},
+		{"254 non-BMP with spaces", query + "++" + strings.Repeat("%F0%9F%98%80", 254) + "++", strings.Repeat("😀", 254), nil},
+		{"255 non-BMP with spaces", query + "++" + strings.Repeat("%F0%9F%98%80", 255) + "++", "", map[string][]string{"filters.keyword": {invalid}}},
+		{"spaces only", query + "++", "", nil},
+		{"tab retained", query + "+%09+", "\t", nil},
+		{"invalid page and NUL", "page=bad&per_page=20&filters%5Bkeyword%5D=%00", "", map[string][]string{"page": {invalid}, "filters.keyword": {invalid}}},
+		{"missing page and NUL", "per_page=20&filters%5Bkeyword%5D=%00", "", map[string][]string{"page": {required}, "filters.keyword": {invalid}}},
+		{"NUL first duplicate", query + "%00&filters%5Bkeyword%5D=x", "", map[string][]string{"filters.keyword": {"此參數不可重複"}}},
+		{"NUL last duplicate", query + "x&filters%5Bkeyword%5D=%00", "", map[string][]string{"filters.keyword": {"此參數不可重複"}}},
+		{"NUL array", "page=1&per_page=20&filters%5Bkeyword%5D%5B0%5D=%00", "", map[string][]string{"filters.keyword": {wrongType}}},
+	}
+	for _, tc := range cases {
+		// 保留原始百分比編碼，讓解碼、優先順序與值驗證都走端點使用的接點。
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/api/members?"+tc.raw, nil)
+			page, perPage, keyword, e := pageInput(r, "keyword")
+			if tc.want == nil {
+				if e != nil || page != 1 || perPage != 20 || keyword != tc.wantKeyword {
+					t.Fatalf("got (%d,%d,%q,%v), want (1,20,%q,nil)", page, perPage, keyword, e, tc.wantKeyword)
+				}
+			} else if e == nil || e.code != "E0001" || !reflect.DeepEqual(e.fields, tc.want) {
+				t.Fatalf("query=%q error=%+v, want E0001 fields=%v", tc.raw, e, tc.want)
+			}
+		})
+	}
+	// GET 本文先於 Query 拒絕，不能因新增 NUL 驗證而多回關鍵字錯誤。
+	r := httptest.NewRequest("GET", "/api/members?"+query+"%00", strings.NewReader("x"))
+	_, _, _, e := pageInput(r, "keyword")
+	if e == nil || e.code != "E0001" || !reflect.DeepEqual(e.fields, map[string][]string{"_body": {"此 API 不接受 Request Body"}}) {
+		t.Fatalf("GET body error=%+v, want only _body error", e)
 	}
 }
