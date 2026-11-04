@@ -30,8 +30,14 @@ function expectError(result, status, code, errors) {
   assert.equal(result.status, status);
   assert.equal(result.body.success, false);
   assert.equal(result.body.error_code, code);
+  assert.equal(result.body.message, {
+    E0001: '欄位資料不正確，請確認後再送出', E0002: '登入已逾期，請重新登入',
+    E0004: '找不到指定資料或 API', E0005: '系統暫時無法處理，請稍後再試',
+  }[code]);
+  assert.equal(Object.hasOwn(result.body, 'data'), false);
   assert.match(result.body.log_id, /^[0-9a-f-]{36}$/);
   if (errors) assert.deepEqual(result.body.errors, errors);
+  else assert.equal(Object.hasOwn(result.body, 'errors'), false);
 }
 
 // 框架路由須保留公開可讀、JWT 優先、Query/JSON 驗證與共同錯誤結果。
@@ -59,6 +65,85 @@ test('Nest controller routes preserve shared validation and envelopes', async ()
   } finally { await app.close(); }
 });
 
+// 原始 Query 名稱須按解碼位元組判重；錯誤顯示名稱碰撞不能混淆不同參數。
+test('Nest raw query names preserve identity and error priority', async (t) => {
+  const app = await createApp(fakeDb(), randomBytes(32));
+  await app.listen(0, '127.0.0.1');
+  const base = `http://127.0.0.1:${app.getHttpServer().address().port}`;
+  const unknown = ['不支援此欄位'];
+  const duplicate = ['此參數不可重複'];
+  try {
+    for (const [query, errors] of [
+      ['%FF=x', { '%FF': unknown }],
+      ['%FF=x&%ff=y', { '%FF': duplicate }],
+      ['%EF%BF%BD=x', { '�': unknown }],
+      ['%EF%BF%BD=x&%EF%BF%BD=y', { '�': duplicate }],
+      ['%FF=x&%EF%BF%BD=y', { '%FF': unknown, '�': unknown }],
+      ['%FF=x&%25FF=y', { '%FF': unknown }],
+      ['%25FF=x&%FF=y', { '%FF': unknown }],
+      ['%FF=x&%FF=y&%25FF=z', { '%FF': duplicate }],
+      ['%FF=x&%25FF=y&%FF=z', { '%FF': duplicate }],
+      ['%25FF=x&%FF=y&%FF=z', { '%FF': duplicate }],
+      ['%25FF=x&%25FF=y&%FF=z', { '%FF': duplicate }],
+      ['%25FF=x&%FF=y&%25FF=z', { '%FF': duplicate }],
+      ['%FF=x&%25FF=y&%25FF=z', { '%FF': duplicate }],
+      ['%FF=x&%25FF=y&%ff=z&%25FF=w', { '%FF': duplicate }],
+      ['%25FF=x&%FF=y&%25FF=z&%ff=w', { '%FF': duplicate }],
+      ['%ff=x&%25ff=y', { '%FF': unknown, '%ff': unknown }],
+      ['%E6%9C%AA%E7%9F%A5%E9%99%B3=x', { '未知陳': unknown }],
+      ['unexpected=x&%75nexpected=y', { unexpected: duplicate }],
+      ['page[0]=x&page[1]=y', { 'page[0]': unknown, 'page[1]': unknown }],
+      ['page%5B%FF%5D=x', { 'page%5B%FF%5D': unknown }],
+      ['filters%5B%FF%5D=x', { 'filters%5B%FF%5D': unknown }],
+      ['filters[[scope]=x', { 'filters[[scope]': unknown }],
+      ['filters[scope][]=x&filters[scope][0]=y', { 'filters[scope][]': unknown, 'filters[scope][0]': unknown }],
+    ]) {
+      // 每案經真實 Controller 先拒絕 Query；後方畸形 JSON 不可搶先變成解析錯誤。
+      await t.test(query, async () => {
+        for (const path of ['/api/auth/register', '/api/auth/login']) {
+          expectError(await request(base, 'POST', `${path}?${query}`, '{', { 'Content-Type': 'application/json' }), 422, 'E0001', errors);
+        }
+      });
+    }
+  } finally { await app.close(); }
+});
+
+// 支援欄位的陣列須回型態錯誤；重複、型態、未知標籤碰撞依既定優先序彙整。
+test('Nest list queries retain array and label collision errors', async (t) => {
+  const app = await createApp(fakeDb(), randomBytes(32));
+  await app.listen(0, '127.0.0.1');
+  const base = `http://127.0.0.1:${app.getHttpServer().address().port}`;
+  const unknown = ['不支援此欄位'];
+  const duplicate = ['此參數不可重複'];
+  const type = ['欄位型態不正確'];
+  try {
+    for (const [query, errors] of [
+      ['page[0]=x&per_page=20', { page: type }],
+      ['page=1&page[0]=x&per_page=20', { page: duplicate }],
+      ['page[0]=x&page[1]=y&per_page=20', { page: duplicate }],
+      ['page=bad&per_page=101&unknown=x', { page: ['欄位格式或範圍不正確'], per_page: ['欄位格式或範圍不正確'], unknown }],
+      ['page=1&per_page=20&filters[keyword][]=x&filters[keyword][0]=y', { 'filters[keyword][]': unknown, 'filters[keyword][0]': unknown }],
+      ['page=1&per_page=20&filters[scope][]=x&filters.scope=y', { 'filters.scope': type }],
+      ['page=1&per_page=20&filters.scope=y&filters[scope][]=x', { 'filters.scope': type }],
+      ['page=1&per_page=20&filters[scope]=bad&filters.scope=x', { 'filters.scope': unknown }],
+      ['page=1&per_page=20&filters.scope=x&filters[scope]=bad', { 'filters.scope': unknown }],
+      ['page=1&per_page=20&filters[scope]=bad&filters[scope]=bad&filters.scope=x', { 'filters.scope': duplicate }],
+      ['page=1&per_page=20&filters.scope=x&filters[scope]=bad&filters[scope]=bad', { 'filters.scope': duplicate }],
+      ['page=1&per_page=20&filters[scope][]=x&filters.scope=y&filters.scope=z', { 'filters.scope': duplicate }],
+      ['page=1&per_page=20&filters.scope=y&filters.scope=z&filters[scope][]=x', { 'filters.scope': duplicate }],
+    ]) {
+      // 公開列表不需資料 fixture；查詢若誤被接受，fakeDb 或完整 errors 斷言會揭露。
+      await t.test(query, async () => {
+        expectError(await request(base, 'GET', `/api/articles?${query}`), 422, 'E0001', errors);
+      });
+    }
+    // 百分比同義名稱及前導零仍是合法 Query，避免為修錯而全面拒絕解碼名稱。
+    const accepted = await request(base, 'GET', '/api/articles?%70age=0001&per_page=020');
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(accepted.body.data.pagination, { page: 1, per_page: 20, total: 0, total_pages: 0 });
+  } finally { await app.close(); }
+});
+
 // 跨後端可讀的 Argon2id 格式及 Nest 專屬 JWT claims 不應受框架路由影響。
 test('Argon2id and Nest JWT reject incompatible values', async () => {
   const hash = await hashPassword('Ab12');
@@ -70,11 +155,13 @@ test('Argon2id and Nest JWT reject incompatible values', async () => {
   const now = Math.floor(Date.now() / 1000);
   const token = issueToken(key, 7, randomBytes(16).toString('base64url'), now);
   assert.equal(verifyToken(key, token).sub, '7');
+  // throws callback 使用另一把金鑰驗證同一 token，確認簽章不符必須拒絕。
   assert.throws(() => verifyToken(randomBytes(32), token), { code: 'E0002' });
   // 重新簽章驗證後端識別，即使共享金鑰也不可冒用他後端 claims。
   const [head, body] = token.split('.');
   const claims = { ...JSON.parse(Buffer.from(body, 'base64url')), iss: 'ai-workflow-fullstack:laravel' };
   const signed = `${head}.${Buffer.from(JSON.stringify(claims)).toString('base64url')}`;
   const forged = `${signed}.${createHmac('sha256', key).update(signed).digest('base64url')}`;
+  // throws callback 保留有效簽章，只改後端身分，確認 claims 驗證獨立生效。
   assert.throws(() => verifyToken(key, forged), { code: 'E0002' });
 });

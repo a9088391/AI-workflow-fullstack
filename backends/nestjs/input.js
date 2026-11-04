@@ -34,23 +34,68 @@ function urlInteger(value, name, max = MAX_ID) {
   return Number(digits);
 }
 
-// queryInput 讀原始 Query 而非 NestJS 解析結果，保留重複與陣列錯誤。
+// queryName 保留解碼後的位元組身分；非法 UTF-8 只在錯誤標籤轉為百分比表示。
+function queryName(raw) {
+  const encoded = Buffer.from(raw.replace(/\+/g, ' '));
+  const decoded = Buffer.alloc(encoded.length);
+  let length = 0;
+  for (let index = 0; index < encoded.length; index++) {
+    // 只解一層百分比；字面的 %FF 與位元組 FF 必須仍是不同參數。
+    const hex = encoded.subarray(index + 1, index + 3).toString('latin1');
+    if (encoded[index] === 37 && /^[0-9a-f]{2}$/i.test(hex)) {
+      decoded[length++] = Number.parseInt(hex, 16);
+      index += 2;
+    } else decoded[length++] = encoded[index];
+  }
+  const bytes = decoded.subarray(0, length);
+  const identity = bytes.toString('hex');
+  try {
+    const name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    return { name, identity, label: name };
+  } catch {
+    // 只有無效 UTF-8 名稱採百分比標籤；不能用替代字元與合法 U+FFFD 混成同一身分。
+    let label = '';
+    for (const byte of bytes) {
+      const char = String.fromCharCode(byte);
+      label += /[A-Za-z0-9_.~-]/.test(char) ? char : byte === 32 ? '+' : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+    return { name: null, identity, label };
+  }
+}
+
+// queryInput 讀原始 Query 而非 NestJS 解析結果，保留重複／陣列錯誤與關鍵字字面值。
 function queryInput(req, allowed = []) {
   const values = Object.create(null);
   const errors = Object.create(null);
+  const seen = new Set();
+  const priorities = Object.create(null);
   const raw = req.originalUrl.split('?').slice(1).join('?');
-  for (const [name, value] of new URLSearchParams(raw)) {
-    let canonical = name;
-    for (const key of ['page', 'per_page', 'filters[scope]', 'filters[keyword]']) {
-      if (name.startsWith(`${key}[`)) canonical = key;
+  for (const pair of raw.split('&')) {
+    if (!pair) continue;
+    const separator = pair.indexOf('=');
+    const decoded = queryName(separator < 0 ? pair : pair.slice(0, separator));
+    let canonical = decoded.name;
+    // 僅支援的單值欄位收攏陣列鍵；未知鍵及非法 UTF-8 名稱保留各自身分。
+    for (const key of allowed) {
+      if (canonical?.startsWith(`${key}[`)) canonical = key;
     }
-    // 只有完整的巢狀欄位名稱轉為共同點記法；畸形未知欄位保留原名。
-    const label = canonical.replace(/^filters\[([^\]]+)\]$/, 'filters.$1');
-    if (Object.hasOwn(values, canonical)) errors[label] = ['此參數不可重複'];
-    else if (canonical !== name && allowed.includes(canonical)) errors[label] = [TYPE];
-    else if (!allowed.includes(canonical)) errors[label] = ['不支援此欄位'];
+    const identity = canonical === null ? decoded.identity : Buffer.from(canonical).toString('hex');
+    // 單層 filters 子欄位使用點記法，未知深層括號不得被改寫。
+    const label = canonical === null ? decoded.label : canonical.replace(/^filters\[([^\[\]]+)\]$/, 'filters.$1');
+    let message, priority = 0;
+    if (seen.has(identity)) { message = '此參數不可重複'; priority = 4; }
+    else if (canonical !== decoded.name && allowed.includes(canonical)) { message = TYPE; priority = 3; }
+    else if (!allowed.includes(canonical)) { message = '不支援此欄位'; priority = 2; }
+    seen.add(identity);
+    // 顯示標籤可碰撞；保留較優先錯誤，不按顯示名稱判重複或受輸入順序影響。
+    if (priority > (priorities[label] || 0)) {
+      errors[label] = [message];
+      priorities[label] = priority;
+    }
+    const value = new URLSearchParams(`value=${separator < 0 ? '' : pair.slice(separator + 1)}`).get('value');
     values[canonical] = value;
   }
+  // 完成名稱與重複判定後才驗單值；既有同欄錯誤不可被值驗證覆蓋。
   if (allowed.includes('page')) {
     for (const name of ['page', 'per_page']) {
       if (!Object.hasOwn(values, name)) errors[name] = [REQUIRED];
@@ -63,11 +108,10 @@ function queryInput(req, allowed = []) {
   if (Object.hasOwn(values, 'filters[scope]') && !errors['filters.scope'] && values['filters[scope]'] !== 'management') {
     errors['filters.scope'] = [INVALID];
   }
-  // 搜尋僅移除前後 U+0020 空格，並限制 254 個 Unicode 碼點，以維持跨後端搜尋契約。
   if (Object.hasOwn(values, 'filters[keyword]') && !errors['filters.keyword']) {
-    const keyword = values['filters[keyword]'].replace(/^ +| +$/g, '');
-    if ([...keyword].length > 254) errors['filters.keyword'] = [INVALID];
-    else values['filters[keyword]'] = keyword;
+    // 關鍵字只裁 U+0020；Unicode 字元與萬用符號仍須按字面搜尋。
+    values['filters[keyword]'] = values['filters[keyword]'].replace(/^ +| +$/g, '');
+    if ([...values['filters[keyword]']].length > 254) errors['filters.keyword'] = [INVALID];
   }
   if (Object.keys(errors).length) throw new ApiError('E0001', Object.fromEntries(Object.entries(errors)));
   return Object.fromEntries(Object.entries(values));
@@ -80,6 +124,7 @@ function getBody(req) {
 
 // validSurrogates 拒絕未配對 UTF-16 escape，避免 JSON.parse 靜默保留無效字元。
 function validSurrogates(raw) {
+  // 跳過一般字元與非 Unicode escape；成對的反斜線不能被誤認為 Unicode escape。
   for (let i = 0; i < raw.length;) {
     if (raw[i] !== '\\') { i++; continue; }
     if (raw[i + 1] !== 'u') { i += 2; continue; }
@@ -99,6 +144,7 @@ function validSurrogates(raw) {
 
 // bodyInput 自行解析原始 JSON 與端點欄位，保留共用驗證錯誤順序。
 function bodyInput(req, fields, optional = false) {
+  // 空本文與 Content-Type 先判根結構，只有合法 JSON object 才進入逐欄驗證。
   if (!req.body?.length) {
     if (optional) return {};
     throw fieldError('_body', 'Request Body 必須為 JSON object');
@@ -122,6 +168,7 @@ function bodyInput(req, fields, optional = false) {
   }
   const errors = Object.create(null);
   const result = {};
+  // 每欄只保存第一個錯誤，依缺漏／null、型態、格式與範圍的順序裁決。
   for (const name of fields) {
     const value = body[name];
     if (!Object.hasOwn(body, name)) errors[name] = [REQUIRED];
@@ -163,6 +210,7 @@ function bodyInput(req, fields, optional = false) {
       else result[name] = value;
     }
   }
+  // 未列出的欄位一併拒絕，不靜默接受唯讀或可偽造的伺服器欄位。
   for (const name of Object.keys(body)) if (!fields.includes(name)) errors[name] = ['不支援此欄位'];
   if (Object.keys(errors).length) throw new ApiError('E0001', Object.fromEntries(Object.entries(errors)));
   return result;

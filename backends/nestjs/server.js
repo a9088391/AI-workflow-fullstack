@@ -5,7 +5,7 @@ const { readFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Pool } = require('pg');
 const { NestFactory } = require('@nestjs/core');
-const { Controller, Get, Post, Put, Req, Res, HttpCode, Injectable, Inject, Module } = require('@nestjs/common');
+const { Controller, Get, Post, Put, Req, Res, HttpCode, Injectable, Module } = require('@nestjs/common');
 const { ApiError, fieldError, urlInteger, queryInput, getBody, bodyInput } = require('./input');
 const { accountData, hashPassword, identity, login, logout, adminRead, memberStatus, lockoutValues, lockoutSettings } = require('./auth');
 const content = require('./content');
@@ -95,7 +95,7 @@ class ApiService {
 }
 Injectable()(ApiService);
 
-// AuthController 按共同驗證順序處理註冊、登入、登出與目前帳號。
+// AuthController 按共同驗證順序處理註冊、登入與目前登入的登出。
 class AuthController {
   // constructor 接受 Nest 注入的 service，避免 controller 自建連線或金鑰。
   constructor(api) { this.api = api; }
@@ -262,7 +262,7 @@ class AdministrationController {
     return ok();
   }
 
-  // comments 包含文章下架及個別下架留言，以管理員目前身分映射恢復權。
+  // comments 不以父文章或個別下架狀態篩除留言，以管理員目前身分映射恢復權。
   async comments(req) {
     // readComments callback 避免在路由逐筆查作者或父文章。
     return ok(await this.api.adminRead(req, async function readComments(client, viewer) {
@@ -360,6 +360,7 @@ async function createApp(db, key, origin = 'http://localhost:8080') {
       res.setHeader('Access-Control-Expose-Headers', 'Retry-After');
     }
     console.log(`IN log_id=${req.logId} method=${req.method} path=${req.originalUrl.split('?')[0]}`);
+    // 完成事件沿用同一追查 ID 記錄狀態，錯誤回應也能對應 IN／EX／OUT。
     res.once('finish', function requestEnd() {
       if (res.statusCode >= 400) console.log(`EX log_id=${req.logId} status=${res.statusCode}`);
       console.log(`OUT log_id=${req.logId} status=${res.statusCode}`);
@@ -381,38 +382,43 @@ async function createApp(db, key, origin = 'http://localhost:8080') {
   });
 
   // Nest 的例外過濾器統一安全文案，保留解析錯誤、方法及未知路徑差別。
-  app.useGlobalFilters({ catch(error, host) {
-    const req = host.switchToHttp().getRequest();
-    const res = host.switchToHttp().getResponse();
-    let failure = error;
-    if (!(failure instanceof ApiError)) {
-      const status = error.getStatus?.() || error.statusCode || error.status;
-      if (status === 404) {
-        const path = req.originalUrl.split('?')[0];
-        const known = ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles',
-          '/api/me/articles', '/api/me/comments', '/api/members', '/api/comments', '/api/settings/login-lockout'].includes(path) ||
-          /^\/api\/articles\/[^/]+(?:\/comments|\/visibility)?$/.test(path) ||
-          /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path) ||
-          /^\/api\/members\/[^/]+(?:\/status)?$/.test(path);
-        failure = new ApiError(known ? 'E0005' : 'E0004', undefined, undefined, known ? 405 : 404);
-      } else if (Number.isInteger(status) && status >= 400 && status < 500) failure = new ApiError('E0005', undefined, undefined, status);
-      else {
-        console.error(`ERROR log_id=${req.logId} err=${error.message}`);
-        failure = new ApiError('E9999');
+  app.useGlobalFilters({
+    // catch 只公開固定文案，並區分共同業務錯誤與框架／資料庫例外。
+    catch(error, host) {
+      const req = host.switchToHttp().getRequest();
+      const res = host.switchToHttp().getResponse();
+      let failure = error;
+      if (!(failure instanceof ApiError)) {
+        const status = error.getStatus?.() || error.statusCode || error.status;
+        if (status === 404) {
+          // Nest 未命中路由一律先當 404，這裡才按已知共同路徑區分錯誤方法的 405。
+          const path = req.originalUrl.split('?')[0];
+          const known = ['/api/auth/register', '/api/auth/login', '/api/auth/logout', '/api/me', '/api/articles',
+            '/api/me/articles', '/api/me/comments', '/api/members', '/api/comments', '/api/settings/login-lockout'].includes(path) ||
+            /^\/api\/articles\/[^/]+(?:\/comments|\/visibility)?$/.test(path) ||
+            /^\/api\/comments\/[^/]+(?:\/visibility)?$/.test(path) ||
+            /^\/api\/members\/[^/]+(?:\/status)?$/.test(path);
+          failure = new ApiError(known ? 'E0005' : 'E0004', undefined, undefined, known ? 405 : 404);
+        } else if (Number.isInteger(status) && status >= 400 && status < 500) failure = new ApiError('E0005', undefined, undefined, status);
+        else {
+          console.error(`ERROR log_id=${req.logId} err=${error.message}`);
+          failure = new ApiError('E9999');
+        }
       }
-    }
-    if (failure.code === 'E0104') console.error(`ERROR log_id=${req.logId} invalid authentication data`);
-    const [defaultStatus, message] = MESSAGES[failure.code];
-    if (failure.retry) res.setHeader('Retry-After', String(failure.retry));
-    const body = { success: false, message, error_code: failure.code, log_id: req.logId || randomUUID() };
-    if (failure.errors) body.errors = failure.errors;
-    res.status(failure.status || defaultStatus).json(body);
-  } });
+      // 認證設定異常只記固定診斷；客戶端仍取得契約文案與可追查 ID。
+      if (failure.code === 'E0104') console.error(`ERROR log_id=${req.logId} invalid authentication data`);
+      const [defaultStatus, message] = MESSAGES[failure.code];
+      if (failure.retry) res.setHeader('Retry-After', String(failure.retry));
+      const body = { success: false, message, error_code: failure.code, log_id: req.logId || randomUUID() };
+      if (failure.errors) body.errors = failure.errors;
+      res.status(failure.status || defaultStatus).json(body);
+    },
+  });
   await app.init();
   return app;
 }
 
-// run 先驗金鑰與 DB，再啟動 Nest；停止時有界關閉 HTTP 與資料庫池。
+// run 先驗金鑰與 DB 再啟動 Nest；正常停止時先關 HTTP，再歸還資料庫池。
 async function run() {
   const key = loadKey();
   const db = new Pool({ host: process.env.DB_HOST || 'db', port: Number(process.env.DB_PORT || 5432),
@@ -427,12 +433,14 @@ async function run() {
     app = await createApp(db, key, process.env.CORS_ORIGIN || 'http://localhost:8080');
     await app.listen(8000, '0.0.0.0');
   } catch (error) {
+    // 啟動尚未完成也須清掉已建立的 app 與池，不能留下半啟動資源。
     if (app) await app.close();
     await db.end();
     throw error;
   }
   // shutdown 先停 HTTP 並給進行中的請求寬限，再釋放池。
   async function shutdown() {
+    // 十秒寬限後終止剩餘 HTTP 連線，避免長連線讓 app.close 一直等待。
     const timer = setTimeout(function forceClose() { app.getHttpServer().closeAllConnections(); }, 10000);
     timer.unref();
     try { await app.close(); }

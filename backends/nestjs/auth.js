@@ -46,11 +46,13 @@ function issueToken(key, id, jti, issued) {
 
 // verifyToken 先驗本後端簽章，再嚴格檢查固定 header、claims 與時間邊界。
 function verifyToken(key, token) {
+  // 限制 token 大小並先比對簽章；未受信任的 header／claims 不可決定驗章方式。
   if (token.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw new ApiError('E0002');
   const parts = token.split('.');
   const signature = Buffer.from(parts[2], 'base64url');
   const expected = createHmac('sha256', key).update(`${parts[0]}.${parts[1]}`).digest();
   if (signature.length !== expected.length || signature.toString('base64url') !== parts[2] || !timingSafeEqual(signature, expected)) throw new ApiError('E0002');
+  // Base64url 必須是標準表示；解析後再核對固定欄位，避免寬鬆解碼接受其他憑證。
   let header, claims;
   try {
     const head = Buffer.from(parts[0], 'base64url');
@@ -63,6 +65,7 @@ function verifyToken(key, token) {
       !claims || Array.isArray(claims) || Object.keys(claims).length !== 7 ||
       claims.iss !== ISSUER || claims.aud !== AUDIENCE || typeof claims.sub !== 'string' ||
       typeof claims.jti !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(claims.jti)) throw new ApiError('E0002');
+  // 帳號與 jti 須有唯一表示，時間採整秒且固定八小時，邊界到期即失效。
   let id;
   try { id = urlInteger(claims.sub, 'sub'); } catch { throw new ApiError('E0002'); }
   const jti = Buffer.from(claims.jti, 'base64url');
@@ -75,12 +78,14 @@ function verifyToken(key, token) {
 
 // identity 對保護與帶憑證的公開端點查簽章、登入紀錄及目前帳號狀態。
 async function identity(db, key, req, required = false) {
+  // 公開端點只有完全沒帶 Authorization 才當訪客；無效憑證不可降級放行。
   const supplied = Object.hasOwn(req.headers, 'authorization');
   if (!required && !supplied) return null;
   const authorization = req.headers.authorization || '';
   const parts = authorization.split(' ');
   if (parts.length !== 2 || !/^Bearer$/i.test(parts[0]) || !parts[1]) throw new ApiError('E0002');
   const claims = verifyToken(key, parts[1]);
+  // 資料庫異常保留為系統錯誤；不能把無法查核誤報成登入逾期。
   const result = await db.query(`SELECT a.id,a.email,a.nickname,a.role,a.status,a.created_at,
     s.account_id,s.backend_id,s.issued_at,s.expires_at,s.revoked_at
     FROM login_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.jti=$1`, [claims.jti]);
@@ -88,6 +93,7 @@ async function identity(db, key, req, required = false) {
   const row = result.rows[0];
   if (String(row.id) !== claims.sub || row.backend_id !== 'nestjs' ||
       row.issued_at.getTime() !== claims.iat * 1000 || row.expires_at.getTime() !== claims.exp * 1000) throw new ApiError('E0002');
+  // 身分與時間一致後，停用優先於撤銷；恢復帳號也不會使被撤銷的登入復活。
   if (row.status === 'disabled') throw new ApiError('E0102');
   if (row.revoked_at) throw new ApiError('E0002');
   return { account: row, claims };
@@ -110,6 +116,7 @@ async function lockedIdentity(client, key, req, targetId, allAccounts = false) {
   const account = found.rows.find(row => String(row.id) === claims.sub);
   if (!account || !session.rows.length) throw new ApiError('E0002');
   const row = session.rows[0];
+  // 取得鎖後以資料庫現在時間重驗到期，再依停用、撤銷順序裁決。
   if (String(row.account_id) !== claims.sub || row.backend_id !== 'nestjs' ||
       row.issued_at.getTime() !== claims.iat * 1000 || row.expires_at.getTime() !== claims.exp * 1000 ||
       Number(now.rows[0].now) < claims.nbf || Number(now.rows[0].now) >= claims.exp) throw new ApiError('E0002');
@@ -133,6 +140,7 @@ async function adminRead(db, key, req, read) {
     await client.query('COMMIT'); committed = true;
     return result;
   } finally {
+    // 未確認提交時盡力回滾且保留原錯誤，最後一律歸還交易連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -156,6 +164,7 @@ async function memberStatus(db, key, req, id, status) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 未確認提交時盡力回滾；回滾失敗不能蓋過原錯誤，連線仍須歸還。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -179,7 +188,7 @@ async function lockoutSettings(db, key, req, body) {
     const disabling = previous.enabled && !body.enabled;
     const current = await lockedIdentity(client, key, req, undefined, disabling);
     if (current.account.role !== 'admin') throw new ApiError('E0003');
-    // 數值修改不碰會員既有期限；只有 true→false 切換清除全會員計數世代。
+    // 數值修改不碰會員既有期限；只有 true→false 切換才替全會員換計數世代並清鎖。
     // some callback 逐欄比較完整提交值，確保同值沒有寫入或清鎖副作用。
     if (Object.keys(body).some(name => body[name] !== previous[name])) {
       await client.query('UPDATE login_lockout_settings SET enabled=$1,window_minutes=$2,failure_threshold=$3,lock_seconds=$4 WHERE id=1',
@@ -188,6 +197,7 @@ async function lockoutSettings(db, key, req, body) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 設定與清鎖共用提交點；失敗時盡力回滾並歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -205,6 +215,7 @@ async function login(db, key, body) {
   let committed = false;
   try {
     await client.query('BEGIN');
+    // 設定列先於帳號鎖，讓登入與設定關閉使用相同鎖序及完整設定。
     const settings = await client.query('SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1 FOR UPDATE');
     if (!settings.rows.length) throw new ApiError('E0104');
     const { enabled, window_minutes: window, failure_threshold: threshold, lock_seconds: seconds } = settings.rows[0];
@@ -226,9 +237,9 @@ async function login(db, key, body) {
       const reset = await client.query('UPDATE accounts SET failure_epoch=failure_epoch+1,locked_until=NULL WHERE id=$1 RETURNING failure_epoch', [account.id]);
       epoch = reset.rows[0].failure_epoch;
     }
-    let correct;
-    correct = await verifyPassword(body.password, account.password_hash);
+    const correct = await verifyPassword(body.password, account.password_hash);
     if (!correct) {
+      // 只有啟用鎖定的一般會員新增事件；視窗左開右閉且包含本次失敗。
       if (enabled && account.role === 'member') {
         await client.query('INSERT INTO login_failures (account_id,failure_epoch,occurred_at) VALUES ($1,$2,$3::timestamptz)', [account.id, epoch, now]);
         const count = await client.query(`SELECT count(*)::integer AS n FROM login_failures
@@ -236,10 +247,12 @@ async function login(db, key, body) {
           AND occurred_at<=$3::timestamptz`, [account.id, epoch, now, window]);
         if (count.rows[0].n >= threshold) {
           const locked = await client.query("UPDATE accounts SET locked_until=$1::timestamptz+$2::integer*interval '1 second' WHERE id=$3 RETURNING locked_until::text AS until", [now, seconds, account.id]);
+          // 鎖定必須先持久化，才用業務例外回 429；回應延遲期間不延長期限。
           await client.query('COMMIT'); committed = true;
           throw new ApiError('E0105', undefined, await lockRetry(client, locked.rows[0].until));
         }
       }
+      // 錯誤密碼的事件也須提交，不可隨 401 例外一起回滾。
       await client.query('COMMIT'); committed = true;
       throw new ApiError('E0101');
     }
@@ -252,6 +265,7 @@ async function login(db, key, body) {
     await client.query('COMMIT'); committed = true;
     return { access_token: token, token_type: 'Bearer', expires_at: businessTime(new Date((issued + DURATION) * 1000)), user: accountData(account) };
   } finally {
+    // 已提交的 401／429 不回滾；系統失敗則盡力回滾並歸還原連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
@@ -271,6 +285,7 @@ async function logout(db, subject) {
     await client.query('UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE jti=$1', [subject.claims.jti]);
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 撤銷只有提交確認後才算成功；失敗時盡力回滾並歸還連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }

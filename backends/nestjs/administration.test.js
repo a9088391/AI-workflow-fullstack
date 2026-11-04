@@ -37,6 +37,7 @@ function fixture() {
   async function query(sql, args = []) {
     calls.push([sql, args]);
     if (sql === 'BEGIN') {
+      // 保存交易起點，讓清鎖失敗案例檢查設定與帳號一起回復；此為記憶體接縫而非真 DB。
       before = { accounts: structuredClone([...accounts]), sessions: structuredClone([...sessions]), settings: { ...settings } };
       return { rows: [] };
     }
@@ -55,7 +56,7 @@ function fixture() {
       return { rows: account ? [{ ...account, ...session }] : [] };
     }
     if (sql.startsWith('SELECT id,email,nickname,role,status,created_at FROM accounts') && sql.includes('FOR UPDATE')) {
-      // sort/map callback 模擬 SQL 依 ID 鎖帳號；缺少的目標不會被虛構出來。
+      // sort/map/filter callback 模擬 SQL 依 ID 鎖帳號並移除不存在的目標，避免測資虛構帳號。
       if (sql.includes('id=ANY')) return { rows: args[0].map(Number).sort((a, b) => a - b).map(id => accounts.get(id)).filter(Boolean) };
       // sort callback 讓關閉設定案例觀察全部帳號的既定鎖序。
       if (sql.includes('ORDER BY id')) return { rows: [...accounts.values()].sort((a, b) => a.id - b.id) };
@@ -154,6 +155,7 @@ test('administration reads enforce role, validation and list contracts', async (
   await app.listen(0, '127.0.0.1');
   const admin = f.token(1), member = f.token(2);
   try {
+    // 身分及管理角色必須優先裁決，未授權者不能靠錯誤格式探查目標。
     failure(await send(app, 'GET', '/api/members?page=x&per_page=20'), 401, 'E0002');
     failure(await send(app, 'GET', '/api/members?page=x&per_page=20', undefined, member), 403, 'E0003');
     failure(await send(app, 'GET', '/api/members/1?bad=1', undefined, member), 403, 'E0003');
@@ -188,6 +190,7 @@ test('administration reads enforce role, validation and list contracts', async (
     const deep = await send(app, 'GET', '/api/members?page=9007199254740991&per_page=100&filters%5Bkeyword%5D=a', undefined, admin);
     assert.deepEqual(deep.body.data.list, []);
     assert.deepEqual(deep.body.data.pagination, { page: 9007199254740991, per_page: 100, total: 1, total_pages: 1 });
+    // 這是既有 U+0000 行為觀測；共同政策仍待 CQ33 決定，不能作契約符合證據。
     const nul = await send(app, 'GET', '/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%00', undefined, admin);
     assert.deepEqual(nul.body.data.pagination, { page: 1, per_page: 20, total: 0, total_pages: 0 });
     const all = await send(app, 'GET', '/api/members?page=1&per_page=20&filters%5Bkeyword%5D=%20%20', undefined, admin);
@@ -210,6 +213,34 @@ test('administration reads enforce role, validation and list contracts', async (
   } finally { await app.close(); }
 });
 
+// 會員搜尋是 keyword 真正支援的入口；同顯示標籤仍須保留重複及型態優先序。
+test('Nest member query collisions preserve supported keyword validation', async (t) => {
+  const f = fixture();
+  const app = await createApp(f.db, f.key);
+  await app.listen(0, '127.0.0.1');
+  const admin = f.token(1);
+  try {
+    for (const [query, errors] of [
+      ['filters[keyword][]=x&filters.keyword=y', { 'filters.keyword': ['欄位型態不正確'] }],
+      ['filters.keyword=y&filters[keyword][]=x', { 'filters.keyword': ['欄位型態不正確'] }],
+      ['filters[keyword]=x&filters[keyword]=y&filters.keyword=z', { 'filters.keyword': ['此參數不可重複'] }],
+      ['filters.keyword=z&filters[keyword]=x&filters[keyword]=y', { 'filters.keyword': ['此參數不可重複'] }],
+      ['filters.keyword=y&filters.keyword=z&filters[keyword][]=x', { 'filters.keyword': ['此參數不可重複'] }],
+      ['filters[keyword][]=x&filters.keyword=y&filters.keyword=z', { 'filters.keyword': ['此參數不可重複'] }],
+      ['filters[scope][]=x&filters[scope][0]=y', { 'filters[scope][]': ['不支援此欄位'], 'filters[scope][0]': ['不支援此欄位'] }],
+    ]) {
+      // 真實管理路由先驗角色再驗 Query，記憶體 DB 僅提供可控身分與交易接縫。
+      await t.test(query, async () => {
+        failure(await send(app, 'GET', `/api/members?page=1&per_page=20&${query}`, undefined, admin), 422, 'E0001', errors);
+      });
+    }
+    // Query 拒絕只能結束唯讀交易，不能造成任何帳號／設定 UPDATE。
+    assert.equal(f.calls.some(
+      // some callback 觀察 fixture 收到的 SQL，補充公開 errors 斷言的禁止寫入效果。
+      ([sql]) => sql.startsWith('UPDATE')), false);
+  } finally { await app.close(); }
+});
+
 // 測試 callback 區分同值、停用撤銷、恢復與設定關閉的原子副作用。
 test('administration writes preserve sessions and atomic lockout settings', async () => {
   const f = fixture(); const app = await createApp(f.db, f.key);
@@ -218,6 +249,7 @@ test('administration writes preserve sessions and atomic lockout settings', asyn
   // put callback 共用 HTTP 呼叫型態，避免每個設定案例自行改寫 Body。
   const put = (path, body, token = admin) => send(app, 'PUT', path, body, token);
   try {
+    // 先確認角色、目標與輸入順序，再觀察停用及恢復對既有登入的不同效果。
     failure(await put('/api/members/2/status', { status: 'disabled' }, member), 403, 'E0003');
     failure(await put('/api/settings/login-lockout', { enabled: 'bad' }, member), 403, 'E0003');
     failure(await put('/api/members/1/status', { status: 'disabled' }), 404, 'E0004');
@@ -237,6 +269,7 @@ test('administration writes preserve sessions and atomic lockout settings', asyn
     assert.equal(f.accounts.get(2).locked_until?.getTime(), created.getTime());
     failure(await send(app, 'GET', '/api/me', undefined, second), 401, 'E0002');
     const values = { enabled: true, window_minutes: 60, failure_threshold: 100, lock_seconds: 86400 };
+    // 設定須完整驗證三個數值與 enabled；關閉功能也不能略過欄位驗證。
     failure(await put('/api/settings/login-lockout', { ...values, failure_threshold: 101 }), 422, 'E0001', { failure_threshold: ['欄位格式或範圍不正確'] });
     failure(await put('/api/settings/login-lockout', { ...values, window_minutes: 0 }), 422, 'E0001', { window_minutes: ['欄位格式或範圍不正確'] });
     failure(await put('/api/settings/login-lockout', { ...values, lock_seconds: 86401 }), 422, 'E0001', { lock_seconds: ['欄位格式或範圍不正確'] });
@@ -252,6 +285,7 @@ test('administration writes preserve sessions and atomic lockout settings', asyn
     // some callback 驗證完整設定同值無資料庫副作用。
     assert.equal(f.calls.slice(unchanged).some(([sql]) => sql.startsWith('UPDATE')), false);
     const disabled = { ...values, enabled: false };
+    // 清鎖故障須連設定一起回滾；恢復 I/O 後重送才可完成一次世代切換。
     f.failClear = true;
     failure(await put('/api/settings/login-lockout', disabled), 500, 'E9999');
     assert.deepEqual(f.settings, values);

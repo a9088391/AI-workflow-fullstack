@@ -78,7 +78,7 @@ async function member(db, id) {
   return accountData(found.rows[0]);
 }
 
-// managementComments 包含兩層下架狀態，沿用一次 JOIN 的留言映射與分頁。
+// managementComments 列出所有留言，不以父文章或個別下架狀態篩除；回應只帶留言自己的狀態。
 async function managementComments(db, viewer, page, perPage) {
   return pageRows(db, COMMENT_COLUMNS, 'FROM comments JOIN accounts ON accounts.id=comments.author_id', [], page, perPage, viewer, false);
 }
@@ -146,12 +146,13 @@ async function saveChanges(client, kind, row, version, changes) {
   if (result.rowCount !== 1) throw new ApiError('E0201');
 }
 
-// write 在交易中按帳號→session→文章→留言重驗及鎖定，避免撤銷或父文章下架後仍寫入。
+// write 在交易中按帳號→session→文章→留言重驗及鎖定，讓撤銷、父文章下架與內容操作有確定先後。
 async function write(db, key, req, kind, action) {
   const client = await db.connect();
   let committed = false;
   try {
     await client.query('BEGIN');
+    // 先在帳號與 session 鎖下重驗登入，再驗 Query、Path 與完整 Body，避免洩漏目標。
     const { account: viewer } = await lockedIdentity(client, key, req);
     queryInput(req);
     const id = kind === 'article' && action === 'create' ? null :
@@ -189,6 +190,7 @@ async function write(db, key, req, kind, action) {
       const table = kind === 'article' ? 'articles' : 'comments';
       const found = await client.query(`SELECT * FROM ${table} WHERE id=$1 FOR UPDATE`, [id]);
       const row = found.rows[0];
+      // 存在／可讀性先於操作權限，操作權限先於 saveChanges 的版本檢查。
       if (kind === 'comment' && (!row || !parent || Number(row.article_id) !== Number(parent.id))) throw new ApiError('E0004');
       readable(row, parent, viewer);
       if (Number(viewer.id) !== Number(row.author_id) && (action === 'edit' || viewer.role !== 'admin') ||
@@ -207,6 +209,7 @@ async function write(db, key, req, kind, action) {
     }
     await client.query('COMMIT'); committed = true;
   } finally {
+    // 未確認提交時盡力回滾且不覆蓋原錯誤，成功或失敗都歸還交易連線。
     if (!committed) { try { await client.query('ROLLBACK'); } catch {} }
     client.release();
   }
