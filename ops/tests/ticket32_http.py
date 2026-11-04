@@ -140,7 +140,8 @@ def race(lock_table, lock_id, requests, waits, update=""):
     )
     pool = ThreadPoolExecutor(max_workers=len(requests))
     try:
-        process.stdin.write(f"BEGIN;\nSELECT id FROM {lock_table} WHERE id={lock_id} FOR UPDATE;\n")
+        # 握手也受八秒列鎖上限保護；未取得鎖就讓 psql 失敗並走 finally 釋放程序。
+        process.stdin.write(f"BEGIN;\nSET LOCAL lock_timeout='8s';\nSELECT id FROM {lock_table} WHERE id={lock_id} FOR UPDATE;\n")
         process.stdin.flush()
         check(process.stdout.readline().strip() == str(lock_id), "fixture 未取得列鎖")
         futures = []
@@ -157,10 +158,13 @@ def race(lock_table, lock_id, requests, waits, update=""):
         return [future.result(timeout=15) for future in futures]
     finally:
         # 出錯時釋放 fixture 交易，避免測試留下阻塞其他請求的鎖。
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=5)
-        pool.shutdown(wait=False, cancel_futures=True)
+        try:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+        finally:
+            # holder 回收再失敗也取消未送出的工作；例外鏈保留原握手或 HTTP 失敗。
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 # parity 對相同初始資源逐後端送同一錯誤輸入，逐字比對共同錯誤欄位。

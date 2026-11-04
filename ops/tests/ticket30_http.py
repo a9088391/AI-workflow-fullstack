@@ -1,5 +1,7 @@
 """Ticket 30：只對 ticket30_test 隔離資料庫執行 Echo 管理 HTTP/SQL 驗收。"""
 
+from contextlib import contextmanager
+
 import hashlib
 import importlib
 import json
@@ -219,6 +221,178 @@ def plan(name, query):
     print(f"PLAN {name}:\n{sql('EXPLAIN (ANALYZE, BUFFERS) ' + query)}")
 
 
+# settings_restore 只共用原四欄 capture／finally；預設 api 與固定 Echo URL 都維持原樣。
+@contextmanager
+def settings_restore(api, admin, *, execute=None, original=None):
+    if execute is None:
+        # callback 保留原 HTTP envelope 斷言；固定 probe 明確提供自己的原生 executor。
+        def execute(method, values=None):
+            return api.expect(api.call(ECHO, method, "/api/settings/login-lockout", values, admin["token"]), 200)
+    if original is None:
+        original = execute("GET")
+    check(set(original) == {"enabled", "window_minutes", "failure_threshold", "lock_seconds"}, "設定欄位不符")
+    try:
+        yield original
+    finally:
+        # 只恢復設定四欄；正常／錯誤都讀回原值，恢復失敗仍保留原錯誤鏈。
+        execute("PUT", original)
+        check(execute("GET") == original, "原設定未完整還原")
+
+
+# epoch_probe 僅暫改指定本輪會員；原案例與固定 probe 共用同一 MAX／finally 精確還原。
+@contextmanager
+def epoch_probe(account_id, *, execute=None):
+    if execute is None:
+        execute = sql
+    check(type(account_id) is int and account_id > 0, "故障注入帳號不符")
+    before_epoch = int(execute(f"SELECT failure_epoch FROM accounts WHERE id={account_id}"))
+    try:
+        execute(f"UPDATE accounts SET failure_epoch=9223372036854775807 WHERE id={account_id}")
+        yield before_epoch
+    finally:
+        # 不清他人事件／帳號；還原錯誤不能掩成成功，原例外鏈仍可追。
+        execute(f"UPDATE accounts SET failure_epoch={before_epoch} WHERE id={account_id}")
+        check(execute(f"SELECT failure_epoch FROM accounts WHERE id={account_id}") == str(before_epoch), "故障注入世代未還原")
+
+
+# clear_rollback_probe 只暫改本輪帳號世代，公開錯誤或斷言失敗都必須精確還原。
+def clear_rollback_probe(api, settings, admin, lock_user, changed, until, off):
+    with epoch_probe(lock_user["id"]) as before_epoch:
+        failed = api.call(ECHO, "PUT", settings, off, admin["token"])
+        api.expect(failed, 500, "E9999")
+        check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) == changed and
+              sql(f"SELECT locked_until FROM accounts WHERE id={lock_user['id']}") == until and
+              sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}") == "9223372036854775807",
+              "清除失敗未完整 rollback")
+    return before_epoch
+
+
+# settings_cases 集中共享設定的驗證與 finally，避免其他管理案例負責隱含還原。
+def settings_cases(api, admin, wildcard, nonce, *, regress):
+    # 設定四欄完整更新；跨後端錯密碼共用事件，數值修改不改既有期限。
+    settings = "/api/settings/login-lockout"
+    defaults = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
+    read = api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200)
+    check(set(read) == set(defaults) and isinstance(read["enabled"], bool) and
+          all(type(read[key]) is int for key in ("window_minutes", "failure_threshold", "lock_seconds")),
+          "設定欄位／型態不符")
+    with settings_restore(api, admin, original=read):
+        if read != defaults:
+            # 舊回歸套件可能留有其他合法設定；透過管理 API 建立本案例前提並讀回確認。
+            api.expect(api.call(ECHO, "PUT", settings, defaults, admin["token"]), 200)
+            check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) == defaults,
+                  "設定前提未恢復為預設值")
+        api.expect(api.call(ECHO, "PUT", settings, "{", wildcard["token"]), 403, "E0003")
+        api.expect(api.call(ECHO, "GET", settings, token=wildcard["token"]), 403, "E0003")
+        api.expect(api.call(ECHO, "GET", settings + "?x=1", token=admin["token"]), 422,
+                   "E0001", {"x": ["不支援此欄位"]})
+        api.expect(api.call(ECHO, "GET", settings, body="{}", token=admin["token"]), 422,
+                   "E0001", {"_body": ["此 API 不接受 Request Body"]})
+        api.expect(api.call(ECHO, "PUT", settings, "{", admin["token"]), 400, "E0005")
+        for field, value in defaults.items():
+            invalid = dict(defaults)
+            invalid.pop(field)
+            api.expect(api.call(ECHO, "PUT", settings, invalid, admin["token"]), 422,
+                       "E0001", {field: ["此欄位為必填"]})
+            invalid[field] = 1 if isinstance(value, bool) else str(value)
+            api.expect(api.call(ECHO, "PUT", settings, invalid, admin["token"]), 422,
+                       "E0001", {field: ["欄位型態不正確"]})
+            invalid[field] = None
+            api.expect(api.call(ECHO, "PUT", settings, invalid, admin["token"]), 422,
+                       "E0001", {field: ["此欄位不可為 null"]})
+        for field, value in (("window_minutes", 0), ("failure_threshold", 101), ("lock_seconds", 86401)):
+            api.expect(api.call(ECHO, "PUT", settings, {**defaults, field: value}, admin["token"]),
+                       422, "E0001", {field: ["欄位格式或範圍不正確"]})
+        api.expect(api.call(ECHO, "PUT", settings, {**defaults, "extra": 1}, admin["token"]),
+                   422, "E0001", {"extra": ["不支援此欄位"]})
+        first = {"enabled": True, "window_minutes": 5, "failure_threshold": 2, "lock_seconds": 120}
+        api.expect(api.call(ECHO, "PUT", settings, first, admin["token"]), 200)
+        lock_user = fixture(api, nonce + "-lock", "鎖定測試")
+        wrong = {"email": lock_user["email"], "password": "Wrong123"}
+        api.expect(api.call(ECHO, "POST", "/api/auth/login", wrong), 401, "E0101")
+        locked = api.call(LARAVEL, "POST", "/api/auth/login", wrong)
+        api.expect(locked, 429, "E0105")
+        check(int(locked[2]["Retry-After"]) > 0 and
+              sql(f"SELECT count(*) FROM login_failures WHERE account_id={lock_user['id']}") == "2",
+              "跨後端鎖定／計數不符")
+        until = sql(f"SELECT locked_until FROM accounts WHERE id={lock_user['id']}")
+        changed = {**first, "lock_seconds": 600}
+        api.expect(api.call(ECHO, "PUT", settings, changed, admin["token"]), 200)
+        check(sql(f"SELECT locked_until FROM accounts WHERE id={lock_user['id']}") == until,
+              "數值更新改了現有期限")
+        off = {**changed, "enabled": False}
+        before_epoch = clear_rollback_probe(api, settings, admin, lock_user, changed, until, off)
+        api.expect(api.call(ECHO, "PUT", settings, off, admin["token"]), 200)
+        check(api.expect(api.call(LARAVEL, "GET", settings, token=
+              api.expect(api.call(LARAVEL, "POST", "/api/auth/login",
+                                  {"email": admin['email'], "password": "Abc1234"}), 200)["access_token"]), 200) == off,
+              "Laravel 未讀到完整設定")
+        check(sql(f"SELECT locked_until IS NULL FROM accounts WHERE id={lock_user['id']}") == "t" and
+              int(sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}")) == before_epoch + 1,
+              "關閉未原子清除鎖／世代")
+        api.expect(api.call(ECHO, "PUT", settings, off, admin["token"]), 200)
+        check(int(sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}")) == before_epoch + 1,
+              "同值關閉重做副作用")
+        api.expect(api.call(ECHO, "POST", "/api/auth/login", wrong), 401, "E0101")
+        # 兩後端同時錯密碼，只能留下兩筆事件並在門檻當次鎖定。
+        api.expect(api.call(ECHO, "PUT", settings, first, admin["token"]), 200)
+        race_user = fixture(api, nonce + "-race", "並行登入")
+        barrier = threading.Barrier(2)
+
+        # concurrent_wrong 在同一同步點送出請求，防止串行測試假裝覆蓋競爭。
+        def concurrent_wrong(base):
+            barrier.wait(timeout=5)
+            return api.call(base, "POST", "/api/auth/login",
+                            {"email": race_user["email"], "password": "Wrong123"})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            race_results = list(pool.map(concurrent_wrong, (ECHO, LARAVEL)))
+        check(sorted(item[0] for item in race_results) == [401, 429] and
+              sql(f"SELECT count(*) FROM login_failures WHERE account_id={race_user['id']}") == "2",
+              "跨後端並行登入漏計或錯誤順序不符")
+        api.expect(next(item for item in race_results if item[0] == 429), 429, "E0105")
+        # 先持有設定列鎖，讓關閉與另一後端登入都確實等待；不預設兩者取得鎖的順序。
+        transition = fixture(api, nonce + "-transition", "設定競爭")
+        holder = regress.locked_sql("SELECT id FROM login_lockout_settings WHERE id=1 FOR UPDATE",
+                                    "SELECT 1", seconds=8)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                turning_off = pool.submit(api.call, ECHO, "PUT", settings, off, admin["token"])
+                wrong_during_off = pool.submit(api.call, LARAVEL, "POST", "/api/auth/login",
+                                               {"email": transition["email"], "password": "Wrong123"})
+                regress.wait_lock(minimum=2)
+                regress.finish_lock(holder)
+                api.expect(turning_off.result(), 200)
+                api.expect(wrong_during_off.result(), 401, "E0101")
+        finally:
+            if holder.poll() is None:
+                holder.terminate()
+                holder.communicate()
+        check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) == off and
+              sql(f"SELECT locked_until IS NULL FROM accounts WHERE id={transition['id']}") == "t" and
+              sql(f"SELECT count(*) FROM login_failures WHERE account_id={transition['id']} "
+                  f"AND failure_epoch=(SELECT failure_epoch FROM accounts WHERE id={transition['id']})") == "0",
+              "關閉與登入競爭留下目前世代計數／鎖定")
+        # 兩份完整設定同時提交，最後讀回只能等於其中一份，不接受欄位混合。
+        choices = ({"enabled": True, "window_minutes": 7, "failure_threshold": 11, "lock_seconds": 333},
+                   {"enabled": True, "window_minutes": 9, "failure_threshold": 13, "lock_seconds": 555})
+        barrier = threading.Barrier(2)
+
+        # concurrent_settings 讓兩個完整 PUT 重疊執行，交由設定列鎖序列化。
+        def concurrent_settings(values):
+            barrier.wait(timeout=5)
+            return api.call(ECHO, "PUT", settings, values, admin["token"])
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            settings_results = list(pool.map(concurrent_settings, choices))
+        for result in settings_results:
+            api.expect(result, 200)
+        check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) in choices,
+              "最後完整提交值被欄位混合")
+    print("PASS settings validation/rollback/cross-backend lock/concurrent writes")
+
+
+
 # main 先做 fail-closed 守衛，再驗證管理範圍、設定副作用與跨後端登入。
 def main():
     os.chdir(ROOT)
@@ -359,136 +533,7 @@ def main():
     api.expect(api.call(LARAVEL, "GET", "/api/me", token=second_token), 401, "E0002")
     print("PASS member status revoke/restore/content/lock")
 
-    # 設定四欄完整更新；跨後端錯密碼共用事件，數值修改不改既有期限。
-    settings = "/api/settings/login-lockout"
-    defaults = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
-    read = api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200)
-    check(set(read) == set(defaults) and isinstance(read["enabled"], bool) and
-          all(type(read[key]) is int for key in ("window_minutes", "failure_threshold", "lock_seconds")),
-          "設定欄位／型態不符")
-    if read != defaults:
-        # 舊回歸套件可能留有其他合法設定；透過管理 API 建立本案例前提並讀回確認。
-        api.expect(api.call(ECHO, "PUT", settings, defaults, admin["token"]), 200)
-        check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) == defaults,
-              "設定前提未恢復為預設值")
-    api.expect(api.call(ECHO, "PUT", settings, "{", wildcard["token"]), 403, "E0003")
-    api.expect(api.call(ECHO, "GET", settings, token=wildcard["token"]), 403, "E0003")
-    api.expect(api.call(ECHO, "GET", settings + "?x=1", token=admin["token"]), 422,
-               "E0001", {"x": ["不支援此欄位"]})
-    api.expect(api.call(ECHO, "GET", settings, body="{}", token=admin["token"]), 422,
-               "E0001", {"_body": ["此 API 不接受 Request Body"]})
-    api.expect(api.call(ECHO, "PUT", settings, "{", admin["token"]), 400, "E0005")
-    for field, value in defaults.items():
-        invalid = dict(defaults)
-        invalid.pop(field)
-        api.expect(api.call(ECHO, "PUT", settings, invalid, admin["token"]), 422,
-                   "E0001", {field: ["此欄位為必填"]})
-        invalid[field] = 1 if isinstance(value, bool) else str(value)
-        api.expect(api.call(ECHO, "PUT", settings, invalid, admin["token"]), 422,
-                   "E0001", {field: ["欄位型態不正確"]})
-        invalid[field] = None
-        api.expect(api.call(ECHO, "PUT", settings, invalid, admin["token"]), 422,
-                   "E0001", {field: ["此欄位不可為 null"]})
-    for field, value in (("window_minutes", 0), ("failure_threshold", 101), ("lock_seconds", 86401)):
-        api.expect(api.call(ECHO, "PUT", settings, {**defaults, field: value}, admin["token"]),
-                   422, "E0001", {field: ["欄位格式或範圍不正確"]})
-    api.expect(api.call(ECHO, "PUT", settings, {**defaults, "extra": 1}, admin["token"]),
-               422, "E0001", {"extra": ["不支援此欄位"]})
-    first = {"enabled": True, "window_minutes": 5, "failure_threshold": 2, "lock_seconds": 120}
-    api.expect(api.call(ECHO, "PUT", settings, first, admin["token"]), 200)
-    lock_user = fixture(api, nonce + "-lock", "鎖定測試")
-    wrong = {"email": lock_user["email"], "password": "Wrong123"}
-    api.expect(api.call(ECHO, "POST", "/api/auth/login", wrong), 401, "E0101")
-    locked = api.call(LARAVEL, "POST", "/api/auth/login", wrong)
-    api.expect(locked, 429, "E0105")
-    check(int(locked[2]["Retry-After"]) > 0 and
-          sql(f"SELECT count(*) FROM login_failures WHERE account_id={lock_user['id']}") == "2",
-          "跨後端鎖定／計數不符")
-    until = sql(f"SELECT locked_until FROM accounts WHERE id={lock_user['id']}")
-    changed = {**first, "lock_seconds": 600}
-    api.expect(api.call(ECHO, "PUT", settings, changed, admin["token"]), 200)
-    check(sql(f"SELECT locked_until FROM accounts WHERE id={lock_user['id']}") == until,
-          "數值更新改了現有期限")
-    before_epoch = int(sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}"))
-    off = {**changed, "enabled": False}
-    # 用隔離會員的 bigint 上限讓清除階段失敗，驗證四欄設定與既有鎖一同回滾。
-    sql(f"UPDATE accounts SET failure_epoch=9223372036854775807 WHERE id={lock_user['id']}")
-    failed = api.call(ECHO, "PUT", settings, off, admin["token"])
-    api.expect(failed, 500, "E9999")
-    check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) == changed and
-          sql(f"SELECT locked_until FROM accounts WHERE id={lock_user['id']}") == until and
-          sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}") == "9223372036854775807",
-          "清除失敗未完整 rollback")
-    sql(f"UPDATE accounts SET failure_epoch={before_epoch} WHERE id={lock_user['id']}")
-    api.expect(api.call(ECHO, "PUT", settings, off, admin["token"]), 200)
-    check(api.expect(api.call(LARAVEL, "GET", settings, token=
-          api.expect(api.call(LARAVEL, "POST", "/api/auth/login",
-                              {"email": admin['email'], "password": "Abc1234"}), 200)["access_token"]), 200) == off,
-          "Laravel 未讀到完整設定")
-    check(sql(f"SELECT locked_until IS NULL FROM accounts WHERE id={lock_user['id']}") == "t" and
-          int(sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}")) == before_epoch + 1,
-          "關閉未原子清除鎖／世代")
-    api.expect(api.call(ECHO, "PUT", settings, off, admin["token"]), 200)
-    check(int(sql(f"SELECT failure_epoch FROM accounts WHERE id={lock_user['id']}")) == before_epoch + 1,
-          "同值關閉重做副作用")
-    api.expect(api.call(ECHO, "POST", "/api/auth/login", wrong), 401, "E0101")
-    # 兩後端同時錯密碼，只能留下兩筆事件並在門檻當次鎖定。
-    api.expect(api.call(ECHO, "PUT", settings, first, admin["token"]), 200)
-    race_user = fixture(api, nonce + "-race", "並行登入")
-    barrier = threading.Barrier(2)
-
-    # concurrent_wrong 在同一同步點送出請求，防止串行測試假裝覆蓋競爭。
-    def concurrent_wrong(base):
-        barrier.wait(timeout=5)
-        return api.call(base, "POST", "/api/auth/login",
-                        {"email": race_user["email"], "password": "Wrong123"})
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        race_results = list(pool.map(concurrent_wrong, (ECHO, LARAVEL)))
-    check(sorted(item[0] for item in race_results) == [401, 429] and
-          sql(f"SELECT count(*) FROM login_failures WHERE account_id={race_user['id']}") == "2",
-          "跨後端並行登入漏計或錯誤順序不符")
-    api.expect(next(item for item in race_results if item[0] == 429), 429, "E0105")
-    # 先持有設定列鎖，讓關閉與另一後端登入都確實等待；不預設兩者取得鎖的順序。
-    transition = fixture(api, nonce + "-transition", "設定競爭")
-    holder = regress.locked_sql("SELECT id FROM login_lockout_settings WHERE id=1 FOR UPDATE",
-                                "SELECT 1", seconds=8)
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            turning_off = pool.submit(api.call, ECHO, "PUT", settings, off, admin["token"])
-            wrong_during_off = pool.submit(api.call, LARAVEL, "POST", "/api/auth/login",
-                                           {"email": transition["email"], "password": "Wrong123"})
-            regress.wait_lock(minimum=2)
-            regress.finish_lock(holder)
-            api.expect(turning_off.result(), 200)
-            api.expect(wrong_during_off.result(), 401, "E0101")
-    finally:
-        if holder.poll() is None:
-            holder.terminate()
-            holder.communicate()
-    check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) == off and
-          sql(f"SELECT locked_until IS NULL FROM accounts WHERE id={transition['id']}") == "t" and
-          sql(f"SELECT count(*) FROM login_failures WHERE account_id={transition['id']} "
-              f"AND failure_epoch=(SELECT failure_epoch FROM accounts WHERE id={transition['id']})") == "0",
-          "關閉與登入競爭留下目前世代計數／鎖定")
-    # 兩份完整設定同時提交，最後讀回只能等於其中一份，不接受欄位混合。
-    choices = ({"enabled": True, "window_minutes": 7, "failure_threshold": 11, "lock_seconds": 333},
-               {"enabled": True, "window_minutes": 9, "failure_threshold": 13, "lock_seconds": 555})
-    barrier = threading.Barrier(2)
-
-    # concurrent_settings 讓兩個完整 PUT 重疊執行，交由設定列鎖序列化。
-    def concurrent_settings(values):
-        barrier.wait(timeout=5)
-        return api.call(ECHO, "PUT", settings, values, admin["token"])
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        settings_results = list(pool.map(concurrent_settings, choices))
-    for result in settings_results:
-        api.expect(result, 200)
-    check(api.expect(api.call(ECHO, "GET", settings, token=admin["token"]), 200) in choices,
-          "最後完整提交值被欄位混合")
-    api.expect(api.call(ECHO, "PUT", settings, defaults, admin["token"]), 200)
-    print("PASS settings validation/rollback/cross-backend lock/concurrent writes")
+    settings_cases(api, admin, wildcard, nonce, regress=regress)
 
     # 僅在隔離資料庫量測無篩選與搜尋的實際語句及查詢計畫。
     for path in (members, members + "&filters%5Bkeyword%5D=" + quote("é"),

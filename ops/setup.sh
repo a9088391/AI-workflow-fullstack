@@ -5,14 +5,14 @@ umask 077
 cd "$(dirname "$0")/.."
 project_name="${COMPOSE_PROJECT_NAME:-ai-workflow-fullstack}"
 tty_hidden=0
-# 管理員輸入若中斷或失敗，恢復終端顯示並停掉未完成的服務。
+# 管理員輸入若中斷或失敗，恢復終端顯示並停掉本專案全部未完成的應用，保留 DB 與金鑰。
 cleanup() {
     if [ "$tty_hidden" = '1' ]; then
         stty echo
         printf '\n'
     fi
     if [ ! -f ".local/setup-complete-$project_name" ]; then
-        docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-nuxt frontend-react frontend-next nginx >/dev/null 2>&1 || true
+        docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit nginx >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -69,12 +69,12 @@ touch ".local/setup-complete-$project_name"
 
 if [ "${1:-}" != '--backend-only' ]; then
     # 舊票隔離 Compose 只啟動當時存在的 Vue；一般首次設定啟動已完成前端。
-    frontend_services="frontend-vue frontend-nuxt frontend-react frontend-next"
+    frontend_services="frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit"
     case "${COMPOSE_FILE:-}" in *ops/tests/*) frontend_services="frontend-vue" ;; esac
     docker compose up -d --build --wait $frontend_services nginx
     if [ "$frontend_services" = 'frontend-vue' ]; then
         echo 'Vue／Laravel 展示已就緒：http://localhost:8080/vue/'
     else
-        echo 'Vue／Nuxt／React／Next.js／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/nuxt/、http://localhost:8080/react/、http://localhost:8080/next/'
+        echo 'Vue／Nuxt／React／Next.js／Angular／SvelteKit／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/nuxt/、http://localhost:8080/react/、http://localhost:8080/next/、http://localhost:8080/angular/、http://localhost:8080/sveltekit/'
     fi
 fi

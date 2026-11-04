@@ -21,7 +21,7 @@ BACKEND = "flask"
 PEER = "symfony"
 TICKET = "cq22"
 RECOVERY = extra.RECOVERIES[TICKET]
-GUARD_SHA = "c3a9b9a52176008c06221befceeae0da86f36f77e0f2c3b6138c4a4bf4c21fb6"
+GUARD_SHA = "c9a767c95fbcd43102cf53ad1fc498822ee83560d719547e34532a0a882ea60a"
 
 
 # 固定模式及本票檔名在 guard 前驗證，避免錯誤參數觸碰服務或別票 baseline。

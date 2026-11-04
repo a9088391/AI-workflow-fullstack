@@ -5,7 +5,7 @@ declare(strict_types=1);
 // 本檔是獨立執行的測試腳本，輔助函式必須與隔離守衛及案例同檔提供。
 // phpcs:disable PSR1.Files.SideEffects
 
-// 所有寫入前先確認固定的隔離專案，連斷言功能關閉時也必須拒絕錯誤目標。
+// 強制檢查守衛與案例的必要條件，避免 PHP assertion 設定讓驗證被略過。
 function t19Must(bool $condition, string $reason): void
 {
     if (! $condition) {
@@ -227,7 +227,7 @@ function t19AccountId(string $email): int
     return (int) t19Sql("SELECT id FROM accounts WHERE email='" . str_replace("'", "''", $email) . "';");
 }
 
-// 從各後端真實登入取得憑證，並確認登入回應不使用可變期限。
+// 從各後端真實登入取得 Bearer 憑證與資料，供後續期限與互通案例使用。
 function t19Login(string $base, string $email, string $password = 'Abc1234'): array
 {
     $result = t19Request($base, 'POST', '/api/auth/login', ['email' => $email, 'password' => $password]);
@@ -282,7 +282,7 @@ function t19Resign(string $token, array $updates = [], ?array $headerOverride = 
     $claims = json_decode(base64_decode(strtr($payloadPart, '-_', '+/')), true, 512, JSON_THROW_ON_ERROR);
     $header = $headerOverride ?? $header;
     $claims = array_replace($claims, $updates);
-    // 重簽只改指定欄位，保留原 session 身分以隔離 claims 驗證。
+    // 將 header 與 claims 編成 JWT 要求的 Base64url 區段，供指定欄位的重簽案例使用。
     $encode = static fn (array $value): string => rtrim(
         strtr(base64_encode(json_encode($value, JSON_THROW_ON_ERROR)), '+/', '-_'),
         '='

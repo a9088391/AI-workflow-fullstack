@@ -459,6 +459,8 @@ def parent_overlap(nonce, hide_backend, comment_backend, operation, comment_firs
 def main():
     shared.check(sys.argv[1:] == [], "CQ10 driver 不接受改寫測試目標或略過案例")
     shared.guard()
+    # 首筆 fixture 寫入前拒絕任何同名未知 DDL，避免先改資料才發現殘留。
+    shared.clear_boundary_trigger()
     nonce = secrets.token_hex(5)
     shared.backend_cases("symfony", nonce)
     shared.contract_cases("symfony", nonce)

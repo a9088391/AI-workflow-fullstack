@@ -3,6 +3,7 @@
 import base64
 from collections import deque
 import json
+from contextlib import contextmanager
 import os
 import re
 import secrets
@@ -133,6 +134,7 @@ def api_log_lines(backend):
         folder = Path(f".local/{backend}-logs")
         files = list(folder.glob("api-*.log"))
         check(files, f"{backend} API 日誌不存在")
+        # callback 只選最新 API 日誌，以有限近期事件核對同次請求追蹤。
         with max(files, key=lambda item: item.stat().st_mtime).open(encoding="utf-8", errors="replace") as source:
             return list(deque(source, maxlen=2000))
     return compose("logs", "--no-color", "--no-log-prefix", "--tail", "2000", backend).splitlines()
@@ -502,18 +504,117 @@ def retry_remaining(backend, member_id, result):
           f"{backend} Retry-After 與 DB 到期剩餘秒數不符")
 
 
-# clear_boundary_trigger 只清理本測試的固定名稱物件，並核對中斷後沒有留下資料庫 trigger。
-def clear_boundary_trigger():
-    sql("DROP TRIGGER IF EXISTS ticket57_http_boundary_shift ON public.login_failures; "
-        "DROP FUNCTION IF EXISTS public.ticket57_http_boundary_shift()")
-    check(sql("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger "
-              "WHERE tgrelid='public.login_failures'::regclass AND tgname='ticket57_http_boundary_shift') "
-              "AND to_regprocedure('public.ticket57_http_boundary_shift()') IS NULL") == "t",
-          "Ticket 57 邊界 trigger／function 未清除")
+# SECURITY DEFINER 本文維持 CQ24 已有限核對的形狀；只展開四個整數，不擴大歷史恢復資格。
+BOUNDARY_BODY = (
+    " BEGIN IF NEW.account_id={member_id} AND NEW.failure_epoch={epoch} THEN "
+    "UPDATE public.login_failures SET occurred_at=NEW.occurred_at-interval '1 minute' "
+    "+interval '{microseconds} microseconds' WHERE id={first_id} "
+    "AND account_id=NEW.account_id AND failure_epoch=NEW.failure_epoch; "
+    "IF NOT FOUND THEN RAISE EXCEPTION 'ticket57 boundary fixture missing'; END IF; "
+    "END IF; RETURN NEW; END; "
+)
+
+
+# boundary_catalog_sql 唯讀收集同名物件與完整身分，包含其他 namespace／overload，未知者只能保留。
+def boundary_catalog_sql():
+    return (
+        "WITH f AS (SELECT p.* FROM pg_catalog.pg_proc p WHERE p.proname='ticket57_http_boundary_shift'), "
+        "t AS (SELECT x.* FROM pg_catalog.pg_trigger x WHERE x.tgname='ticket57_http_boundary_shift') "
+        "SELECT jsonb_build_object('table_oid','public.login_failures'::regclass::oid,"
+        "'functions',COALESCE((SELECT jsonb_agg(jsonb_build_object('row',to_jsonb(f),"
+        "'namespace',(SELECT nspname FROM pg_catalog.pg_namespace WHERE oid=f.pronamespace),"
+        "'owner',pg_get_userbyid(f.proowner),'definition',CASE WHEN f.prokind IN ('f','p') "
+        "THEN pg_get_functiondef(f.oid) ELSE NULL END) ORDER BY f.oid) FROM f),'[]'::jsonb),"
+        "'triggers',COALESCE((SELECT jsonb_agg(jsonb_build_object('row',to_jsonb(t),"
+        "'definition',pg_get_triggerdef(t.oid,true)) ORDER BY t.oid) FROM t),'[]'::jsonb),"
+        "'comments',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.classoid,d.objoid,d.objsubid) "
+        "FROM pg_catalog.pg_description d WHERE (d.classoid='pg_proc'::regclass AND d.objoid IN (SELECT oid FROM f)) "
+        "OR (d.classoid='pg_trigger'::regclass AND d.objoid IN (SELECT oid FROM t))),'[]'::jsonb),"
+        "'dependencies',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.classid,d.objid,d.objsubid,"
+        "d.refclassid,d.refobjid,d.refobjsubid,d.deptype) FROM pg_catalog.pg_depend d WHERE "
+        "(d.classid='pg_proc'::regclass AND d.objid IN (SELECT oid FROM f)) OR "
+        "(d.refclassid='pg_proc'::regclass AND d.refobjid IN (SELECT oid FROM f)) OR "
+        "(d.classid='pg_trigger'::regclass AND d.objid IN (SELECT oid FROM t)) OR "
+        "(d.refclassid='pg_trigger'::regclass AND d.refobjid IN (SELECT oid FROM t))),'[]'::jsonb))"
+    )
+
+
+# boundary_catalog 只讀固定物件，executor 預設仍走原隔離 SQL，副本必顯式傳其受 guard 保護的 executor。
+def boundary_catalog(*, execute=sql):
+    catalog = json.loads(execute(boundary_catalog_sql()))
+    check(isinstance(catalog, dict) and set(catalog) == {'table_oid','functions','triggers','comments','dependencies'} and
+          all(isinstance(catalog[key], list) for key in ('functions','triggers','comments','dependencies')), 'DDL catalog 回應不完整')
+    return catalog
+
+
+# boundary_receipt 核對完整 metadata；builder 可只有 function，原 context 另要求 pair，不認領歷史殘留。
+def boundary_receipt(catalog):
+    # PostgreSQL JSON 的 OID 是字串；只驗 canonical uint32，不改 raw catalog 的逐值身分。
+    check(isinstance(catalog, dict) and set(catalog) == {'table_oid','functions','triggers','comments','dependencies'} and
+          type(catalog['table_oid']) is str and re.fullmatch(r'[1-9][0-9]{0,9}', catalog['table_oid']) is not None and
+          int(catalog['table_oid']) <= 4294967295 and
+          all(isinstance(catalog[key], list) for key in ('functions','triggers','comments','dependencies')) and
+          len(catalog['functions']) == 1 and len(catalog['triggers']) <= 1, '本輪 DDL receipt 不完整')
+    function = catalog['functions'][0]
+    check(isinstance(function, dict) and set(function) == {'row','namespace','owner','definition'} and
+          isinstance(function['row'], dict) and isinstance(function['definition'], str) and
+          isinstance(function['owner'], str) and
+          {'oid','proname','pronargs','prokind','proowner','proacl','prosrc','prosecdef','proconfig'} <= set(function['row']), '本輪 DDL receipt metadata 不完整')
+    check(function['namespace'] == 'public' and function['row']['proname'] == 'ticket57_http_boundary_shift' and
+          function['row']['pronargs'] == 0 and function['row']['prokind'] == 'f', '本輪 DDL receipt function 目標不符')
+    if catalog['triggers']:
+        trigger = catalog['triggers'][0]['row']
+        check(trigger['tgname'] == 'ticket57_http_boundary_shift' and trigger['tgrelid'] == catalog['table_oid'] and
+              trigger['tgfoid'] == function['row']['oid'], '本輪 DDL receipt trigger 目標不符')
+    return catalog
+
+
+# clear_boundary_trigger 沒有本輪 receipt 時只查 absence；未知殘留非零停止，絕不按名字刪除。
+def clear_boundary_trigger(owned=None, *, execute=sql):
+    current = boundary_catalog(execute=execute)
+    if owned is None:
+        check(not any(current[key] for key in ('functions','triggers','comments','dependencies')), 'Ticket 57 DDL 已存在；保留現場，須人工處理')
+        return
+    boundary_receipt(owned)
+    check(current == owned, 'Ticket 57 本輪 DDL 身分已變；拒絕清理')
+    # 單交易且 RESTRICT；新相依物件使清理失敗時，trigger 也不能只刪一半。
+    drop_trigger = 'DROP TRIGGER ticket57_http_boundary_shift ON public.login_failures; ' if owned['triggers'] else ''
+    execute('BEGIN; ' + drop_trigger + 'DROP FUNCTION public.ticket57_http_boundary_shift() RESTRICT; COMMIT;')
+    clear_boundary_trigger(execute=execute)
+
+
+# boundary_create_sql 只展開既有四個整數與精確本文，讓原案例和固定副本使用同一建立語句。
+def boundary_create_sql(member_id, epoch, first_id, microseconds):
+    check(all(type(value) is int for value in (member_id, epoch, first_id, microseconds)) and
+          1 <= member_id <= 9007199254740991 and epoch >= 0 and first_id > 0 and microseconds in (0, 1), '邊界 DDL 整數不符')
+    body = BOUNDARY_BODY.format(member_id=member_id, epoch=epoch, first_id=first_id, microseconds=microseconds)
+    return ('CREATE FUNCTION public.ticket57_http_boundary_shift() RETURNS trigger '
+            'LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$' + body + '$$',
+            'CREATE TRIGGER ticket57_http_boundary_shift BEFORE INSERT ON public.login_failures '
+            'FOR EACH ROW EXECUTE FUNCTION public.ticket57_http_boundary_shift()')
+
+
+# boundary_trigger 只有建立、receipt、COMMIT 都確認才進案例；finally 只清本輪物件，未知結果保留。
+@contextmanager
+def boundary_trigger(member_id, epoch, first_id, microseconds, *, execute=sql):
+    clear_boundary_trigger(execute=execute)
+    statements = boundary_create_sql(member_id, epoch, first_id, microseconds)
+    owned = None
+    try:
+        raw = execute('BEGIN; ' + '; '.join(statements) + '; ' + boundary_catalog_sql() + '; COMMIT;')
+        parsed = boundary_receipt(json.loads(raw))
+        check(len(parsed['triggers']) == 1, '本輪 DDL pair 未完整建立')
+        owned = parsed
+        yield owned
+    finally:
+        # 工具或 JSON/receipt 失敗不授 ownership；清理再失敗仍保留原案例的例外鏈。
+        if owned is not None:
+            clear_boundary_trigger(owned, execute=execute)
 
 
 # exact_boundary_cases 以真實第二次登入時間對齊舊事件，分別驗證 HTTP 左界相等與晚一微秒。
 def exact_boundary_cases(backend, nonce, admin_token):
+    clear_boundary_trigger()
     settings = {"enabled": True, "window_minutes": 1, "failure_threshold": 2, "lock_seconds": 30}
     expect(request(backend, "PUT", "/api/settings/login-lockout", settings, admin_token), 200)
     for microseconds, status in ((0, 401), (1, 429)):
@@ -526,18 +627,7 @@ def exact_boundary_cases(backend, nonce, admin_token):
         check(first_id.isdecimal(), "精確邊界第一筆事件不唯一")
 
         # 應用只有 INSERT 權限；owner 建立的 SECURITY DEFINER 僅可改此帳號／世代的第一筆事件。
-        clear_boundary_trigger()
-        try:
-            sql("CREATE FUNCTION public.ticket57_http_boundary_shift() RETURNS trigger "
-                "LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$ "
-                f"BEGIN IF NEW.account_id={member_id} AND NEW.failure_epoch={epoch} THEN "
-                "UPDATE public.login_failures SET occurred_at=NEW.occurred_at-interval '1 minute' "
-                f"+interval '{microseconds} microseconds' WHERE id={first_id} "
-                "AND account_id=NEW.account_id AND failure_epoch=NEW.failure_epoch; "
-                "IF NOT FOUND THEN RAISE EXCEPTION 'ticket57 boundary fixture missing'; END IF; "
-                "END IF; RETURN NEW; END; $$; "
-                "CREATE TRIGGER ticket57_http_boundary_shift BEFORE INSERT ON public.login_failures "
-                "FOR EACH ROW EXECUTE FUNCTION public.ticket57_http_boundary_shift()")
+        with boundary_trigger(member_id, epoch, int(first_id), microseconds):
             result = request(backend, "POST", "/api/auth/login", wrong)
             if status == 429:
                 retry_remaining(backend, member_id, result)
@@ -554,13 +644,12 @@ def exact_boundary_cases(backend, nonce, admin_token):
             check(aligned == "true", "精確邊界事件時間未對齊")
             check(sql(f"SELECT locked_until IS NOT NULL FROM accounts WHERE id={member_id}") ==
                   ("t" if status == 429 else "f"), "精確邊界鎖定狀態不符")
-        finally:
-            clear_boundary_trigger()
     print(f"PASS {backend} DBV02 真實 HTTP 左界相等／晚一微秒", flush=True)
 
 
 # lockout_edge_cases 以隔離帳號檢查左開視窗、調大 N、關閉／重啟及已提交失敗計數。
 def lockout_edge_cases(backend, nonce):
+    clear_boundary_trigger()
     admin = user(backend, nonce + "e", "admin")
     member = user(backend, nonce + "e", "member")
     token, member_id = admin["token"], member["id"]
@@ -1067,12 +1156,13 @@ def ordered_cases(backend, nonce):
 
 # main 先核對隔離容器與資料庫，再依模式驗證無效輸入、雙序操作、共用邊界或完整流程，避免誤寫展示資料。
 def main():
+    # 有限 CLI 先拒絕，未知模式不可觸及 guard、工具或任何 DDL。
+    check(sys.argv[1:] in ([], ["--review-boundaries"], ["--extended-invalid"], ["--extended-ordered"]), "未知驗證模式")
     guard()
-    # 上次測試若被中斷，只移除本測試固定名稱的殘留物件，再開始建立新測資。
+    # 中斷殘留不再自動刪除；未知來源必須保留，交人工處理後才能開始新測資。
     clear_boundary_trigger()
     nonce = secrets.token_hex(5)
     # 擴充模式分開執行，以免管理設定與登入計數互相干擾。
-    check(sys.argv[1:] in ([], ["--review-boundaries"], ["--extended-invalid"], ["--extended-ordered"]), "未知驗證模式")
     if sys.argv[1:] == ["--extended-invalid"]:
         reference = {}
         for backend in BACKENDS:

@@ -161,6 +161,8 @@ def save_packet(packet, path):
 def capture_baseline(nonce, *, ticket="cq18"):
     shared.check(ticket in RECOVERIES and re.fullmatch(NONCES[ticket], nonce) is not None, "恢復 marker 不符")
     recovery = RECOVERIES[ticket]
+    # fresh baseline 建檔前先拒絕全域同名殘留；restore 仍沿用自己的既有資格。
+    shared.clear_boundary_trigger()
     clean_boundary()
     recovery.mkdir(parents=True, exist_ok=True)
     for path in recovery.glob(f"recovery-{ticket}*.json"):

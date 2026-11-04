@@ -125,7 +125,7 @@ function t17Snapshot(string $table, int $id): string
     return t17Sql("SELECT row_to_json(t)::text FROM $table t WHERE id=$id");
 }
 
-/** 先鎖帳號並觀察兩後端實際等待，再提交狀態轉移以裁決寫入順序。 */
+/** 先鎖指定帳號或文章並觀察兩後端實際等待，再提交狀態轉移以裁決寫入順序。 */
 function t17Race(string $lockTable, int $lockId, array $requests, string $beforeCommit = ''): array
 {
     if (! in_array($lockTable, ['accounts', 'articles'], true)) {

@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/http_fixture.php';
+// 所有 fixture 操作之前先確認斷言有效，不能在測試檢查被關閉時仍送出寫入。
+assertHttpFixtureAssertions();
+
 // 只讀取 Docker 身分資訊；錯誤輸出可能含環境設定，不寫入測試記錄。
 $t18Docker = static function (array $arguments): string {
     $process = proc_open($arguments, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);

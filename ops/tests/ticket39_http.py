@@ -1,7 +1,9 @@
 """Ticket 39：先核對隔離目標，再測 Fastify 管理與跨 Laravel 狀態。"""
 
 import json
+from contextlib import contextmanager
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -128,27 +130,113 @@ def strict_sql(query):
                                     "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles", "-c", query], text=True).strip()
 
 
+# rollback_catalog_sql 唯讀收集同名物件與完整身分，包含其他 namespace／overload，未知者只能保留。
+def rollback_catalog_sql():
+    return (
+        "WITH f AS (SELECT p.* FROM pg_catalog.pg_proc p WHERE p.proname='ticket39_fail_epoch'), "
+        "t AS (SELECT x.* FROM pg_catalog.pg_trigger x WHERE x.tgname='ticket39_rollback_probe') "
+        "SELECT jsonb_build_object('table_oid','public.accounts'::regclass::oid,"
+        "'functions',COALESCE((SELECT jsonb_agg(jsonb_build_object('row',to_jsonb(f),"
+        "'namespace',(SELECT nspname FROM pg_catalog.pg_namespace WHERE oid=f.pronamespace),"
+        "'owner',pg_get_userbyid(f.proowner),'definition',CASE WHEN f.prokind IN ('f','p') "
+        "THEN pg_get_functiondef(f.oid) ELSE NULL END) ORDER BY f.oid) FROM f),'[]'::jsonb),"
+        "'triggers',COALESCE((SELECT jsonb_agg(jsonb_build_object('row',to_jsonb(t),"
+        "'definition',pg_get_triggerdef(t.oid,true)) ORDER BY t.oid) FROM t),'[]'::jsonb),"
+        "'comments',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.classoid,d.objoid,d.objsubid) "
+        "FROM pg_catalog.pg_description d WHERE (d.classoid='pg_proc'::regclass AND d.objoid IN (SELECT oid FROM f)) "
+        "OR (d.classoid='pg_trigger'::regclass AND d.objoid IN (SELECT oid FROM t))),'[]'::jsonb),"
+        "'dependencies',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.classid,d.objid,d.objsubid,"
+        "d.refclassid,d.refobjid,d.refobjsubid,d.deptype) FROM pg_catalog.pg_depend d WHERE "
+        "(d.classid='pg_proc'::regclass AND d.objid IN (SELECT oid FROM f)) OR "
+        "(d.refclassid='pg_proc'::regclass AND d.refobjid IN (SELECT oid FROM f)) OR "
+        "(d.classid='pg_trigger'::regclass AND d.objid IN (SELECT oid FROM t)) OR "
+        "(d.refclassid='pg_trigger'::regclass AND d.refobjid IN (SELECT oid FROM t))),'[]'::jsonb))"
+    )
+
+
+# rollback_catalog 只讀固定物件，executor 預設仍走原隔離 SQL，副本必顯式傳其受 guard 保護的 executor。
+def rollback_catalog(*, execute=strict_sql):
+    catalog = json.loads(execute(rollback_catalog_sql()))
+    check(isinstance(catalog, dict) and set(catalog) == {'table_oid','functions','triggers','comments','dependencies'} and
+          all(isinstance(catalog[key], list) for key in ('functions','triggers','comments','dependencies')), 'DDL catalog 回應不完整')
+    return catalog
+
+
+# rollback_receipt 核對完整 metadata；builder 可只有 function，原 context 另要求 pair，不認領歷史殘留。
+def rollback_receipt(catalog):
+    # PostgreSQL JSON 的 OID 是字串；只驗 canonical uint32，不改 raw catalog 的逐值身分。
+    check(isinstance(catalog, dict) and set(catalog) == {'table_oid','functions','triggers','comments','dependencies'} and
+          type(catalog['table_oid']) is str and re.fullmatch(r'[1-9][0-9]{0,9}', catalog['table_oid']) is not None and
+          int(catalog['table_oid']) <= 4294967295 and
+          all(isinstance(catalog[key], list) for key in ('functions','triggers','comments','dependencies')) and
+          len(catalog['functions']) == 1 and len(catalog['triggers']) <= 1, '本輪 DDL receipt 不完整')
+    function = catalog['functions'][0]
+    check(isinstance(function, dict) and set(function) == {'row','namespace','owner','definition'} and
+          isinstance(function['row'], dict) and isinstance(function['definition'], str) and
+          isinstance(function['owner'], str) and
+          {'oid','proname','pronargs','prokind','proowner','proacl','prosrc','prosecdef','proconfig'} <= set(function['row']), '本輪 DDL receipt metadata 不完整')
+    check(function['namespace'] == 'public' and function['row']['proname'] == 'ticket39_fail_epoch' and
+          function['row']['pronargs'] == 0 and function['row']['prokind'] == 'f', '本輪 DDL receipt function 目標不符')
+    if catalog['triggers']:
+        trigger = catalog['triggers'][0]['row']
+        check(trigger['tgname'] == 'ticket39_rollback_probe' and trigger['tgrelid'] == catalog['table_oid'] and
+              trigger['tgfoid'] == function['row']['oid'], '本輪 DDL receipt trigger 目標不符')
+    return catalog
+
+
+# clear_rollback_probe 保留任何同名 function/trigger（含 overload/其他 namespace），只有本輪 receipt 可清。
+def clear_rollback_probe(owned=None, *, execute=strict_sql):
+    current = rollback_catalog(execute=execute)
+    if owned is None:
+        check(not any(current[key] for key in ('functions','triggers','comments','dependencies')), 'Ticket 39 DDL 已存在；保留現場，須人工處理')
+        return
+    rollback_receipt(owned)
+    check(current == owned, 'Ticket 39 本輪 DDL 身分已變；拒絕清理')
+    # RESTRICT 與單交易保護未知相依物件，不能用 CASCADE 擴大刪除範圍。
+    drop_trigger = 'DROP TRIGGER ticket39_rollback_probe ON public.accounts; ' if owned['triggers'] else ''
+    execute('BEGIN; ' + drop_trigger + 'DROP FUNCTION public.ticket39_fail_epoch() RESTRICT; COMMIT;')
+    clear_rollback_probe(execute=execute)
+
+
+# rollback_create_sql 固定本票 function/trigger 與正整數 owned account，副本不另複製建立邏輯。
+def rollback_create_sql(target_id):
+    check(type(target_id) is int and 1 <= target_id <= 9007199254740991, 'rollback DDL 帳號不符')
+    return ("CREATE FUNCTION public.ticket39_fail_epoch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'ticket39 rollback probe'; END $$",
+            f'CREATE TRIGGER ticket39_rollback_probe BEFORE UPDATE OF failure_epoch ON public.accounts FOR EACH ROW WHEN (NEW.id={target_id}) EXECUTE FUNCTION public.ticket39_fail_epoch()')
+
+
+# rollback_trigger 只有建立、receipt、COMMIT 都確認才進案例；finally 只清本輪物件，未知結果保留。
+@contextmanager
+def rollback_trigger(target_id, *, execute=strict_sql):
+    clear_rollback_probe(execute=execute)
+    statements = rollback_create_sql(target_id)
+    owned = None
+    try:
+        raw = execute('BEGIN; ' + '; '.join(statements) + '; ' + rollback_catalog_sql() + '; COMMIT;')
+        parsed = rollback_receipt(json.loads(raw))
+        check(len(parsed['triggers']) == 1, '本輪 DDL pair 未完整建立')
+        owned = parsed
+        yield owned
+    finally:
+        # 工具或 JSON/receipt 失敗不授 ownership；清理再失敗仍保留原案例的例外鏈。
+        if owned is not None:
+            clear_rollback_probe(owned, execute=execute)
+
+
 # rollback_probe 只在本票資料庫注入一次更新失敗，確認設定與所有會員清鎖一起 rollback。
 def rollback_probe(admin_token, target_id, disabled):
-    check(strict_sql("SELECT count(*) FROM pg_trigger WHERE tgname='ticket39_rollback_probe'") == "0", "測試 trigger 已存在")
+    clear_rollback_probe()
     before = strict_sql(f"SELECT row_to_json(x) FROM (SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1) x")
     account = strict_sql(f"SELECT row_to_json(x) FROM (SELECT failure_epoch,locked_until FROM accounts WHERE id={target_id}) x")
     failure_count = strict_sql(f"SELECT count(*) FROM login_failures WHERE account_id={target_id}")
-    # 只在隔離測資的目標帳號製造錯誤；finally 一律移除測試 DDL。
-    try:
-        strict_sql("CREATE FUNCTION ticket39_fail_epoch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'ticket39 rollback probe'; END $$")
-        strict_sql(f"CREATE TRIGGER ticket39_rollback_probe BEFORE UPDATE OF failure_epoch ON accounts FOR EACH ROW WHEN (NEW.id={target_id}) EXECUTE FUNCTION ticket39_fail_epoch()")
+    with rollback_trigger(target_id):
         expect(call(FASTIFY, "PUT", "/api/settings/login-lockout", disabled, admin_token), 500, "E9999")
         check(strict_sql("SELECT row_to_json(x) FROM (SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1) x") == before,
               "失敗後設定仍有部分提交")
         check(strict_sql(f"SELECT row_to_json(x) FROM (SELECT failure_epoch,locked_until FROM accounts WHERE id={target_id}) x") == account and
               strict_sql(f"SELECT count(*) FROM login_failures WHERE account_id={target_id}") == failure_count,
               "失敗後會員鎖定或計數遭修改")
-    finally:
-        strict_sql("DROP TRIGGER IF EXISTS ticket39_rollback_probe ON accounts")
-        strict_sql("DROP FUNCTION IF EXISTS ticket39_fail_epoch()")
-    check(strict_sql("SELECT count(*) FROM pg_trigger WHERE tgname='ticket39_rollback_probe'") == "0" and
-          strict_sql("SELECT count(*) FROM pg_proc WHERE proname='ticket39_fail_epoch'") == "0", "測試 DDL 未清除")
+    clear_rollback_probe()
 
 
 # search_plan 核對 Fastify 真正送出的計數／分頁 SQL，再記錄隔離資料上的查詢計畫。
@@ -195,6 +283,7 @@ def boundary_sql():
 # main 依契約順序測角色、搜尋、停用、內容及設定的 HTTP 與持久效果。
 def main():
     guard()
+    clear_rollback_probe()
     if sys.argv[1:] == ["--guard-only"]:
         print("PASS ticket39_test guard")
         return

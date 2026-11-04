@@ -1,5 +1,7 @@
 """Ticket 21 隔離真實 HTTP、共用資料與搜尋計畫驗證。"""
 
+from contextlib import contextmanager
+
 import json
 import secrets
 import sys
@@ -285,43 +287,60 @@ def status_cases(admin, member, article, comment):
          "恢復復活鎖定以外的舊身分或改動內容")
 
 
+# settings_restore 共用原設定 capture／finally，讓原案例與固定隔離 probe 走同一還原路徑。
+@contextmanager
+def settings_restore(admin, *, execute=None):
+    if execute is None:
+        # 預設仍走原 Flask caller；probe 只能明確傳入已 guard 的固定設定 executor。
+        def execute(method, values=None):
+            if method == "GET":
+                return expect(call(FLASK, "GET", SETTINGS, token=admin["token"]), 200)
+            put_settings(admin, values)
+    original = execute("GET")
+    must(set(original) == set(CONFIG), "既有設定欄位不符")
+    try:
+        yield original
+    finally:
+        # 案例或還原失敗保留例外鏈；只能讀回精確四欄後才算恢復。
+        execute("PUT", original)
+        must(execute("GET") == original, "原設定未完整還原")
+
+
 # 驗證四欄完整更新、同值、數值不延長舊鎖及真正關閉才清世代和暫時鎖。
 def settings_cases(admin, member):
-    original = expect(call(FLASK, "GET", SETTINGS, token=admin["token"]), 200)
-    must(set(original) == set(CONFIG), "既有設定欄位不符")
-    put_settings(admin, CONFIG)
-    before = account_state(member["id"])
-    put_settings(admin, CONFIG.copy())
-    must(account_state(member["id"])["failure_epoch"] == before["failure_epoch"],
-         "同值設定重做計數副作用")
-    with owner_connection() as connection:
-        connection.execute("UPDATE accounts SET locked_until = clock_timestamp() + interval '30 minutes' "
-                           "WHERE id = %s", (member["id"],))
-    old_lock = account_state(member["id"])["locked_until"]
-    numeric = {"enabled": True, "window_minutes": 7, "failure_threshold": 3, "lock_seconds": 600}
-    put_settings(admin, numeric)
-    must(account_state(member["id"])["locked_until"] == old_lock,
-         "數值設定延長了已鎖到期時間")
-    before = account_state(member["id"])
-    with owner_connection() as connection:
-        failures = connection.execute(
-            "SELECT count(*) AS n FROM login_failures WHERE account_id = %s", (member["id"],)
-        ).fetchone()["n"]
-    off = numeric | {"enabled": False}
-    put_settings(admin, off)
-    after = account_state(member["id"])
-    must(after["locked_until"] is None and after["failure_epoch"] == before["failure_epoch"] + 1,
-         "真正關閉未清鎖或切換世代")
-    with owner_connection() as connection:
-        retained = connection.execute(
-            "SELECT count(*) AS n FROM login_failures WHERE account_id = %s", (member["id"],)
-        ).fetchone()["n"]
-    must(retained == failures, "關閉設定刪除了歷史失敗事件")
-    put_settings(admin, off)
-    must(account_state(member["id"])["failure_epoch"] == after["failure_epoch"],
-         "同值關閉重設了世代")
-    put_settings(admin, original)
-    return original
+    with settings_restore(admin) as original:
+        put_settings(admin, CONFIG)
+        before = account_state(member["id"])
+        put_settings(admin, CONFIG.copy())
+        must(account_state(member["id"])["failure_epoch"] == before["failure_epoch"],
+             "同值設定重做計數副作用")
+        with owner_connection() as connection:
+            connection.execute("UPDATE accounts SET locked_until = clock_timestamp() + interval '30 minutes' "
+                               "WHERE id = %s", (member["id"],))
+        old_lock = account_state(member["id"])["locked_until"]
+        numeric = {"enabled": True, "window_minutes": 7, "failure_threshold": 3, "lock_seconds": 600}
+        put_settings(admin, numeric)
+        must(account_state(member["id"])["locked_until"] == old_lock,
+             "數值設定延長了已鎖到期時間")
+        before = account_state(member["id"])
+        with owner_connection() as connection:
+            failures = connection.execute(
+                "SELECT count(*) AS n FROM login_failures WHERE account_id = %s", (member["id"],)
+            ).fetchone()["n"]
+        off = numeric | {"enabled": False}
+        put_settings(admin, off)
+        after = account_state(member["id"])
+        must(after["locked_until"] is None and after["failure_epoch"] == before["failure_epoch"] + 1,
+             "真正關閉未清鎖或切換世代")
+        with owner_connection() as connection:
+            retained = connection.execute(
+                "SELECT count(*) AS n FROM login_failures WHERE account_id = %s", (member["id"],)
+            ).fetchone()["n"]
+        must(retained == failures, "關閉設定刪除了歷史失敗事件")
+        put_settings(admin, off)
+        must(account_state(member["id"])["failure_epoch"] == after["failure_epoch"],
+             "同值關閉重設了世代")
+        return original
 
 
 # 有 Body 的 HEAD 依 GET 規則拒絕且不可觸發設定關閉；空 HEAD 保持唯讀。
@@ -509,12 +528,12 @@ def run():
     article, own, other = content_cases(namespace, admin, first, second)
     status_cases(admin, second, article, other)
     print("PASS Ticket21 管理內容範圍、跨後端停用撤銷與內容保存")
-    original_settings = settings_cases(admin, third)
-    settings_head_cases(admin, third)
-    concurrent_settings(admin)
-    lockout_cases(admin, third)
-    settings_login_race(admin, third)
-    put_settings(admin, original_settings)
+    with settings_restore(admin):
+        settings_cases(admin, third)
+        settings_head_cases(admin, third)
+        concurrent_settings(admin)
+        lockout_cases(admin, third)
+        settings_login_race(admin, third)
     search_plans(namespace)
     # 只公開合成 email 供隔離瀏覽器驗收；再登入確認管理員仍 active。
     ready = expect(call(FLASK, "POST", "/api/auth/login", {
@@ -526,13 +545,22 @@ def run():
     print("BROWSER_ADMIN_EMAIL=" + admin["email"])
 
 
+# report_failure 保留設定還原前後的失敗鏈，只輸出既有安全診斷與固定例外型別。
+def report_failure(error):
+    print(str(error) if isinstance(error, CheckFailure) else
+          "Ticket 21 驗證失敗：未預期 " + type(error).__name__, file=sys.stderr)
+    # finally 再失敗時，前序原因不可被最外層的安全輸出隱藏；不列印不可信 payload。
+    previous, seen = error.__cause__ or error.__context__, {id(error)}
+    while previous is not None and id(previous) not in seen:
+        print("Ticket 21 前序失敗類型：" + type(previous).__name__, file=sys.stderr)
+        seen.add(id(previous))
+        previous = previous.__cause__ or previous.__context__
+
+
 # 控制診斷輸出，避免例外內容洩漏憑證或合成帳號資訊。
 if __name__ == "__main__":
     try:
         run()
-    except CheckFailure as error:
-        print(str(error), file=sys.stderr)
-        sys.exit(1)
     except Exception as error:
-        print("Ticket 21 驗證失敗：未預期 " + type(error).__name__, file=sys.stderr)
+        report_failure(error)
         sys.exit(1)

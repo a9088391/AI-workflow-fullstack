@@ -2,11 +2,19 @@
 
 declare(strict_types=1);
 
+// 本檔為獨立執行的 HTTP 驗收入口，輔助函式與案例保留同檔以便直接執行。
+// phpcs:disable PSR1.Files.SideEffects
+
+require_once __DIR__ . '/http_fixture.php';
+// 所有 fixture 操作之前先確認斷言有效，不能在測試檢查被關閉時仍送出寫入。
+assertHttpFixtureAssertions();
+
 // 此測試會改設定、登入失敗事件與帳號狀態，必須使用全新獨立資料庫。
 if (! str_starts_with(getenv('COMPOSE_PROJECT_NAME') ?: '', 'ticket07_test')) {
     throw new RuntimeException('請使用 ticket07_test 開頭的隔離 Compose project');
 }
 $base = getenv('API_BASE') ?: 'http://localhost:18087';
+assertHttpFixture(['laravel' => $base]);
 $path = '/api/settings/login-lockout';
 
 /** 經真實 HTTP 傳送原始 JSON，驗證 Laravel 路由、認證、解析和共同回應。 */
@@ -15,9 +23,9 @@ function settingsRequest(string $method, string $path, string $body = '', ?strin
     global $base;
     $headers = ['Accept: application/json', 'Content-Type: application/json'];
     if ($token !== null) {
-        $headers[] = 'Authorization: Bearer '.$token;
+        $headers[] = 'Authorization: Bearer ' . $token;
     }
-    $curl = curl_init($base.$path);
+    $curl = curl_init($base . $path);
     curl_setopt_array($curl, [
         CURLOPT_CUSTOMREQUEST => $method, CURLOPT_POSTFIELDS => $body, CURLOPT_HTTPHEADER => $headers,
         CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 20,
@@ -27,16 +35,25 @@ function settingsRequest(string $method, string $path, string $body = '', ?strin
         throw new RuntimeException(curl_error($curl));
     }
     $length = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
-    $result = [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR), substr($raw, 0, $length)];
+    $result = [
+        curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+        json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR),
+        substr($raw, 0, $length)
+    ];
     curl_close($curl);
 
     return $result;
 }
 
 /** 比較跨後端共同碼、文案和欄位錯誤，避免只驗 HTTP 狀態。 */
-function settingsCheck(array $result, int $status, ?string $code = null, ?string $field = null, ?string $detail = null): void
-{
-    assert($result[0] === $status, 'HTTP expected '.$status.', got '.$result[0]);
+function settingsCheck(
+    array $result,
+    int $status,
+    ?string $code = null,
+    ?string $field = null,
+    ?string $detail = null
+): void {
+    assert($result[0] === $status, 'HTTP expected ' . $status . ', got ' . $result[0]);
     assert($result[1]['success'] === ($code === null));
     if ($code === null) {
         assert($result[1]['message'] === 'OK');
@@ -66,8 +83,25 @@ function settingsSql(string $sql): string
 {
     $pipes = [];
     $process = proc_open(
-        ['docker', 'compose', 'exec', '-T', 'db', 'psql', '-U', 'articles_owner', '-d', 'articles', '-v', 'ON_ERROR_STOP=1', '-At', '-c', $sql],
-        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes
+        [
+            'docker',
+            'compose',
+            'exec',
+            '-T',
+            'db',
+            'psql',
+            '-U',
+            'articles_owner',
+            '-d',
+            'articles',
+            '-v',
+            'ON_ERROR_STOP=1',
+            '-At',
+            '-c',
+            $sql
+        ],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes
     );
     assert(is_resource($process));
     fclose($pipes[0]);
@@ -76,7 +110,7 @@ function settingsSql(string $sql): string
     fclose($pipes[1]);
     fclose($pipes[2]);
     if (proc_close($process) !== 0) {
-        throw new RuntimeException('隔離 fixture SQL 失敗: '.$err);
+        throw new RuntimeException('隔離 fixture SQL 失敗: ' . $err);
     }
 
     return trim($out);
@@ -85,9 +119,23 @@ function settingsSql(string $sql): string
 /** 每位測試使用者經正式註冊與登入取得 token，避免依賴展示帳號。 */
 function settingsMember(string $prefix): array
 {
-    $email = $prefix.'-'.bin2hex(random_bytes(5)).'@example.test';
-    settingsCheck(settingsRequest('POST', '/api/auth/register', json_encode(['email' => $email, 'password' => 'Abc1234', 'nickname' => '設定測試'], JSON_THROW_ON_ERROR)), 201);
-    $login = settingsRequest('POST', '/api/auth/login', json_encode(['email' => $email, 'password' => 'Abc1234'], JSON_THROW_ON_ERROR));
+    $email = $prefix . '-' . bin2hex(random_bytes(5)) . '@example.test';
+    settingsCheck(
+        settingsRequest(
+            'POST',
+            '/api/auth/register',
+            json_encode(
+                ['email' => $email, 'password' => 'Abc1234', 'nickname' => '設定測試'],
+                JSON_THROW_ON_ERROR
+            )
+        ),
+        201
+    );
+    $login = settingsRequest(
+        'POST',
+        '/api/auth/login',
+        json_encode(['email' => $email, 'password' => 'Abc1234'], JSON_THROW_ON_ERROR)
+    );
     settingsCheck($login, 200);
 
     return [$email, $login[1]['data']['user']['id'], $login[1]['data']['access_token']];
@@ -113,30 +161,72 @@ settingsCheck($read, 200);
 assert($read[1]['data'] === $defaults && array_keys($read[1]['data']) === array_keys($defaults));
 settingsCheck(settingsRequest('GET', $path), 401, 'E0002');
 settingsCheck(settingsRequest('PUT', $path, '{', $member), 403, 'E0003');
-settingsCheck(settingsRequest('GET', $path.'?x=1', '', $member), 403, 'E0003');
+settingsCheck(settingsRequest('GET', $path . '?x=1', '', $member), 403, 'E0003');
 settingsCheck(settingsRequest('PUT', $path, '{}'), 401, 'E0002');
 settingsCheck(settingsRequest('GET', $path, '', 'bad-token'), 401, 'E0002');
 
 // 先檢查 GET Body，再檢查未知／重複 Query；PUT 只接受完整且型態精確的 JSON object。
 settingsCheck(settingsRequest('GET', $path, '{}', $admin), 422, 'E0001', '_body', '此 API 不接受 Request Body');
-settingsCheck(settingsRequest('GET', $path.'?x=1', '', $admin), 422, 'E0001', 'x', '不支援此欄位');
-settingsCheck(settingsRequest('PUT', $path.'?x=1&x=2', '{}', $admin), 422, 'E0001', 'x', '此參數不可重複');
+settingsCheck(settingsRequest('GET', $path . '?x=1', '', $admin), 422, 'E0001', 'x', '不支援此欄位');
+settingsCheck(settingsRequest('PUT', $path . '?x=1&x=2', '{}', $admin), 422, 'E0001', 'x', '此參數不可重複');
 settingsCheck(settingsRequest('PUT', $path, '', $admin), 422, 'E0001', '_body', 'Request Body 必須為 JSON object');
 settingsCheck(settingsRequest('PUT', $path, '[]', $admin), 422, 'E0001', '_body', 'Request Body 必須為 JSON object');
 settingsCheck(settingsRequest('PUT', $path, '{', $admin), 400, 'E0005');
-foreach (['enabled' => false, 'window_minutes' => 1, 'failure_threshold' => 1, 'lock_seconds' => 1] as $name => $value) {
+foreach (
+    [
+    'enabled' => false,
+    'window_minutes' => 1,
+    'failure_threshold' => 1,
+    'lock_seconds' => 1
+    ] as $name => $value
+) {
     $missing = $defaults;
     unset($missing[$name]);
     settingsCheck(settingsRequest('PUT', $path, json_encode($missing), $admin), 422, 'E0001', $name, '此欄位為必填');
-    settingsCheck(settingsRequest('PUT', $path, json_encode(array_replace($defaults, [$name => null])), $admin), 422, 'E0001', $name, '此欄位不可為 null');
-    settingsCheck(settingsRequest('PUT', $path, json_encode(array_replace($defaults, [$name => is_bool($value) ? 1 : (string) $value])), $admin), 422, 'E0001', $name, '欄位型態不正確');
+    settingsCheck(
+        settingsRequest('PUT', $path, json_encode(array_replace($defaults, [$name => null])), $admin),
+        422,
+        'E0001',
+        $name,
+        '此欄位不可為 null'
+    );
+    settingsCheck(
+        settingsRequest(
+            'PUT',
+            $path,
+            json_encode(array_replace($defaults, [$name => is_bool($value) ? 1 : (string) $value])),
+            $admin
+        ),
+        422,
+        'E0001',
+        $name,
+        '欄位型態不正確'
+    );
 }
-foreach (['window_minutes' => [0, 61], 'failure_threshold' => [0, 101], 'lock_seconds' => [0, 86401]] as $name => $invalid) {
+foreach (
+    [
+    'window_minutes' => [0, 61],
+    'failure_threshold' => [0, 101],
+    'lock_seconds' => [0, 86401]
+    ] as $name => $invalid
+) {
     foreach ($invalid as $value) {
-        settingsCheck(settingsRequest('PUT', $path, json_encode(array_replace($defaults, [$name => $value])), $admin), 422, 'E0001', $name, '欄位格式或範圍不正確');
+        settingsCheck(
+            settingsRequest('PUT', $path, json_encode(array_replace($defaults, [$name => $value])), $admin),
+            422,
+            'E0001',
+            $name,
+            '欄位格式或範圍不正確'
+        );
     }
 }
-settingsCheck(settingsRequest('PUT', $path, json_encode(array_replace($defaults, ['extra' => 1])), $admin), 422, 'E0001', 'extra', '不支援此欄位');
+settingsCheck(
+    settingsRequest('PUT', $path, json_encode(array_replace($defaults, ['extra' => 1])), $admin),
+    422,
+    'E0001',
+    'extra',
+    '不支援此欄位'
+);
 assert(settingsRequest('GET', $path, '', $admin)[1]['data'] === $defaults);
 echo "PASS settings read, role gate and exact validation\n";
 
@@ -151,8 +241,16 @@ assert(settingsRequest('GET', $path, '', $admin)[1]['data'] === $upper);
 // 數值調整不能延長既有鎖定；視窗變大時，舊世代事件會重新進入計數。
 $short = ['enabled' => true, 'window_minutes' => 1, 'failure_threshold' => 3, 'lock_seconds' => 120];
 settingsPut($short, $admin);
-settingsSql("INSERT INTO login_failures(account_id,failure_epoch,occurred_at) SELECT id,failure_epoch,clock_timestamp()-interval '2 minutes' FROM accounts WHERE id=$memberId");
-settingsSql("INSERT INTO login_failures(account_id,failure_epoch,occurred_at) SELECT id,failure_epoch,clock_timestamp()-interval '30 seconds' FROM accounts WHERE id=$memberId");
+settingsSql(
+    ("INSERT INTO login_failures(account_id,failure_epoch,occurred_at)" .
+        " SELECT id,failure_epoch,clock_timestamp()-interval '2 minutes' " .
+        "FROM accounts WHERE id=$memberId")
+);
+settingsSql(
+    ("INSERT INTO login_failures(account_id,failure_epoch,occurred_at)" .
+        " SELECT id,failure_epoch,clock_timestamp()-interval '30 " .
+        "seconds' FROM accounts WHERE id=$memberId")
+);
 $expanded = array_replace($short, ['window_minutes' => 5]);
 settingsPut($expanded, $admin);
 $wrong = json_encode(['email' => $memberEmail, 'password' => 'Wrong123'], JSON_THROW_ON_ERROR);
@@ -169,7 +267,13 @@ $failures = settingsSql("SELECT count(*) FROM login_failures WHERE account_id=$m
 $epoch = settingsSql("SELECT failure_epoch FROM accounts WHERE id=$memberId");
 $off = array_replace($numeric, ['enabled' => false]);
 // 清帳號若失敗，四欄設定與原鎖定必須一同回滾，不能出現半套關閉。
-settingsSql('CREATE FUNCTION settings_test_fail_clear() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION \'isolated clear failure\'; END; $$; CREATE TRIGGER settings_test_fail_clear BEFORE UPDATE ON accounts FOR EACH ROW WHEN (NEW.role = \'member\') EXECUTE FUNCTION settings_test_fail_clear();');
+settingsSql(
+    ('CREATE FUNCTION settings_test_fail_clear() RETURNS trigger ' .
+        'LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION \'isolated clear ' .
+        'failure\'; END; $$; CREATE TRIGGER settings_test_fail_clear ' .
+        'BEFORE UPDATE ON accounts FOR EACH ROW WHEN (NEW.role = ' .
+        '\'member\') EXECUTE FUNCTION settings_test_fail_clear();')
+);
 try {
     settingsCheck(settingsRequest('PUT', $path, json_encode($off), $admin), 500, 'E9999');
     assert(settingsRequest('GET', $path, '', $admin)[1]['data'] === $numeric);
@@ -211,8 +315,21 @@ $b = ['enabled' => true, 'window_minutes' => 9, 'failure_threshold' => 13, 'lock
 $multi = curl_multi_init();
 $handles = [];
 foreach ([$a, $b] as $values) {
-    $curl = curl_init($base.$path);
-    curl_setopt_array($curl, [CURLOPT_CUSTOMREQUEST => 'PUT', CURLOPT_POSTFIELDS => json_encode($values), CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'Authorization: Bearer '.$admin], CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20]);
+    $curl = curl_init($base . $path);
+    curl_setopt_array(
+        $curl,
+        [
+            CURLOPT_CUSTOMREQUEST => 'PUT',
+            CURLOPT_POSTFIELDS => json_encode($values),
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $admin
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 20
+        ]
+    );
     curl_multi_add_handle($multi, $curl);
     $handles[] = $curl;
 }

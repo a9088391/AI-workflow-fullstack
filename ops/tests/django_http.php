@@ -2,6 +2,13 @@
 
 declare(strict_types=1);
 
+// 本檔為獨立執行的 HTTP 驗收入口，輔助函式與案例保留同檔以便直接執行。
+// phpcs:disable PSR1.Files.SideEffects
+
+require_once __DIR__ . '/http_fixture.php';
+// 所有 fixture 操作之前先確認斷言有效，不能在測試檢查被關閉時仍送出寫入。
+assertHttpFixtureAssertions();
+
 // Ticket 16 僅用專用隔離設定；Ticket 18 須先通過其容器守衛才重用本測試，避免污染展示資料。
 if (
     ! ($GLOBALS['t18VerifiedTarget'] ?? false) && (
@@ -13,10 +20,16 @@ if (
 }
 $django = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19384' : 'http://localhost:18084';
 $laravel = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19381' : 'http://localhost:18081';
+assertHttpFixture(['django' => $django, 'laravel' => $laravel]);
 
 /** 保留真實 HTTP status、Body、Headers，讓同一案例可比較不同後端契約。 */
-function t16Request(string $base, string $method, string $path, array|string|null $body = null, ?string $token = null): array
-{
+function t16Request(
+    string $base,
+    string $method,
+    string $path,
+    array|string|null $body = null,
+    ?string $token = null
+): array {
     $headers = ['Accept: application/json', 'Origin: http://localhost:8080'];
     if ($body !== null) {
         $headers[] = 'Content-Type: application/json';
@@ -34,14 +47,20 @@ function t16Request(string $base, string $method, string $path, array|string|nul
     }
     $length = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
 
-    return [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR), substr($raw, 0, $length)];
+    return [
+        curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+        json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR),
+        substr($raw, 0, $length)
+    ];
 }
 
 /** 逐字檢查安全錯誤 envelope 與 log_id，不把憑證或密碼輸出至測試記錄。 */
 function t16Check(array $result, int $status, ?string $code = null, ?array $errors = null): void
 {
     if ($result[0] !== $status || $result[1]['success'] !== ($code === null)) {
-        throw new RuntimeException('HTTP 狀態或 success 不符：' . json_encode([$result[0], $result[1]['error_code'] ?? null]));
+        throw new RuntimeException(
+            'HTTP 狀態或 success 不符：' . json_encode([$result[0], $result[1]['error_code'] ?? null])
+        );
     }
     if ($code === null) {
         assert($result[1]['message'] === 'OK');
@@ -64,7 +83,21 @@ function t16Check(array $result, int $status, ?string $code = null, ?array $erro
 function t16Sql(string $sql): string
 {
     $process = proc_open(
-        ['docker', 'compose', 'exec', '-T', 'db', 'psql', '-U', 'articles_owner', '-d', 'articles', '-v', 'ON_ERROR_STOP=1', '-At'],
+        [
+            'docker',
+            'compose',
+            'exec',
+            '-T',
+            'db',
+            'psql',
+            '-U',
+            'articles_owner',
+            '-d',
+            'articles',
+            '-v',
+            'ON_ERROR_STOP=1',
+            '-At'
+        ],
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes
     );
@@ -127,7 +160,8 @@ function t16ParallelBadLogins(array $bases, string $email): array
     $handles = [];
     foreach ($bases as $base) {
         $curl = curl_init($base . '/api/auth/login');
-        curl_setopt_array($curl, [CURLOPT_POST => true, CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json'],
+        curl_setopt_array($curl, [CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json'],
             CURLOPT_POSTFIELDS => json_encode(['email' => $email, 'password' => 'Wrong123'], JSON_THROW_ON_ERROR),
             CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 30]);
         curl_multi_add_handle($multi, $curl);
@@ -149,7 +183,11 @@ function t16ParallelBadLogins(array $bases, string $email): array
             throw new RuntimeException('並行登入 HTTP 失敗：' . curl_error($curl));
         }
         $length = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
-        $responses[] = [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR), substr($raw, 0, $length)];
+        $responses[] = [
+            curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+            json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR),
+            substr($raw, 0, $length)
+        ];
         curl_multi_remove_handle($multi, $curl);
         curl_close($curl);
     }
@@ -166,7 +204,10 @@ function t16ParallelRegisters(array $bases, string $email): array
         $curl = curl_init($base . '/api/auth/register');
         curl_setopt_array($curl, [CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json'],
-            CURLOPT_POSTFIELDS => json_encode(['email' => $email, 'password' => 'Abc1234', 'nickname' => '並行註冊'], JSON_THROW_ON_ERROR),
+            CURLOPT_POSTFIELDS => json_encode(
+                ['email' => $email, 'password' => 'Abc1234', 'nickname' => '並行註冊'],
+                JSON_THROW_ON_ERROR
+            ),
             CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 30]);
         curl_multi_add_handle($multi, $curl);
         $handles[] = $curl;
@@ -187,7 +228,11 @@ function t16ParallelRegisters(array $bases, string $email): array
             throw new RuntimeException('並行註冊 HTTP 失敗：' . curl_error($curl));
         }
         $length = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
-        $responses[] = [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR), substr($raw, 0, $length)];
+        $responses[] = [
+            curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+            json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR),
+            substr($raw, 0, $length)
+        ];
         curl_multi_remove_handle($multi, $curl);
         curl_close($curl);
     }
@@ -222,7 +267,11 @@ function t16Health(string $base): int
 }
 
 // 先固定隔離專案的設定，再用唯一名稱建立可重跑的帳號與文章。
-t16Sql('UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE id=1;');
+t16Sql(
+    ('UPDATE login_lockout_settings SET enabled=true, ' .
+        'window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE ' .
+        'id=1;')
+);
 $suffix = bin2hex(random_bytes(5));
 $author = 'django-' . $suffix . '@example.test';
 $other = 'laravel-' . $suffix . '@example.test';
@@ -237,19 +286,89 @@ $longPage = t16Request($django, 'GET', '/api/articles?page=' . $zeroPrefix . '1&
 t16Check($longPage, 200);
 assert($longPage[1]['data']['pagination']['page'] === 1);
 foreach ([$author, $admin, $locked, $parallel] as $email) {
-    t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $email, 'password' => 'Abc1234', 'nickname' => 'Django 作者']), 201);
+    t16Check(
+        t16Request(
+            $django,
+            'POST',
+            '/api/auth/register',
+            ['email' => $email, 'password' => 'Abc1234', 'nickname' => 'Django 作者']
+        ),
+        201
+    );
 }
-t16Check(t16Request($laravel, 'POST', '/api/auth/register', ['email' => $other, 'password' => 'Abc1234', 'nickname' => 'Laravel 作者']), 201);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => strtoupper($author), 'password' => 'Abc1234', 'nickname' => '重複']), 422, 'E0001', ['email' => ['此 Email 已註冊']]);
+t16Check(
+    t16Request(
+        $laravel,
+        'POST',
+        '/api/auth/register',
+        ['email' => $other, 'password' => 'Abc1234', 'nickname' => 'Laravel 作者']
+    ),
+    201
+);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => strtoupper($author), 'password' => 'Abc1234', 'nickname' => '重複']
+    ),
+    422,
+    'E0001',
+    ['email' => ['此 Email 已註冊']]
+);
 // 驗證 4／16 字元邊界、U+0000 及兩個不同後端的同 Email 並行。
 $short = 'short-' . $suffix . '@example.test';
 $long = 'long-' . $suffix . '@example.test';
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $short, 'password' => 'Abc1', 'nickname' => '短密碼']), 201);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $long, 'password' => 'Abcdefgh12345678', 'nickname' => '長密碼']), 201);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $short, 'password' => 'Abc1', 'nickname' => '短密碼']
+    ),
+    201
+);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $long, 'password' => 'Abcdefgh12345678', 'nickname' => '長密碼']
+    ),
+    201
+);
 t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $short, 'password' => 'Abc1']), 200);
 t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $long, 'password' => 'Abcdefgh12345678']), 200);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => 'nul-' . $suffix . '@example.test', 'password' => 'Abc1234', 'nickname' => "壞\0名"]), 422, 'E0001', ['nickname' => ['欄位格式或範圍不正確']]);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => 'invalid-' . $suffix . '@example.test', 'password' => 'Abcdefgh123456789', 'nickname' => '長密碼']), 422, 'E0001', ['password' => ['欄位格式或範圍不正確']]);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        [
+            'email' => 'nul-' . $suffix . '@example.test',
+            'password' => 'Abc1234',
+            'nickname' => "壞\0名"
+        ]
+    ),
+    422,
+    'E0001',
+    ['nickname' => ['欄位格式或範圍不正確']]
+);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        [
+            'email' => 'invalid-' . $suffix . '@example.test',
+            'password' => 'Abcdefgh123456789',
+            'nickname' => '長密碼'
+        ]
+    ),
+    422,
+    'E0001',
+    ['password' => ['欄位格式或範圍不正確']]
+);
 $race = 'race-' . $suffix . '@example.test';
 $raceResults = t16ParallelRegisters([$django, $laravel], $race);
 $raceStatuses = array_column($raceResults, 0);
@@ -257,21 +376,82 @@ sort($raceStatuses);
 assert($raceStatuses === [201, 422]);
 assert(t16Sql("SELECT count(*) FROM accounts WHERE email='$race';") === '1');
 foreach ($raceResults as $result) {
-    t16Check($result, $result[0], $result[0] === 422 ? 'E0001' : null, $result[0] === 422 ? ['email' => ['此 Email 已註冊']] : null);
+    t16Check(
+        $result,
+        $result[0],
+        $result[0] === 422 ? 'E0001' : null,
+        $result[0] === 422 ? ['email' => ['此 Email 已註冊']] : null
+    );
 }
 // 非 ASCII Kelvin sign 不得摺為 k；同形 Email 的登入格式錯誤也不能增加既有帳號失敗次數。
 $asciiTarget = 'kprobe' . $suffix . '@example.test';
 $kelvinEmail = "\u{212A}probe" . $suffix . '@example.test';
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $kelvinEmail, 'password' => 'Abc1234', 'nickname' => '不應建立']), 422, 'E0001', ['email' => ['欄位格式或範圍不正確']]);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $kelvinEmail, 'password' => 'Abc1234', 'nickname' => '不應建立']
+    ),
+    422,
+    'E0001',
+    ['email' => ['欄位格式或範圍不正確']]
+);
 assert(t16AccountId($asciiTarget) === 0);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $asciiTarget, 'password' => 'Abc1234', 'nickname' => 'ASCII 目標']), 201);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $asciiTarget, 'password' => 'Abc1234', 'nickname' => 'ASCII 目標']
+    ),
+    201
+);
 $asciiTargetId = t16AccountId($asciiTarget);
-t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $kelvinEmail, 'password' => 'Wrong123']), 422, 'E0001', ['email' => ['欄位格式或範圍不正確']]);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/login',
+        ['email' => $kelvinEmail, 'password' => 'Wrong123']
+    ),
+    422,
+    'E0001',
+    ['email' => ['欄位格式或範圍不正確']]
+);
 assert((int) t16Sql("SELECT count(*) FROM login_failures WHERE account_id=$asciiTargetId;") === 0);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => 'x@example.test', 'password' => '123', 'nickname' => '合法']), 422, 'E0001', ['password' => ['欄位格式或範圍不正確']]);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => 'x@example.test', 'password' => '123', 'nickname' => '合法']
+    ),
+    422,
+    'E0001',
+    ['password' => ['欄位格式或範圍不正確']]
+);
 t16Check(t16Request($django, 'POST', '/api/auth/register', '{'), 400, 'E0005');
-t16Check(t16Request($django, 'POST', '/api/auth/register', '{"email":NaN,"password":"Abc1234","nickname":"壞"}'), 400, 'E0005');
-t16Check(t16Request($django, 'POST', '/api/auth/register', '{"email":"x@example.test","password":"Abc1234","nickname":"\\ud800"}'), 400, 'E0005');
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        '{"email":NaN,"password":"Abc1234","nickname":"壞"}'
+    ),
+    400,
+    'E0005'
+);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        '{"email":"x@example.test","password":"Abc1234","nickname":"\\ud800"}'
+    ),
+    400,
+    'E0005'
+);
 // PHP json_decode 只接受 UTF-8；UTF-16／32 即使可解成欄位也須以解析錯誤拒絕且不得建立帳號。
 foreach (['UTF-16LE' => "\xff\xfe", 'UTF-32LE' => "\xff\xfe\x00\x00"] as $encoding => $bom) {
     $encodedEmail = strtolower($encoding) . '-' . $suffix . '@example.test';
@@ -314,17 +494,43 @@ $duplicateShallowBody = '{"email":"' . $duplicateShallowEmail
     . '","password":"Abc1234","nickname":null,"nickname":"Reader"}';
 t16Check(t16Request($django, 'POST', '/api/auth/register', $duplicateShallowBody), 201);
 assert(t16AccountId($duplicateShallowEmail) > 0);
-t16Check(t16Request($django, 'POST', '/api/auth/register', '[]'), 422, 'E0001', ['_body' => ['Request Body 必須為 JSON object']]);
+t16Check(
+    t16Request($django, 'POST', '/api/auth/register', '[]'),
+    422,
+    'E0001',
+    ['_body' => ['Request Body 必須為 JSON object']]
+);
 t16Check(t16Request($django, 'POST', '/api/auth/login'), 422, 'E0001', ['_body' => ['Request Body 必須為 JSON object']]);
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => null, 'password' => 'Abc1234', 'nickname' => '合法']), 422, 'E0001', ['email' => ['此欄位不可為 null']]);
-t16Check(t16Request($django, 'POST', '/api/auth/register?foo=1', ['email' => 'x@example.test', 'password' => 'Abc1234', 'nickname' => '合法']), 422, 'E0001', ['foo' => ['不支援此欄位']]);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => null, 'password' => 'Abc1234', 'nickname' => '合法']
+    ),
+    422,
+    'E0001',
+    ['email' => ['此欄位不可為 null']]
+);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register?foo=1',
+        ['email' => 'x@example.test', 'password' => 'Abc1234', 'nickname' => '合法']
+    ),
+    422,
+    'E0001',
+    ['foo' => ['不支援此欄位']]
+);
 $invalidQuery = t16Request($django, 'POST', '/api/auth/register?%FF=1', '{}');
 t16Check($invalidQuery, 422, 'E0001', ['%FF' => ['不支援此欄位']]);
 
 // 預檢只允許已核准的同源前端、方法與標頭。
 $preflight = curl_init($django . '/api/auth/login');
 curl_setopt_array($preflight, [CURLOPT_CUSTOMREQUEST => 'OPTIONS', CURLOPT_HTTPHEADER => [
-    'Origin: http://localhost:8080', 'Access-Control-Request-Method: POST', 'Access-Control-Request-Headers: authorization,content-type'],
+    'Origin: http://localhost:8080', 'Access-Control-Request-Method: POST',
+        'Access-Control-Request-Headers: authorization,content-type'],
     CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 20]);
 $preflightResponse = curl_exec($preflight);
 assert($preflightResponse !== false && curl_getinfo($preflight, CURLINFO_RESPONSE_CODE) === 204);
@@ -362,33 +568,109 @@ foreach (['issued_at', 'expires_at'] as $timeColumn) {
 }
 t16Check(t16Request($django, 'GET', '/api/me', null, $authorToken), 200);
 $expiredIssued = time() - 30000;
-t16Check(t16Request($django, 'GET', '/api/me', null, t16TokenWithClaims($authorToken, ['iat' => $expiredIssued, 'nbf' => $expiredIssued, 'exp' => $expiredIssued + 28800])), 401, 'E0002');
-t16Check(t16Request($django, 'GET', '/api/me', null, t16TokenWithClaims($authorToken, ['sub' => (int) $claims['sub']])), 401, 'E0002');
+t16Check(
+    t16Request(
+        $django,
+        'GET',
+        '/api/me',
+        null,
+        t16TokenWithClaims(
+            $authorToken,
+            [
+                'iat' => $expiredIssued,
+                'nbf' => $expiredIssued,
+                'exp' => $expiredIssued + 28800
+            ]
+        )
+    ),
+    401,
+    'E0002'
+);
+t16Check(
+    t16Request(
+        $django,
+        'GET',
+        '/api/me',
+        null,
+        t16TokenWithClaims($authorToken, ['sub' => (int) $claims['sub']])
+    ),
+    401,
+    'E0002'
+);
 t16Check(t16Request($django, 'GET', '/api/me', null, 'x' . substr($authorToken, 1)), 401, 'E0002');
 t16Check(t16Request($django, 'GET', '/api/articles?page=1&per_page=20', null, $authorLaravelToken), 401, 'E0002');
 t16Check(t16Request($django, 'GET', '/api/articles?page=bad&per_page=20', null, 'invalid'), 401, 'E0002');
-t16Check(t16Request($django, 'GET', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management', null, $authorToken), 403, 'E0003');
-t16Check(t16Request($django, 'GET', '/api/articles?page=bad&per_page=20&filters%5Bscope%5D=management', null, $authorToken), 403, 'E0003');
+t16Check(
+    t16Request(
+        $django,
+        'GET',
+        '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management',
+        null,
+        $authorToken
+    ),
+    403,
+    'E0003'
+);
+t16Check(
+    t16Request(
+        $django,
+        'GET',
+        '/api/articles?page=bad&per_page=20&filters%5Bscope%5D=management',
+        null,
+        $authorToken
+    ),
+    403,
+    'E0003'
+);
 t16Check(t16Request($django, 'GET', '/api/me?foo=1'), 401, 'E0002');
 t16Check(t16Request($django, 'GET', '/api/articles?page=1&page=2&per_page=20'), 422, 'E0001', ['page' => ['此參數不可重複']]);
 t16Check(t16Request($django, 'GET', '/api/articles?page%5B%5D=1&per_page=20'), 422, 'E0001', ['page' => ['欄位型態不正確']]);
 t16Check(t16Request($django, 'GET', '/api/articles?page=0&per_page=20'), 422, 'E0001', ['page' => ['欄位格式或範圍不正確']]);
 t16Check(t16Request($django, 'GET', '/api/articles?page=1&per_page=101'), 422, 'E0001', ['per_page' => ['欄位格式或範圍不正確']]);
-t16Check(t16Request($django, 'GET', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=bogus'), 422, 'E0001', ['filters.scope' => ['欄位格式或範圍不正確']]);
-t16Check(t16Request($django, 'GET', '/api/articles?page=1&per_page=20&foo=management'), 422, 'E0001', ['foo' => ['不支援此欄位']]);
+t16Check(
+    t16Request($django, 'GET', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=bogus'),
+    422,
+    'E0001',
+    ['filters.scope' => ['欄位格式或範圍不正確']]
+);
+t16Check(
+    t16Request($django, 'GET', '/api/articles?page=1&per_page=20&foo=management'),
+    422,
+    'E0001',
+    ['foo' => ['不支援此欄位']]
+);
 t16Check(t16Request($django, 'GET', '/api/articles/nope'), 422, 'E0001', ['article_id' => ['欄位格式或範圍不正確']]);
 t16Check(t16Request($django, 'GET', '/api/articles/+1'), 422, 'E0001', ['article_id' => ['欄位格式或範圍不正確']]);
 t16Check(t16Request($django, 'DELETE', '/api/articles/1'), 405, 'E0005');
 t16Check(t16Request($django, 'GET', '/api/not-a-route'), 404, 'E0004');
 t16Check(t16Request($django, 'POST', '/api/not-a-route', '{}'), 404, 'E0004');
-t16Check(t16Request($django, 'GET', '/api/articles?page=1&per_page=20', '{}'), 422, 'E0001', ['_body' => ['此 API 不接受 Request Body']]);
+t16Check(
+    t16Request($django, 'GET', '/api/articles?page=1&per_page=20', '{}'),
+    422,
+    'E0001',
+    ['_body' => ['此 API 不接受 Request Body']]
+);
 
 // 格式錯誤不計數；第五次合法格式錯密碼當次即鎖定且前端可讀 Retry-After。
 $lockedId = t16AccountId($locked);
-t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $locked, 'password' => 'abc']), 422, 'E0001', ['password' => ['欄位格式或範圍不正確']]);
+t16Check(
+    t16Request($django, 'POST', '/api/auth/login', ['email' => $locked, 'password' => 'abc']),
+    422,
+    'E0001',
+    ['password' => ['欄位格式或範圍不正確']]
+);
 assert((int) t16Sql("SELECT count(*) FROM login_failures WHERE account_id=$lockedId;") === 0);
 for ($i = 1; $i <= 4; $i++) {
-    t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $locked, 'password' => 'Wrong123']), 401, 'E0101');
+    t16Check(
+        t16Request(
+            $django,
+            'POST',
+            '/api/auth/login',
+            ['email' => $locked, 'password' => 'Wrong123']
+        ),
+        401,
+        'E0101'
+    );
 }
 $fifth = t16Request($django, 'POST', '/api/auth/login', ['email' => $locked, 'password' => 'Wrong123']);
 t16Check($fifth, 429, 'E0105');
@@ -407,7 +689,15 @@ t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $locked, 'pa
 assert(t16Sql("SELECT (locked_until IS NULL)::int FROM accounts WHERE id=$lockedId;") === '1');
 t16Sql('UPDATE login_lockout_settings SET enabled=true WHERE id=1;');
 $corrupt = 'corrupt-' . $suffix . '@example.test';
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $corrupt, 'password' => 'Abc1234', 'nickname' => '損壞雜湊']), 201);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $corrupt, 'password' => 'Abc1234', 'nickname' => '損壞雜湊']
+    ),
+    201
+);
 $corruptId = t16AccountId($corrupt);
 t16Sql("UPDATE accounts SET password_hash='broken' WHERE id=$corruptId;");
 $corruptResponse = t16Request($django, 'POST', '/api/auth/login', ['email' => $corrupt, 'password' => 'Abc1234']);
@@ -419,7 +709,15 @@ assert(! str_contains($corruptLine[0], 'broken') && ! str_contains($corruptLine[
 assert(t16Sql("SELECT count(*) FROM login_failures WHERE account_id=$corruptId;") === '0');
 // 設定視窗改短時重算既有事件；到期鎖與成功登入皆換世代。
 $window = 'window-' . $suffix . '@example.test';
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $window, 'password' => 'Abc1234', 'nickname' => '視窗測試']), 201);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $window, 'password' => 'Abc1234', 'nickname' => '視窗測試']
+    ),
+    201
+);
 $windowId = t16AccountId($window);
 t16Check(t16Request($django, 'POST', '/api/auth/login', ['email' => $window, 'password' => 'Wrong123']), 401, 'E0101');
 t16Sql("UPDATE login_failures SET occurred_at=clock_timestamp()-interval '2 minutes' WHERE account_id=$windowId;");
@@ -458,7 +756,16 @@ $adminId = t16AccountId($admin);
 t16Sql("UPDATE accounts SET role='admin' WHERE id=$adminId;");
 $adminToken = t16Login($django, $admin);
 $adminLaravelToken = t16Login($laravel, $admin);
-t16Check(t16Request($laravel, 'PUT', "/api/members/$authorId/status", ['status' => 'disabled'], $adminLaravelToken), 200);
+t16Check(
+    t16Request(
+        $laravel,
+        'PUT',
+        "/api/members/$authorId/status",
+        ['status' => 'disabled'],
+        $adminLaravelToken
+    ),
+    200
+);
 t16Check(t16Request($django, 'GET', '/api/me', null, $secondToken), 403, 'E0102');
 t16Check(t16Request($laravel, 'PUT', "/api/members/$authorId/status", ['status' => 'active'], $adminLaravelToken), 200);
 t16Check(t16Request($django, 'GET', '/api/me', null, $secondToken), 401, 'E0002');
@@ -469,7 +776,16 @@ t16Check(t16Request($django, 'GET', '/api/me', null, $restoredToken), 200);
 // Laravel 真實 HTTP 建立內容；已建內容透過 Django 實際讀取相同共用資料。
 $articleIds = [];
 for ($i = 1; $i <= 3; $i++) {
-    t16Check(t16Request($laravel, 'POST', '/api/articles', ['title' => "Ticket16 $suffix $i", 'body' => "內容 $i"], $authorLaravelToken), 201);
+    t16Check(
+        t16Request(
+            $laravel,
+            'POST',
+            '/api/articles',
+            ['title' => "Ticket16 $suffix $i", 'body' => "內容 $i"],
+            $authorLaravelToken
+        ),
+        201
+    );
     $articleIds[] = (int) t16Sql("SELECT id FROM articles WHERE title='Ticket16 $suffix $i' AND author_id=$authorId;");
 }
 [$a1, $a2, $a3] = $articleIds;
@@ -494,18 +810,41 @@ for ($i = 1; $i <= 3; $i++) {
 }
 [$c1, $c2, $c3] = $commentIds;
 t16Sql("UPDATE comments SET created_at='2099-01-01 00:00:00+00' WHERE id IN ($c1,$c2,$c3);");
-t16Check(t16Request($laravel, 'PUT', "/api/comments/$c2/visibility", ['visibility' => 'hidden', 'version' => 1], $authorLaravelToken), 200);
+t16Check(
+    t16Request(
+        $laravel,
+        'PUT',
+        "/api/comments/$c2/visibility",
+        ['visibility' => 'hidden', 'version' => 1],
+        $authorLaravelToken
+    ),
+    200
+);
 $comments = t16Request($django, 'GET', "/api/articles/$a3/comments?page=1&per_page=20");
 t16Check($comments, 200);
-assert(array_column($comments[1]['data']['list'], 'id') === [$c3, $c1] && $comments[1]['data']['pagination']['total'] === 2);
+assert(
+    array_column($comments[1]['data']['list'], 'id') === [$c3, $c1] && $comments[1]['data']['pagination']['total'] === 2
+);
 // 留言列表的 per_page 同樣不能把合法的長前導零字串重新交給 Python int。
 $longPerPage = t16Request($django, 'GET', "/api/articles/$a3/comments?page=1&per_page=" . $zeroPrefix . '20');
 t16Check($longPerPage, 200);
 assert($longPerPage[1]['data']['pagination']['per_page'] === 20);
 $adminComments = t16Request($django, 'GET', "/api/articles/$a3/comments?page=1&per_page=20", null, $adminToken);
-assert(array_column($adminComments[1]['data']['list'], 'id') === [$c3, $c2, $c1] && $adminComments[1]['data']['pagination']['total'] === 3);
+assert(
+    array_column($adminComments[1]['data']['list'], 'id') === [$c3, $c2, $c1]
+        && $adminComments[1]['data']['pagination']['total'] === 3
+);
 
-t16Check(t16Request($laravel, 'PUT', "/api/articles/$a3/visibility", ['visibility' => 'hidden', 'version' => 1], $authorLaravelToken), 200);
+t16Check(
+    t16Request(
+        $laravel,
+        'PUT',
+        "/api/articles/$a3/visibility",
+        ['visibility' => 'hidden', 'version' => 1],
+        $authorLaravelToken
+    ),
+    200
+);
 t16Check(t16Request($django, 'GET', "/api/articles/$a3"), 404, 'E0004');
 t16Check(t16Request($django, 'GET', "/api/articles/$a3", null, $otherToken), 404, 'E0004');
 $authorPreview = t16Request($django, 'GET', "/api/articles/$a3", null, $restoredToken);
@@ -514,7 +853,13 @@ assert($authorPreview[1]['data']['can_restore'] === true);
 t16Check(t16Request($django, 'GET', "/api/articles/$a3/comments?page=1&per_page=20"), 404, 'E0004');
 $previewComments = t16Request($django, 'GET', "/api/articles/$a3/comments?page=1&per_page=20", null, $restoredToken);
 assert(array_column($previewComments[1]['data']['list'], 'id') === [$c3, $c1]);
-$management = t16Request($django, 'GET', '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management', null, $adminToken);
+$management = t16Request(
+    $django,
+    'GET',
+    '/api/articles?page=1&per_page=20&filters%5Bscope%5D=management',
+    null,
+    $adminToken
+);
 t16Check($management, 200);
 assert($management[1]['data']['pagination']['total'] === $allBefore + 3);
 assert($management[1]['data']['list'][0]['id'] === $a3);
@@ -528,29 +873,75 @@ $publicAfter = t16Request($django, 'GET', '/api/articles?page=1&per_page=20');
 assert($publicAfter[1]['data']['pagination']['total'] === $visibleBefore + 2);
 
 // 只在隔離資料庫批次建立代表性讀取資料，讓 EXPLAIN 不是空表計畫。
-$articleSeed = t16Sql("INSERT INTO articles (author_id,title,body,visibility,restore_control,version,created_backend,created_at,updated_at)
-    SELECT $authorId, 'Plan $suffix '||n, '效能樣本', CASE WHEN n % 2 = 0 THEN 'visible' ELSE 'hidden' END,
-    CASE WHEN n % 2 = 0 THEN NULL ELSE 'author' END, 1, 'laravel',
-    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 second',
-    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 second'
-    FROM generate_series(1, 600) AS n;");
-$commentSeed = t16Sql("INSERT INTO comments (author_id,article_id,body,visibility,restore_control,version,created_backend,created_at,updated_at)
-    SELECT $authorId, $a3, 'Plan $suffix '||n, 'visible', NULL, 1, 'laravel',
-    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 second',
-    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 second'
-    FROM generate_series(1, 600) AS n;");
+$articleSeed = t16Sql(("INSERT INTO articles (author_id,title,body,visibility,restore_co" .
+    "ntrol,version,created_backend,created_at,updated_at)
+    SELECT $authorId, 'Plan $suffix '||n, '效能樣本', CASE WHEN n % " .
+    "2 = 0 THEN 'visible' ELSE 'hidden' END,
+    CASE WHEN n % 2 = 0 THEN NULL ELSE 'author' END, 1, " .
+    "'laravel',
+    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 " .
+    "second',
+    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 " .
+    "second'
+    FROM generate_series(1, 600) AS n;"));
+$commentSeed = t16Sql(("INSERT INTO comments (author_id,article_id,body,visibility,resto" .
+    "re_control,version,created_backend,created_at,updated_at)
+    SELECT $authorId, $a3, 'Plan $suffix '||n, 'visible', NULL, " .
+    "1, 'laravel',
+    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 " .
+    "second',
+    '2024-01-01 00:00:00+00'::timestamptz + n * interval '1 " .
+    "second'
+    FROM generate_series(1, 600) AS n;"));
 assert($articleSeed === 'INSERT 0 600' && $commentSeed === 'INSERT 0 600');
 t16Sql('ANALYZE articles; ANALYZE comments;');
-assert(t16Request($django, 'GET', '/api/articles?page=1&per_page=20')[1]['data']['pagination']['total'] === $visibleBefore + 302);
-assert(t16Request($django, 'GET', "/api/articles/$a3/comments?page=1&per_page=20", null, $restoredToken)[1]['data']['pagination']['total'] === 602);
+assert(
+    t16Request(
+        $django,
+        'GET',
+        '/api/articles?page=1&per_page=20'
+    )[1]['data']['pagination']['total'] === $visibleBefore + 302
+);
+assert(
+    t16Request(
+        $django,
+        'GET',
+        "/api/articles/$a3/comments?page=1&per_page=20",
+        null,
+        $restoredToken
+    )[1]['data']['pagination']['total'] === 602
+);
 
 // 用控制器實際 SELECT/count 形狀留下完整 DB 計畫，觀察索引、掃描與耗時。
 $plans = [
-    'public articles' => "SELECT articles.id, articles.author_id, articles.title, articles.body, articles.visibility, articles.restore_control, articles.version, articles.created_backend, articles.created_at, articles.updated_at, accounts.nickname FROM articles JOIN accounts ON accounts.id=articles.author_id WHERE articles.visibility='visible' ORDER BY articles.created_at DESC, articles.id DESC LIMIT 20 OFFSET 0",
-    'public article count' => "SELECT count(*) FROM articles JOIN accounts ON accounts.id=articles.author_id WHERE articles.visibility='visible'",
-    'management articles' => 'SELECT articles.id, articles.author_id, articles.title, articles.body, articles.visibility, articles.restore_control, articles.version, articles.created_backend, articles.created_at, articles.updated_at, accounts.nickname FROM articles JOIN accounts ON accounts.id=articles.author_id ORDER BY articles.created_at DESC, articles.id DESC LIMIT 20 OFFSET 0',
-    'article comments' => "SELECT comments.id, comments.author_id, comments.article_id, comments.body, comments.visibility, comments.restore_control, comments.version, comments.created_backend, comments.created_at, comments.updated_at, accounts.nickname FROM comments JOIN accounts ON accounts.id=comments.author_id WHERE comments.article_id=$a3 AND comments.visibility='visible' ORDER BY comments.created_at DESC, comments.id DESC LIMIT 20 OFFSET 0",
-    'article comment count' => "SELECT count(*) FROM comments JOIN accounts ON accounts.id=comments.author_id WHERE comments.article_id=$a3 AND comments.visibility='visible'",
+    'public articles' => ("SELECT articles.id, articles.author_id, articles.title, " .
+        "articles.body, articles.visibility, articles.restore_control, " .
+        "articles.version, articles.created_backend, " .
+        "articles.created_at, articles.updated_at, accounts.nickname " .
+        "FROM articles JOIN accounts ON accounts.id=articles.author_id " .
+        "WHERE articles.visibility='visible' ORDER BY " .
+        "articles.created_at DESC, articles.id DESC LIMIT 20 OFFSET 0"),
+    'public article count' => ("SELECT count(*) FROM articles JOIN accounts ON " .
+        "accounts.id=articles.author_id WHERE " .
+        "articles.visibility='visible'"),
+    'management articles' => ('SELECT articles.id, articles.author_id, articles.title, ' .
+        'articles.body, articles.visibility, articles.restore_control, ' .
+        'articles.version, articles.created_backend, ' .
+        'articles.created_at, articles.updated_at, accounts.nickname ' .
+        'FROM articles JOIN accounts ON accounts.id=articles.author_id ' .
+        'ORDER BY articles.created_at DESC, articles.id DESC LIMIT 20 ' .
+        'OFFSET 0'),
+    'article comments' => ("SELECT comments.id, comments.author_id, comments.article_id, " .
+        "comments.body, comments.visibility, comments.restore_control, " .
+        "comments.version, comments.created_backend, " .
+        "comments.created_at, comments.updated_at, accounts.nickname " .
+        "FROM comments JOIN accounts ON accounts.id=comments.author_id " .
+        "WHERE comments.article_id=$a3 AND comments.visibility='visible' " .
+        "ORDER BY comments.created_at DESC, comments.id DESC LIMIT 20 " .
+        "OFFSET 0"),
+    'article comment count' => ("SELECT count(*) FROM comments JOIN accounts ON " .
+        "accounts.id=comments.author_id WHERE comments.article_id=$a3 " .
+        "AND comments.visibility='visible'"),
 ];
 echo "Ticket 16 Django HTTP/parity checks passed; complete query plans follow:\n";
 foreach ($plans as $label => $query) {
@@ -561,7 +952,15 @@ foreach ($plans as $label => $query) {
 
 // 共享認證資料庫不可用時不得把有效 JWT 偽稱逾期；恢復 DB 後同 token 仍可用。
 $outage = 'outage-' . $suffix . '@example.test';
-t16Check(t16Request($django, 'POST', '/api/auth/register', ['email' => $outage, 'password' => 'Abc1234', 'nickname' => '資料庫恢復']), 201);
+t16Check(
+    t16Request(
+        $django,
+        'POST',
+        '/api/auth/register',
+        ['email' => $outage, 'password' => 'Abc1234', 'nickname' => '資料庫恢復']
+    ),
+    201
+);
 $outageToken = t16Login($django, $outage);
 t16Check(t16Request($django, 'GET', '/api/me', null, $outageToken), 200);
 assert(t16Health($django) === 200);

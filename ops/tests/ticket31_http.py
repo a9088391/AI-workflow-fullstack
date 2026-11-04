@@ -1,5 +1,7 @@
 """Ticket 31：只在隔離 Compose 資料庫驗證 Fiber 的公開與認證契約。"""
 
+from contextlib import contextmanager
+
 import json
 import base64
 import hashlib
@@ -147,6 +149,21 @@ def sign_token(header, payload):
     return (unsigned + b"." + signature).decode()
 
 
+# settings_restore 沿用原 SQL capture／boolean 白名單／finally，不把還原邏輯複寫到 driver。
+@contextmanager
+def settings_restore(*, execute=None):
+    if execute is None:
+        execute = sql
+    original = execute("SELECT enabled||','||window_minutes||','||failure_threshold||','||lock_seconds FROM login_lockout_settings WHERE id=1")
+    try:
+        yield original
+    finally:
+        enabled, window, threshold, seconds = original.split(",")
+        # 串接 SQL 的 boolean 輸出是 true/false；拒絕未知值，才能精確還原原設定。
+        check(enabled in ("true", "false"), "原鎖定設定 boolean 格式不符")
+        execute(f"UPDATE login_lockout_settings SET enabled={enabled},window_minutes={int(window)},failure_threshold={int(threshold)},lock_seconds={int(seconds)} WHERE id=1")
+
+
 # main 用兩個後端及隔離 SQL fixture 驗證輸入、登入、鎖定與內容可見性。
 def main():
     guard()
@@ -241,8 +258,7 @@ def main():
     # 以新帳號測鎖定，避免直接修復故意毀損的跨後端雜湊。
     lock_email, lock_user = register("lock" + nonce)
     lock_id = lock_user["user"]["id"]
-    original = sql("SELECT enabled||','||window_minutes||','||failure_threshold||','||lock_seconds FROM login_lockout_settings WHERE id=1")
-    try:
+    with settings_restore():
         sql("UPDATE login_lockout_settings SET enabled=true,window_minutes=5,failure_threshold=2,lock_seconds=120 WHERE id=1")
         wrong = {"email": lock_email, "password": "wrong123"}
         fiber_barrier = threading.Barrier(2)
@@ -285,10 +301,6 @@ def main():
         expect(call(FIBER, "POST", "/api/auth/login", wrong), 401, "E0101")
         check(sql(f"SELECT count(*) FROM login_failures WHERE account_id={lock_id}") == "4", "停用鎖定仍計數")
         expect(call(FIBER, "POST", "/api/auth/login", {"email": lock_email, "password": "abcd1234"}), 200)
-    finally:
-        enabled, window, threshold, seconds = original.split(",")
-        enabled = "true" if enabled == "t" else "false"
-        sql(f"UPDATE login_lockout_settings SET enabled={enabled},window_minutes={int(window)},failure_threshold={int(threshold)},lock_seconds={int(seconds)} WHERE id=1")
     # 文章與留言由隔離資料庫建立，驗證 Fiber 僅讀取核准欄位與範圍。
     article = sql(f"INSERT INTO articles (author_id,title,body,visibility,created_backend,created_at,updated_at) VALUES ({lock_id},'公開','本文','visible','laravel',clock_timestamp(),clock_timestamp()) RETURNING id").splitlines()[-1]
     hidden = sql(f"INSERT INTO articles (author_id,title,body,visibility,restore_control,created_backend,created_at,updated_at) VALUES ({lock_id},'隱藏','本文','hidden','author','laravel',clock_timestamp(),clock_timestamp()) RETURNING id").splitlines()[-1]

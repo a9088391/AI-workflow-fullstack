@@ -27,11 +27,11 @@ FIBER = "http://localhost:18331"
 LARAVEL = "http://localhost:18332"
 ORIGIN = "http://localhost:18330"
 SOURCES = {
-    "ticket28_http.py": "da9722c0d89122a659ea49780c143ab9aa2a6744fd73bb58204521119469abb8",
+    "ticket28_http.py": "8ce8269327da45a1ae6161d0bcb70736b767bce50c4606edd1ad9e3655a25704",
     "ticket29_http.py": "d0bff8f8357ce9e27081e1bdbee9645de4c3a4349f5b6e8083750e3bd8c03af8",
-    "ticket30_http.py": "a2ec6a2fc79f1db642e63a972e960bd471c337af2957cf22fe02555ea3832d52",
-    "ticket31_http.py": "efc158026555e84eb566e819d6b716cb975bfb199981eab92b240c2bb459dd4b",
-    "ticket32_http.py": "3abf8329863173b5b3532ef781f643867e668ab001f2d433157438824d697806",
+    "ticket30_http.py": "f695b905662ea731946c9ea77b53de690cc267cf767cdf3972ad6ba147613dc9",
+    "ticket31_http.py": "e26f2611d105a8204edf294d6ddaf6bcebf3194707a31fd9c39e932f58c42710",
+    "ticket32_http.py": "5ebfac60ad327e4840146b7f2cb0fc7cddff0a78a77a38c55af4b37e8a47243c",
 }
 
 
@@ -74,6 +74,14 @@ def public_copy_content():
 
 # prepare 只建立本票忽略版控的金鑰與前端副本；重入時保留已產生金鑰。
 def prepare():
+    source = (ROOT / "frontend/vue/src/auth.js").read_text()
+    # isolated_url 把未啟動的其他後端導向無效埠，防止測試頁誤寫展示服務。
+    def isolated_url(match):
+        port = match.group(1)
+        return "http://localhost:" + ("18332" if port == "8081" else "18331" if port == "8089" else "0")
+    changed, count = re.subn(r"http://localhost:(808[1-9]|809[0-2])", isolated_url, source)
+    check(count == 12, "Vue API 基底位址已變")
+    # 先核有限來源才產生 keys；重入也只接受本次來源的精確映射，不接受額外可達位址。
     if not LOCAL.exists() and not FRONTEND.exists():
         LOCAL.mkdir(parents=True)
         (LOCAL / "backups").mkdir()
@@ -101,14 +109,8 @@ def prepare():
               "既有 Ticket 33 fixture 不完整或已變更")
     auth = FRONTEND / "src/auth.js"
     original = auth.read_text()
-    # isolated_url 把未啟動的其他後端導向無效埠，防止測試頁誤寫展示服務。
-    def isolated_url(match):
-        port = match.group(1)
-        return "http://localhost:" + ("18332" if port == "8081" else "18331" if port == "8089" else "0")
-    changed, count = re.subn(r"http://localhost:(808[1-9]|809[0-2])", isolated_url, original)
-    check((count == 9 and "http://localhost:8089" not in changed) or
-          (count == 0 and FIBER in changed and LARAVEL in changed), "Vue API 基底位址已變")
-    if count:
+    check(original in (source, changed), "Vue 隔離副本已變，拒絕覆寫")
+    if original == source:
         auth.write_text(changed)
     source_auth = (ROOT / "frontend/vue/src/auth.js").read_bytes()
     print(f"PREPARED {LOCAL} {FRONTEND} source_auth_sha256={hashlib.sha256(source_auth).hexdigest()}")

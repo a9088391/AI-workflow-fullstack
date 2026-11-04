@@ -1,18 +1,26 @@
 <?php
 
+/** 真實 HTTP 註冊契約測試；只對隔離 Compose project 寫入隨機帳號。 */
+
 declare(strict_types=1);
 
-/** 真實 HTTP 註冊契約測試；只對隔離 Compose project 寫入隨機帳號。 */
+// 本檔為獨立執行的 HTTP 驗收入口，輔助函式與案例保留同檔以便直接執行。
+// phpcs:disable PSR1.Files.SideEffects
+
+require_once __DIR__ . '/http_fixture.php';
+// 所有 fixture 操作之前先確認斷言有效，不能在測試檢查被關閉時仍送出寫入。
+assertHttpFixtureAssertions();
 
 if (! getenv('COMPOSE_PROJECT_NAME') || getenv('COMPOSE_PROJECT_NAME') === 'ai-workflow-fullstack') {
     throw new RuntimeException('請先設定隔離的 COMPOSE_PROJECT_NAME');
 }
 $base = getenv('API_BASE') ?: 'http://localhost:8081';
+assertHttpFixture(['laravel' => $base]);
 
 /** 保留原始 body 測試 JSON 解析與根型態錯誤。 */
 function post(string $base, string $body, string $query = ''): array
 {
-    $curl = curl_init($base.'/api/auth/register'.$query);
+    $curl = curl_init($base . '/api/auth/register' . $query);
     curl_setopt_array($curl, [
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $body,
@@ -22,7 +30,7 @@ function post(string $base, string $body, string $query = ''): array
     ]);
     $raw = curl_exec($curl);
     if ($raw === false) {
-        throw new RuntimeException('HTTP 呼叫失敗：'.curl_error($curl));
+        throw new RuntimeException('HTTP 呼叫失敗：' . curl_error($curl));
     }
     $result = [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode($raw, true, 512, JSON_THROW_ON_ERROR)];
     curl_close($curl);
@@ -35,7 +43,14 @@ function check(array $result, int $status, ?string $code = null, ?string $field 
 {
     [$actual, $body] = $result;
     if ($actual !== $status) {
-        throw new RuntimeException(sprintf('預期 HTTP %d，實際 %d：%s', $status, $actual, json_encode($body, JSON_UNESCAPED_UNICODE)));
+        throw new RuntimeException(
+            sprintf(
+                '預期 HTTP %d，實際 %d：%s',
+                $status,
+                $actual,
+                json_encode($body, JSON_UNESCAPED_UNICODE)
+            )
+        );
     }
     if ($code === null) {
         assert($body === ['success' => true, 'message' => 'OK', 'data' => []]);
@@ -55,7 +70,7 @@ function concurrentPosts(string $base, string $body): array
     $multi = curl_multi_init();
     $handles = [];
     for ($index = 0; $index < 8; $index++) {
-        $curl = curl_init($base.'/api/auth/register');
+        $curl = curl_init($base . '/api/auth/register');
         curl_setopt_array($curl, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $body,
@@ -75,7 +90,10 @@ function concurrentPosts(string $base, string $body): array
 
     $results = [];
     foreach ($handles as $curl) {
-        $results[] = [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode(curl_multi_getcontent($curl), true, 512, JSON_THROW_ON_ERROR)];
+        $results[] = [
+            curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+            json_decode(curl_multi_getcontent($curl), true, 512, JSON_THROW_ON_ERROR)
+        ];
         curl_multi_remove_handle($multi, $curl);
         curl_close($curl);
     }
@@ -111,14 +129,44 @@ $statuses = array_column($results, 0);
 sort($statuses);
 assert($statuses === [201, 422, 422, 422, 422, 422, 422, 422]);
 foreach ($results as $result) {
-    check($result, $result[0], $result[0] === 201 ? null : 'E0001', $result[0] === 201 ? null : 'email', $result[0] === 201 ? null : '此 Email 已註冊');
+    check(
+        $result,
+        $result[0],
+        $result[0] === 201 ? null : 'E0001',
+        $result[0] === 201 ? null : 'email',
+        $result[0] === 201 ? null : '此 Email 已註冊'
+    );
 }
 
 // PostgreSQL text 無法儲存 U+0000；純字元與夾字都必須沿用暱稱格式錯誤。
 foreach (["\u{0000}", "阿\u{0000}明"] as $index => $nickname) {
-    check(post($base, json_encode(array_replace($valid, ['email' => "nul-$index-$suffix@example.test", 'nickname' => $nickname]), JSON_THROW_ON_ERROR)), 422, 'E0001', 'nickname', '欄位格式或範圍不正確');
+    check(
+        post(
+            $base,
+            json_encode(
+                array_replace(
+                    $valid,
+                    ['email' => "nul-$index-$suffix@example.test", 'nickname' => $nickname]
+                ),
+                JSON_THROW_ON_ERROR
+            )
+        ),
+        422,
+        'E0001',
+        'nickname',
+        '欄位格式或範圍不正確'
+    );
 }
 
 // 六個可見字元 \u0000 不是 NUL，合法文字仍應成功註冊。
-check(post($base, json_encode(array_replace($valid, ['email' => "literal-$suffix@example.test", 'nickname' => '\\u0000']), JSON_THROW_ON_ERROR)), 201);
+check(
+    post(
+        $base,
+        json_encode(
+            array_replace($valid, ['email' => "literal-$suffix@example.test", 'nickname' => '\\u0000']),
+            JSON_THROW_ON_ERROR
+        )
+    ),
+    201
+);
 echo "HTTP registration checks passed\n";

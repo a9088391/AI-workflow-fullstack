@@ -1,5 +1,7 @@
 """Ticket 24：隔離資料庫上的 FastAPI 管理 API 與 Laravel 互通驗證。"""
 
+from contextlib import contextmanager
+
 import os
 import secrets
 import sys
@@ -212,6 +214,24 @@ def status_cases(manager, ordinary, article_id):
     ordinary["token"] = login(FASTAPI, ordinary)
 
 
+# settings_restore 保留呼叫者既有 snapshot 時點，僅共用完整四欄的 finally／精確讀回。
+@contextmanager
+def settings_restore(manager, *, execute=None, original=None):
+    if execute is None:
+        # 原 caller 仍用固定 FastAPI；明確 executor 僅供已核對的隔離 probe。
+        def execute(method, values=None):
+            return check(call(FASTAPI, method, "/api/settings/login-lockout", values, manager["token"]), 200)
+    if original is None:
+        original = execute("GET")
+    require(set(original) == {"enabled", "window_minutes", "failure_threshold", "lock_seconds"}, "設定欄位")
+    try:
+        yield original
+    finally:
+        # 不宣稱恢復會員世代／鎖定；原錯與恢復錯保持可追溯。
+        execute("PUT", original)
+        require(execute("GET") == original, "原設定未完整還原")
+
+
 # 設定四欄完整提交；關閉才清鎖與世代，數值變更保留期限。
 def settings_cases(manager, ordinary):
     endpoint = "/api/settings/login-lockout"
@@ -234,58 +254,57 @@ def settings_cases(manager, ordinary):
                            "WHERE id = %s", (ordinary["id"],))
         before = connection.execute("SELECT locked_until, failure_epoch FROM accounts WHERE id = %s",
                                     (ordinary["id"],)).fetchone()
-    changed = original | {"enabled": True, "window_minutes": 6, "failure_threshold": 7, "lock_seconds": 60}
-    check(call(FASTAPI, "PUT", endpoint, changed, manager["token"]), 200)
-    require(check(call(LARAVEL, "GET", endpoint, token=login(LARAVEL, manager)), 200) == changed,
-            "Laravel 未讀到完整設定")
-    with owner_connection() as connection:
-        same = connection.execute("SELECT locked_until, failure_epoch FROM accounts WHERE id = %s",
-                                  (ordinary["id"],)).fetchone()
-    require(same == before, "數值變更改動既有鎖定")
-    check(call(FASTAPI, "PUT", endpoint, changed | {"enabled": False}, manager["token"]), 200)
-    with owner_connection() as connection:
-        cleared = connection.execute("SELECT locked_until, failure_epoch FROM accounts WHERE id = %s",
-                                     (ordinary["id"],)).fetchone()
-    require(cleared["locked_until"] is None and cleared["failure_epoch"] == before["failure_epoch"] + 1,
-            "關閉未原子清鎖換世代")
-    check(call(FASTAPI, "PUT", endpoint, changed | {"enabled": False}, manager["token"]), 200)
-    with owner_connection() as connection:
-        repeated = connection.execute("SELECT failure_epoch FROM accounts WHERE id = %s",
+    with settings_restore(manager, original=original):
+        changed = original | {"enabled": True, "window_minutes": 6, "failure_threshold": 7, "lock_seconds": 60}
+        check(call(FASTAPI, "PUT", endpoint, changed, manager["token"]), 200)
+        require(check(call(LARAVEL, "GET", endpoint, token=login(LARAVEL, manager)), 200) == changed,
+                "Laravel 未讀到完整設定")
+        with owner_connection() as connection:
+            same = connection.execute("SELECT locked_until, failure_epoch FROM accounts WHERE id = %s",
                                       (ordinary["id"],)).fetchone()
-    require(repeated["failure_epoch"] == cleared["failure_epoch"], "同值關閉重做副作用")
-    check(call(FASTAPI, "PUT", endpoint, original, manager["token"]), 200)
+        require(same == before, "數值變更改動既有鎖定")
+        check(call(FASTAPI, "PUT", endpoint, changed | {"enabled": False}, manager["token"]), 200)
+        with owner_connection() as connection:
+            cleared = connection.execute("SELECT locked_until, failure_epoch FROM accounts WHERE id = %s",
+                                         (ordinary["id"],)).fetchone()
+        require(cleared["locked_until"] is None and cleared["failure_epoch"] == before["failure_epoch"] + 1,
+                "關閉未原子清鎖換世代")
+        check(call(FASTAPI, "PUT", endpoint, changed | {"enabled": False}, manager["token"]), 200)
+        with owner_connection() as connection:
+            repeated = connection.execute("SELECT failure_epoch FROM accounts WHERE id = %s",
+                                          (ordinary["id"],)).fetchone()
+        require(repeated["failure_epoch"] == cleared["failure_epoch"], "同值關閉重做副作用")
 
 
 # 兩後端在設定列上受控重疊，最後值須是其中一個請求的完整四欄。
 def settings_race(manager):
     endpoint = "/api/settings/login-lockout"
-    original = check(call(FASTAPI, "GET", endpoint, token=manager["token"]), 200)
-    first = original | {"window_minutes": 8, "failure_threshold": 11, "lock_seconds": 70}
-    second = original | {"window_minutes": 9, "failure_threshold": 12, "lock_seconds": 80}
-    laravel_token = login(LARAVEL, manager)
-    with owner_connection() as connection, ThreadPoolExecutor(max_workers=2) as pool:
-        connection.execute("SELECT id FROM login_lockout_settings WHERE id = 1 FOR UPDATE")
-        pending = [pool.submit(call, FASTAPI, "PUT", endpoint, first, manager["token"]),
-                   pool.submit(call, LARAVEL, "PUT", endpoint, second, laravel_token)]
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            with owner_connection() as observer:
-                waiting = observer.execute(
-                    "SELECT count(*) AS n FROM pg_stat_activity WHERE usename = 'articles_app' "
-                    "AND wait_event_type = 'Lock' AND query ILIKE '%login_lockout_settings%'"
-                ).fetchone()["n"]
-            if waiting >= 2:
-                break
-            time.sleep(0.05)
-        if waiting < 2:
-            connection.rollback()
-            raise AssertionError("Ticket 24 驗證失敗：未觀察到跨後端設定列鎖重疊")
-        connection.commit()
-        for request in pending:
-            check(request.result(), 200)
-    final = check(call(FASTAPI, "GET", endpoint, token=manager["token"]), 200)
-    require(final in (first, second), "跨後端並行設定混用部分欄位")
-    check(call(FASTAPI, "PUT", endpoint, original, manager["token"]), 200)
+    with settings_restore(manager) as original:
+        first = original | {"window_minutes": 8, "failure_threshold": 11, "lock_seconds": 70}
+        second = original | {"window_minutes": 9, "failure_threshold": 12, "lock_seconds": 80}
+        laravel_token = login(LARAVEL, manager)
+        with owner_connection() as connection, ThreadPoolExecutor(max_workers=2) as pool:
+            connection.execute("SELECT id FROM login_lockout_settings WHERE id = 1 FOR UPDATE")
+            pending = [pool.submit(call, FASTAPI, "PUT", endpoint, first, manager["token"]),
+                       pool.submit(call, LARAVEL, "PUT", endpoint, second, laravel_token)]
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                with owner_connection() as observer:
+                    waiting = observer.execute(
+                        "SELECT count(*) AS n FROM pg_stat_activity WHERE usename = 'articles_app' "
+                        "AND wait_event_type = 'Lock' AND query ILIKE '%login_lockout_settings%'"
+                    ).fetchone()["n"]
+                if waiting >= 2:
+                    break
+                time.sleep(0.05)
+            if waiting < 2:
+                connection.rollback()
+                raise AssertionError("Ticket 24 驗證失敗：未觀察到跨後端設定列鎖重疊")
+            connection.commit()
+            for request in pending:
+                check(request.result(), 200)
+        final = check(call(FASTAPI, "GET", endpoint, token=manager["token"]), 200)
+        require(final in (first, second), "跨後端並行設定混用部分欄位")
 
 
 # 管理列表包含父文章與個別下架留言，完整資源與排序不逐筆查詢。
@@ -336,9 +355,21 @@ def main():
           " member=" + ordinary["email"] + " password=" + PASSWORD)
 
 
+# report_failure 延續既有 AssertionError 診斷；finally 失敗後的前序工具例外只列型別。
+def report_failure(error):
+    print(str(error) if isinstance(error, AssertionError) else
+          "Ticket 24 驗證失敗：" + type(error).__name__, file=sys.stderr)
+    # 原錯誤維持在 cause/context；只走訪一次，避免循環或重複診斷。
+    previous, seen = error.__cause__ or error.__context__, {id(error)}
+    while previous is not None and id(previous) not in seen:
+        print("Ticket 24 前序失敗類型：" + type(previous).__name__, file=sys.stderr)
+        seen.add(id(previous))
+        previous = previous.__cause__ or previous.__context__
+
+
 if __name__ == "__main__":
     try:
         main()
-    except AssertionError as error:
-        print(error, file=sys.stderr)
+    except Exception as error:
+        report_failure(error)
         sys.exit(1)

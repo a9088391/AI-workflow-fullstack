@@ -7,12 +7,21 @@ case "$project_name" in
     ticket01_sql_*) ;;
     *) echo 'SQL_TEST_PROJECT 必須使用 ticket01_sql_ 前綴' >&2; exit 1 ;;
 esac
+# 專案識別同時用於檔案路徑；先限縮為 Compose 名稱字元，避免輸入變成其他目錄。
+case "$project_name" in
+    *[!a-z0-9_-]*) echo 'SQL_TEST_PROJECT 只允許小寫英數、底線與連字號' >&2; exit 1 ;;
+esac
+work="$(pwd)/.local/$project_name"
+# 已保留的 SQL、備份與診斷即使沒有資料卷也不能覆寫；新測試須使用全新名稱。
+if [ -e "$work" ] || [ -L "$work" ]; then
+    echo '測試工作目錄已存在；請換全新 SQL_TEST_PROJECT，避免覆寫' >&2
+    exit 1
+fi
 if docker volume inspect "${project_name}_postgres_data" >/dev/null 2>&1; then
     echo '測試專案已有資料；請換全新 SQL_TEST_PROJECT，避免覆寫' >&2
     exit 1
 fi
 export COMPOSE_PROJECT_NAME="$project_name"
-work="$(pwd)/.local/$project_name"
 mkdir -p "$work/sql" "$work/backups" "$work/bin"
 cp database/sql/0001_accounts.sql "$work/sql/0001_accounts.sql"
 cat > "$work/override.yaml" <<EOF
@@ -152,13 +161,14 @@ recorded_checksum="$(compose exec -T db psql -U articles_owner -d articles -Atc 
 actual_checksum="$(shasum -a 256 "$work/sql/0003_consistency.sql" | awk '{print $1}')"
 test "$recorded_checksum" = "$actual_checksum" || { echo '執行 SQL 與已記錄 checksum 不一致' >&2; exit 1; }
 
-# pg_dump 原始 stderr 即使含機密字樣也不可進啟動輸出；失敗必須阻止新版本。
+# pg_dump 大量原始 stderr 不可塞滿 pipe 或流入啟動輸出；失敗必須阻止新版本。
 cat > "$work/sql/0004_backup_probe.sql" <<'EOF'
 CREATE TABLE sql_backup_probe (id integer);
 EOF
 cat > "$work/bin/pg_dump" <<'EOF'
 #!/bin/sh
 echo 'RAW_PGDUMP_SECRET_MARKER' >&2
+head -c 262144 /dev/zero >&2
 exit 42
 EOF
 chmod +x "$work/bin/pg_dump"

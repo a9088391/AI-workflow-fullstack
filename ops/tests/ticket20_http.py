@@ -365,6 +365,7 @@ def parent_hide_race(article_id, comment_id, parent, commenter):
         "SELECT id FROM articles WHERE id = %s FOR UPDATE", (article_id,),
         [(FLASK, "PUT", f"/api/comments/{comment_id}", {"body": "等鎖不可改", "version": before["version"]}, commenter["token"])],
         "FROM articles WHERE id",
+        # callback 父文鎖內先提交下架，讓排隊中的留言修改必須讀到最新父狀態。
         lambda hold: hold.execute(
             "UPDATE articles SET visibility = 'hidden', restore_control = 'author', "
             "version = version + 1, updated_at = clock_timestamp() WHERE id = %s", (article_id,)
@@ -442,6 +443,7 @@ def identity_races(namespace):
         [(FLASK, "PUT", f"/api/articles/{article['id']}",
           {"title": title, "body": "停用不可改", "version": 1}, disabled["token"])],
         "FROM accounts WHERE id",
+        # callback 帳號鎖內同時停用與撤銷 session，確認等待中的寫入不能沿用舊身分。
         lambda hold: (
             hold.execute("UPDATE accounts SET status = 'disabled' WHERE id = %s", (disabled["id"],)),
             hold.execute("UPDATE login_sessions SET revoked_at = clock_timestamp() "
@@ -465,6 +467,7 @@ def identity_races(namespace):
         [(FLASK, "PUT", f"/api/comments/{comment['id']}",
           {"body": "撤銷不可改", "version": 1}, revoked["token"])],
         "FROM accounts WHERE id",
+        # callback 帳號鎖內只撤銷 session，區分登入逾期與停用錯誤。
         lambda hold: hold.execute(
             "UPDATE login_sessions SET revoked_at = clock_timestamp() "
             "WHERE account_id = %s AND revoked_at IS NULL", (revoked["id"],)

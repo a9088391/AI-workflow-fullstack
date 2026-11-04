@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+// 本檔為獨立執行的驗收入口，票別常數與共用案例的載入保留同檔。
+// phpcs:disable PSR1.Files.SideEffects
+
 // 共用 Ticket 10 的管理與交易案例；主腳本先驗隔離 Compose，完成後再補 Ticket 15 邊界。
 if (! defined('T10_TARGET') && ($GLOBALS['t10Target'] ?? null) !== 'ticket18') {
     define('T10_TARGET', 'ticket15');
@@ -82,7 +85,12 @@ echo "PASS UTF-8 keyword and literal percent search\n";
 $statusErrors = [];
 foreach ([[$subject, $admin, $laravel], [$laravel, $laravelToken, $subject]] as [$base, $token, $otherBase]) {
     [$duplicateId, $duplicateToken, $duplicateEmail] = t10Identity($base, '重複鍵會員');
-    $otherLogin = t10Request($otherBase, 'POST', '/api/auth/login', ['email' => $duplicateEmail, 'password' => 'Abc1234']);
+    $otherLogin = t10Request(
+        $otherBase,
+        'POST',
+        '/api/auth/login',
+        ['email' => $duplicateEmail, 'password' => 'Abc1234']
+    );
     t10Check($otherLogin, 200);
     $statusPath = '/api/members/' . $duplicateId . '/status';
     $statusError = t10Request($base, 'PUT', $statusPath, '{"status":"active","status":"retired"}', $token);
@@ -119,16 +127,28 @@ t10Check($settingsResult, 200);
 t10Check($laravelSettingsResult, 200);
 assert($settingsResult[1]['data'] === $settingsA || $settingsResult[1]['data'] === $settingsB);
 assert($settingsResult[1]['data'] === $laravelSettingsResult[1]['data']);
-$storedSettings = t10Sql("SELECT enabled::text || '|' || window_minutes || '|' || failure_threshold || '|' || lock_seconds FROM login_lockout_settings WHERE id=1");
+$storedSettings = t10Sql(
+    ("SELECT enabled::text || '|' || window_minutes || '|' || " .
+        "failure_threshold || '|' || lock_seconds FROM " .
+        "login_lockout_settings WHERE id=1")
+);
 $chosen = $settingsResult[1]['data'];
-assert($storedSettings === ($chosen['enabled'] ? 'true' : 'false') . '|' . $chosen['window_minutes'] . '|' . $chosen['failure_threshold'] . '|' . $chosen['lock_seconds']);
+assert(
+    $storedSettings === ($chosen['enabled'] ? 'true' : 'false') . '|' . $chosen['window_minutes']
+        . '|' . $chosen['failure_threshold'] . '|' . $chosen['lock_seconds']
+);
 assert(t10Sql("SELECT locked_until IS NULL FROM accounts WHERE id=$settingsRaceId") === 't');
 assert((int) t10Sql("SELECT failure_epoch FROM accounts WHERE id=$settingsRaceId") === $settingsEpoch + 1);
 echo "PASS cross-backend complete settings and disable side effect\n";
 
 // 同一會員的 active／disabled 由不同後端競爭；任何完成的停用都撤銷兩種既有 JWT。
 [$statusRaceId, $statusRaceToken, $statusRaceEmail] = t10Identity($subject, '跨後端狀態競爭');
-$statusRaceLogin = t10Request($laravel, 'POST', '/api/auth/login', ['email' => $statusRaceEmail, 'password' => 'Abc1234']);
+$statusRaceLogin = t10Request(
+    $laravel,
+    'POST',
+    '/api/auth/login',
+    ['email' => $statusRaceEmail, 'password' => 'Abc1234']
+);
 t10Check($statusRaceLogin, 200);
 $statusRacePath = '/api/members/' . $statusRaceId . '/status';
 $results = t10ParallelRequests([
@@ -144,10 +164,17 @@ assert(t10Sql("SELECT count(*) FROM login_sessions WHERE account_id=$statusRaceI
 $revokedCode = $finalStatus === 'active' ? 'E0002' : 'E0102';
 $revokedStatus = $finalStatus === 'active' ? 401 : 403;
 t10Check(t10Request($subject, 'GET', '/api/me', null, $statusRaceToken), $revokedStatus, $revokedCode);
-t10Check(t10Request($laravel, 'GET', '/api/me', null, $statusRaceLogin[1]['data']['access_token']), $revokedStatus, $revokedCode);
+t10Check(
+    t10Request($laravel, 'GET', '/api/me', null, $statusRaceLogin[1]['data']['access_token']),
+    $revokedStatus,
+    $revokedCode
+);
 
 // 停用與另一後端新登入相撞時，登入可先成功或看到停用；提交後不得留下可用 session。
-foreach ([[$subject, $admin, $laravel], [$laravel, $laravelToken, $subject]] as [$disableBase, $disableToken, $loginBase]) {
+foreach (
+    [[$subject, $admin, $laravel], [$laravel, $laravelToken, $subject]] as [$disableBase,
+    $disableToken, $loginBase]
+) {
     [$disableId, $oldToken, $disableEmail] = t10Identity($loginBase, '停用登入競爭');
     $disablePath = '/api/members/' . $disableId . '/status';
     [$disableResult, $loginResult] = t10ParallelRequests([
@@ -174,16 +201,25 @@ assert(t10Request($laravel, 'GET', $settingsPath, null, $laravelToken)[1]['data'
 foreach ([0 => [401, 401], 1 => [401, 429]] as $microseconds => $expectedStatuses) {
     [$boundaryRaceId, , $boundaryRaceEmail] = t10Identity($subject, '跨後端視窗邊界');
     $boundaryEpoch = (int) t10Sql("SELECT failure_epoch FROM accounts WHERE id=$boundaryRaceId");
-    $seedId = (int) t10Sql("WITH seed AS (INSERT INTO login_failures(account_id,failure_epoch,occurred_at) VALUES ($boundaryRaceId,$boundaryEpoch,clock_timestamp()-interval '10 minutes') RETURNING id) SELECT id FROM seed");
+    $seedId = (int) t10Sql(
+        ("WITH seed AS (INSERT INTO " .
+            "login_failures(account_id,failure_epoch,occurred_at) VALUES " .
+            "($boundaryRaceId,$boundaryEpoch,clock_timestamp()-interval '10 " .
+            "minutes') RETURNING id) SELECT id FROM seed")
+    );
     // 只移動本案例的種子事件，對齊每次登入自己的 DB 時間；兩筆新失敗仍保持原時間。
-    t10Sql("CREATE FUNCTION t15_boundary() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS \$\$
+    t10Sql(("CREATE FUNCTION t15_boundary() RETURNS trigger LANGUAGE plpgsql " .
+        "SECURITY DEFINER SET search_path=pg_catalog,public AS \$\$
         BEGIN
             IF NEW.account_id=$boundaryRaceId THEN
-                UPDATE public.login_failures SET occurred_at=NEW.occurred_at-interval '5 minutes'+interval '$microseconds microseconds' WHERE id=$seedId;
+                UPDATE public.login_failures SET " .
+        "occurred_at=NEW.occurred_at-interval '5 minutes'+interval " .
+        "'$microseconds microseconds' WHERE id=$seedId;
             END IF;
             RETURN NEW;
         END; \$\$;
-        CREATE TRIGGER t15_boundary BEFORE INSERT ON login_failures FOR EACH ROW EXECUTE FUNCTION t15_boundary();");
+        CREATE TRIGGER t15_boundary BEFORE INSERT ON " .
+        "login_failures FOR EACH ROW EXECUTE FUNCTION t15_boundary();"));
     try {
         $results = t10ParallelRequests([
             [$subject, 'POST', '/api/auth/login', ['email' => $boundaryRaceEmail, 'password' => 'Wrong123'], null],
@@ -204,10 +240,23 @@ foreach ([0 => [401, 401], 1 => [401, 429]] as $microseconds => $expectedStatuse
     if ($microseconds === 0) {
         t10SameError($results[0], $results[1]);
     }
-    assert(t10Sql("SELECT count(*) FROM login_failures WHERE account_id=$boundaryRaceId AND failure_epoch=$boundaryEpoch") === '3');
-    $inWindow = t10Sql("SELECT count(*) FROM login_failures WHERE account_id=$boundaryRaceId AND failure_epoch=$boundaryEpoch AND occurred_at > (SELECT max(occurred_at) FROM login_failures WHERE account_id=$boundaryRaceId AND failure_epoch=$boundaryEpoch)-interval '5 minutes'");
+    assert(
+        t10Sql(
+            "SELECT count(*) FROM login_failures WHERE account_id=$boundaryRaceId AND failure_epoch=$boundaryEpoch"
+        ) === '3'
+    );
+    $inWindow = t10Sql(
+        ("SELECT count(*) FROM login_failures WHERE " .
+            "account_id=$boundaryRaceId AND failure_epoch=$boundaryEpoch AND " .
+            "occurred_at > (SELECT max(occurred_at) FROM login_failures " .
+            "WHERE account_id=$boundaryRaceId AND " .
+            "failure_epoch=$boundaryEpoch)-interval '5 minutes'")
+    );
     assert($inWindow === ($microseconds === 0 ? '2' : '3'));
-    assert(t10Sql("SELECT locked_until IS NOT NULL FROM accounts WHERE id=$boundaryRaceId") === ($microseconds === 0 ? 'f' : 't'));
+    assert(
+        t10Sql(("SELECT locked_until IS NOT NULL FROM accounts WHERE " .
+            "id=$boundaryRaceId")) === ($microseconds === 0 ? 'f' : 't')
+    );
 }
 t10Check(t10Request($subject, 'PUT', $settingsPath, $defaults, $admin), 200);
 echo "PASS cross-backend concurrent lockout and microsecond boundary\n";

@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/http_fixture.php';
+// 所有 fixture 操作之前先確認斷言有效，不能在測試檢查被關閉時仍送出寫入。
+assertHttpFixtureAssertions();
+
 // 寫入前驗證 Compose 解析結果；測試只接受獨立 volume、密鑰及指定本機埠。
 if (
     ! ($GLOBALS['t18VerifiedTarget'] ?? false) && (
@@ -35,6 +39,7 @@ if (! ($GLOBALS['t18VerifiedTarget'] ?? false)) {
 
 $django = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19384' : 'http://localhost:8084';
 $laravel = ($GLOBALS['t18VerifiedTarget'] ?? false) ? 'http://localhost:19381' : 'http://localhost:8081';
+assertHttpFixture(['django' => $django, 'laravel' => $laravel]);
 
 require_once __DIR__ . '/ticket17_http_support.php';
 

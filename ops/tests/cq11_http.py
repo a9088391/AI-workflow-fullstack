@@ -485,6 +485,8 @@ def revalidation_cases(nonce):
 def main():
     shared.check(len(sys.argv) == 1, "CQ11 不接受改寫目標或略過案例的參數")
     shared.guard()
+    # 首筆 fixture 寫入前拒絕任何同名未知 DDL，避免先改資料才發現殘留。
+    shared.clear_boundary_trigger()
     nonce = secrets.token_hex(5)
     cq09_http.entry_cases(nonce)
     shared.backend_cases(BACKEND, nonce)

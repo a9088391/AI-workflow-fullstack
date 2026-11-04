@@ -186,6 +186,7 @@ def content(author, article_id, label, visibility="visible"):
 
 # 比對同一資料列在兩後端輸出的全部公共欄位，時間一律按台北業務時區。
 def resource(table, row, nickname, can_restore=False):
+    # callback 將持久時間轉成共同台北格式，避免主機時區改變公共資源 oracle。
     stamp = lambda value: value.astimezone(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
     data = {"id": row["id"], "author": {"id": row["author_id"], "nickname": nickname},
             "body": row["body"], "visibility": row["visibility"], "version": row["version"],
@@ -291,6 +292,9 @@ def lockout(namespace):
 
 # 持有兩端登入第一個共用設定列鎖，確認都等待，再檢查序列化事件數。
 def concurrent_failures(namespace):
+    with owner_connection() as connection:
+        settings = connection.execute("SELECT enabled,failure_threshold FROM login_lockout_settings WHERE id=1").fetchone()
+    must(settings["enabled"] and settings["failure_threshold"] >= 2, "鎖定設定不適合並行驗證")
     user = member(FASTAPI, namespace, "parallel")
     body = {"email": user["email"], "password": WRONG}
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -314,8 +318,11 @@ def concurrent_failures(namespace):
                     raise CheckFailure("Ticket 22 驗證失敗：兩後端未共同等待設定列鎖")
             hold.commit()
         results = [future.result(timeout=25) for future in futures]
+    # 門檻當次必須 429；較高門檻則兩次都尚未鎖定，兩事件仍須提交。
+    expected_statuses = [401, 429] if settings["failure_threshold"] == 2 else [401, 401]
+    must(sorted(result[0] for result in results) == expected_statuses, "並行失敗鎖定狀態不符")
     for result in results:
-        expect(result, 401, "E0101")
+        expect(result, result[0], "E0105" if result[0] == 429 else "E0101")
     with owner_connection() as connection:
         count = connection.execute("SELECT count(*) AS n FROM login_failures WHERE account_id = %s", (user["id"],)).fetchone()["n"]
     must(count == 2, "並行失敗事件遺失")
@@ -366,6 +373,14 @@ def identity(namespace):
     return fast, laravel, fresh
 
 
+# public_article_ids 依共同雙鍵排序讀同一公開頁，避免把 ID 當成建立時間。
+def public_article_ids():
+    with owner_connection() as connection:
+        return [row["id"] for row in connection.execute(
+            "SELECT id FROM articles WHERE visibility='visible' ORDER BY created_at DESC,id DESC LIMIT 100 OFFSET 0"
+        ).fetchall()]
+
+
 # 直接用合成資料檢查公開/管理範圍、隱藏父子、跨後端完整資源及超頁。
 def reading(namespace, author, outsider, author_token):
     with owner_connection() as connection:
@@ -387,7 +402,8 @@ def reading(namespace, author, outsider, author_token):
         ids = [item["id"] for item in anon["list"]]
         must(public in ids and hidden not in ids and anon["pagination"]["total"] == baseline_public + 1,
              "公開列表可見性或總數不符")
-        must(ids == sorted(ids, reverse=True), "公開列表排序不符")
+        # ID 與建立時間不必同序；用同一頁的 DB 雙鍵排序校對完整結果。
+        must(ids == public_article_ids(), "公開列表排序不符")
         far = expect(call(base, "GET", "/api/articles?page=999999&per_page=20"), 200)
         must(far["list"] == [] and far["pagination"]["total"] == baseline_public + 1 and
              far["pagination"]["page"] == 999999, "文章超頁不符")

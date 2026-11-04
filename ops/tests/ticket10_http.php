@@ -2,6 +2,13 @@
 
 declare(strict_types=1);
 
+// 本檔為獨立執行的 HTTP 驗收入口，輔助函式與案例保留同檔以便直接執行。
+// phpcs:disable PSR1.Files.SideEffects
+
+require_once __DIR__ . '/http_fixture.php';
+// 所有 fixture 操作之前先確認斷言有效，不能在測試檢查被關閉時仍送出寫入。
+assertHttpFixtureAssertions();
+
 // 測試會改會員、內容與鎖定設定；Ticket 15 另須核對 Compose 設定及實際資料庫容器。
 $ticket15 = defined('T10_TARGET') && T10_TARGET === 'ticket15';
 $ticket18 = ($GLOBALS['t10Target'] ?? null) === 'ticket18';
@@ -17,6 +24,8 @@ if ($ticket18) {
 }
 $subject = $ticket18 ? 'http://localhost:19384' : ($ticket15 ? 'http://localhost:19283' : 'http://localhost:19182');
 $laravel = $ticket18 ? 'http://localhost:19381' : ($ticket15 ? 'http://localhost:19281' : 'http://localhost:19181');
+assertHttpFixture([($ticket18 ? 'django' : ($ticket15 ? 'aspnet-core' : 'symfony')) => $subject,
+    'laravel' => $laravel]);
 
 /** 執行只讀的 Docker 身分查核，失敗時不洩漏可能含密碼的設定輸出。 */
 function t10Docker(array $command): string
@@ -51,7 +60,12 @@ function t10Ticket15Guard(): void
     }
 
     // 同時比對 Compose 解出的設定與已啟動容器，避免環境變數正確但服務連到其他資料庫。
-    $config = json_decode(t10Docker(['docker', 'compose', 'config', '--format', 'json']), true, 512, JSON_THROW_ON_ERROR);
+    $config = json_decode(
+        t10Docker(['docker', 'compose', 'config', '--format', 'json']),
+        true,
+        512,
+        JSON_THROW_ON_ERROR
+    );
     $ports = ['laravel' => [19281, 8000], 'symfony' => [19282, 8000],
         'aspnet-core' => [19283, 8080], 'nginx' => [19280, 80]];
     if (
@@ -121,8 +135,13 @@ function t10Ticket15Guard(): void
 }
 
 /** 由兩個後端的公開 HTTP 介面送出相同案例，保留狀態、資料與標頭供比對。 */
-function t10Request(string $base, string $method, string $path, array|string|null $body = null, ?string $token = null): array
-{
+function t10Request(
+    string $base,
+    string $method,
+    string $path,
+    array|string|null $body = null,
+    ?string $token = null
+): array {
     $headers = ['Accept: application/json', 'Origin: http://localhost:8080'];
     if ($body !== null) {
         $headers[] = 'Content-Type: application/json';
@@ -139,7 +158,11 @@ function t10Request(string $base, string $method, string $path, array|string|nul
         throw new RuntimeException(curl_error($curl));
     }
     $length = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
-    $result = [curl_getinfo($curl, CURLINFO_RESPONSE_CODE), json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR), substr($raw, 0, $length)];
+    $result = [
+        curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+        json_decode(substr($raw, $length), true, 512, JSON_THROW_ON_ERROR),
+        substr($raw, 0, $length)
+    ];
     curl_close($curl);
 
     return $result;
@@ -148,7 +171,10 @@ function t10Request(string $base, string $method, string $path, array|string|nul
 /** 共同錯誤需逐字一致，且每次錯誤須有可追查的 log_id。 */
 function t10Check(array $result, int $status, ?string $code = null, ?array $errors = null): void
 {
-    assert($result[0] === $status, 'status ' . $status . ' got ' . $result[0] . ' ' . json_encode($result[1], JSON_UNESCAPED_UNICODE));
+    assert(
+        $result[0] === $status,
+        'status ' . $status . ' got ' . $result[0] . ' ' . json_encode($result[1], JSON_UNESCAPED_UNICODE)
+    );
     assert($result[1]['success'] === ($code === null));
     if ($code === null) {
         assert($result[1]['message'] === 'OK');
@@ -196,7 +222,23 @@ function t10Sql(string $sql): string
 {
     $pipes = [];
     $process = proc_open(
-        ['docker', 'compose', 'exec', '-T', 'db', 'psql', '-U', 'articles_owner', '-d', 'articles', '-v', 'ON_ERROR_STOP=1', '-At', '-c', $sql],
+        [
+            'docker',
+            'compose',
+            'exec',
+            '-T',
+            'db',
+            'psql',
+            '-U',
+            'articles_owner',
+            '-d',
+            'articles',
+            '-v',
+            'ON_ERROR_STOP=1',
+            '-At',
+            '-c',
+            $sql
+        ],
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes
     );
@@ -217,7 +259,15 @@ function t10Sql(string $sql): string
 function t10Identity(string $base, string $nickname, bool $admin = false): array
 {
     $email = 't10-' . bin2hex(random_bytes(6)) . '@example.test';
-    t10Check(t10Request($base, 'POST', '/api/auth/register', ['email' => $email, 'password' => 'Abc1234', 'nickname' => $nickname]), 201);
+    t10Check(
+        t10Request(
+            $base,
+            'POST',
+            '/api/auth/register',
+            ['email' => $email, 'password' => 'Abc1234', 'nickname' => $nickname]
+        ),
+        201
+    );
     if ($admin) {
         t10Sql("UPDATE accounts SET role='admin' WHERE email='$email'");
     }
@@ -242,7 +292,8 @@ function t10ParallelRequests(array $requests): array
             $curl = curl_init($base . $path);
             curl_setopt_array($curl, [CURLOPT_CUSTOMREQUEST => $method,
                 CURLOPT_POSTFIELDS => is_array($body) ? json_encode($body, JSON_THROW_ON_ERROR) : $body,
-                CURLOPT_HTTPHEADER => $headers, CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 20]);
+                CURLOPT_HTTPHEADER => $headers, CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 20]);
             curl_multi_add_handle($multi, $curl);
             $handles[] = $curl;
         }
@@ -287,14 +338,32 @@ function t10ParallelPut(string $base, string $path, array $a, array $b, string $
 
 $defaults = ['enabled' => true, 'window_minutes' => 5, 'failure_threshold' => 5, 'lock_seconds' => 300];
 // 可重跑時先將隔離資料庫設定還原；先前測試帳號保留作稽核，不清空資料。
-t10Sql('UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE id=1');
+t10Sql(
+    'UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE id=1'
+);
 [$adminId, $admin] = t10Identity($subject, '管理員', true);
-$laravelAdmin = t10Request($laravel, 'POST', '/api/auth/login', ['email' => t10Sql("SELECT email FROM accounts WHERE id=$adminId"), 'password' => 'Abc1234']);
+$laravelAdmin = t10Request(
+    $laravel,
+    'POST',
+    '/api/auth/login',
+    [
+        'email' => t10Sql("SELECT email FROM accounts WHERE id=$adminId"),
+        'password' => 'Abc1234'
+    ]
+);
 t10Check($laravelAdmin, 200);
 $laravelToken = $laravelAdmin[1]['data']['access_token'];
 [$memberId, $member, $memberEmail] = t10Identity($subject, 'A_B%\\É中' . bin2hex(random_bytes(4)));
 [$otherId, $other] = t10Identity($laravel, '普通會員é');
-$otherSubject = t10Request($subject, 'POST', '/api/auth/login', ['email' => t10Sql("SELECT email FROM accounts WHERE id=$otherId"), 'password' => 'Abc1234']);
+$otherSubject = t10Request(
+    $subject,
+    'POST',
+    '/api/auth/login',
+    [
+        'email' => t10Sql("SELECT email FROM accounts WHERE id=$otherId"),
+        'password' => 'Abc1234'
+    ]
+);
 t10Check($otherSubject, 200);
 $path = '/api/members?page=1&per_page=100';
 
@@ -330,7 +399,13 @@ foreach (
     assert(t10CanonicalJson($fromSubject[1]['data']) === t10CanonicalJson($fromLaravel[1]['data']), $keyword);
 }
 $repeatedSubject = t10Request($subject, 'GET', $path . '&filters%5Bkeyword%5D=x&filters%5Bkeyword%5D=y', null, $admin);
-$repeatedLaravel = t10Request($laravel, 'GET', $path . '&filters%5Bkeyword%5D=x&filters%5Bkeyword%5D=y', null, $laravelToken);
+$repeatedLaravel = t10Request(
+    $laravel,
+    'GET',
+    $path . '&filters%5Bkeyword%5D=x&filters%5Bkeyword%5D=y',
+    null,
+    $laravelToken
+);
 t10Check($repeatedSubject, 422, 'E0001', ['filters.keyword' => ['此參數不可重複']]);
 t10Check($repeatedLaravel, 422, 'E0001', ['filters.keyword' => ['此參數不可重複']]);
 t10SameError($repeatedSubject, $repeatedLaravel);
@@ -354,8 +429,23 @@ t10Check(t10Request($subject, 'POST', '/api/articles', ['title' => '管理文章
 $articleId = (int) t10Sql("SELECT max(id) FROM articles WHERE author_id=$memberId");
 t10Check(t10Request($subject, 'POST', '/api/articles/' . $articleId . '/comments', ['body' => '留言'], $member), 201);
 $commentId = (int) t10Sql("SELECT max(id) FROM comments WHERE article_id=$articleId");
-t10Check(t10Request($subject, 'PUT', '/api/articles/' . $articleId . '/visibility', ['visibility' => 'hidden', 'version' => 1], $admin), 200);
-$articles = t10Request($subject, 'GET', '/api/articles?page=1&per_page=100&filters%5Bscope%5D=management', null, $admin);
+t10Check(
+    t10Request(
+        $subject,
+        'PUT',
+        '/api/articles/' . $articleId . '/visibility',
+        ['visibility' => 'hidden', 'version' => 1],
+        $admin
+    ),
+    200
+);
+$articles = t10Request(
+    $subject,
+    'GET',
+    '/api/articles?page=1&per_page=100&filters%5Bscope%5D=management',
+    null,
+    $admin
+);
 t10Check($articles, 200);
 assert(in_array($articleId, array_column($articles[1]['data']['list'], 'id'), true));
 $comments = t10Request($subject, 'GET', '/api/comments?page=1&per_page=100', null, $admin);
@@ -383,7 +473,14 @@ t10Check(t10Request($subject, 'PUT', $settingsPath, $next, $admin), 200);
 assert(t10Request($subject, 'GET', $settingsPath, null, $admin)[1]['data'] === $next);
 assert(t10Request($laravel, 'GET', $settingsPath, null, $laravelToken)[1]['data'] === $next);
 // 同一份既有資料以兩種 JWT 各自讀取，逐欄比較管理列表及詳情。
-foreach ([$path, '/api/members/' . $memberId, '/api/comments?page=1&per_page=100', '/api/articles?page=1&per_page=100&filters%5Bscope%5D=management'] as $readPath) {
+foreach (
+    [
+    $path,
+    '/api/members/' . $memberId,
+    '/api/comments?page=1&per_page=100',
+    '/api/articles?page=1&per_page=100&filters%5Bscope%5D=management'
+    ] as $readPath
+) {
     $fromSubject = t10Request($subject, 'GET', $readPath, null, $admin);
     $fromLaravel = t10Request($laravel, 'GET', $readPath, null, $laravelToken);
     t10Check($fromSubject, 200);
@@ -426,7 +523,13 @@ assert((int) t10Sql("SELECT failure_epoch FROM accounts WHERE id=$memberId") ===
 t10Check(t10Request($subject, 'PUT', $settingsPath, $next, $admin), 200);
 t10Sql("UPDATE accounts SET locked_until=clock_timestamp()+interval '1 hour' WHERE id=$memberId");
 $beforeRollback = t10Sql("SELECT locked_until FROM accounts WHERE id=$memberId");
-t10Sql("CREATE FUNCTION t10_fail_clear() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated clear failure'; END; $$; CREATE TRIGGER t10_fail_clear BEFORE UPDATE ON accounts FOR EACH ROW WHEN (NEW.role = 'member') EXECUTE FUNCTION t10_fail_clear();");
+t10Sql(
+    ("CREATE FUNCTION t10_fail_clear() RETURNS trigger LANGUAGE " .
+        "plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated clear failure'; " .
+        "END; $$; CREATE TRIGGER t10_fail_clear BEFORE UPDATE ON " .
+        "accounts FOR EACH ROW WHEN (NEW.role = 'member') EXECUTE " .
+        "FUNCTION t10_fail_clear();")
+);
 try {
     t10Check(t10Request($subject, 'PUT', $settingsPath, $off, $admin), 500, 'E9999');
     assert(t10Request($subject, 'GET', $settingsPath, null, $admin)[1]['data'] === $next);
@@ -453,8 +556,20 @@ $invalidStatusLaravel = t10Request($laravel, 'PUT', $statusPath, ['status' => 'r
 t10Check($invalidStatusSubject, 422, 'E0001', ['status' => ['欄位格式或範圍不正確']]);
 t10Check($invalidStatusLaravel, 422, 'E0001', ['status' => ['欄位格式或範圍不正確']]);
 t10SameError($invalidStatusSubject, $invalidStatusLaravel);
-$adminTargetSubject = t10Request($subject, 'PUT', '/api/members/' . $adminId . '/status', ['status' => 'disabled'], $admin);
-$adminTargetLaravel = t10Request($laravel, 'PUT', '/api/members/' . $adminId . '/status', ['status' => 'disabled'], $laravelToken);
+$adminTargetSubject = t10Request(
+    $subject,
+    'PUT',
+    '/api/members/' . $adminId . '/status',
+    ['status' => 'disabled'],
+    $admin
+);
+$adminTargetLaravel = t10Request(
+    $laravel,
+    'PUT',
+    '/api/members/' . $adminId . '/status',
+    ['status' => 'disabled'],
+    $laravelToken
+);
 t10Check($adminTargetSubject, 404, 'E0004');
 t10Check($adminTargetLaravel, 404, 'E0004');
 t10SameError($adminTargetSubject, $adminTargetLaravel);
@@ -467,7 +582,13 @@ t10Check(t10Request($laravel, 'GET', '/api/me', null, $memberLaravel[1]['data'][
 assert(t10Sql("SELECT visibility FROM articles WHERE id=$articleId") === 'hidden');
 // 兩筆狀態寫入可依提交順序決定最終值，但任何實際停用都必須撤銷舊登入。
 [$raceId, $raceToken] = t10Identity($subject, '並行會員');
-t10ParallelPut($subject, '/api/members/' . $raceId . '/status', ['status' => 'active'], ['status' => 'disabled'], $admin);
+t10ParallelPut(
+    $subject,
+    '/api/members/' . $raceId . '/status',
+    ['status' => 'active'],
+    ['status' => 'disabled'],
+    $admin
+);
 assert(in_array(t10Sql("SELECT status FROM accounts WHERE id=$raceId"), ['active', 'disabled'], true));
 assert(t10Sql("SELECT count(*) FROM login_sessions WHERE account_id=$raceId AND revoked_at IS NULL") === '0');
 if (t10Sql("SELECT status FROM accounts WHERE id=$raceId") === 'active') {
@@ -478,24 +599,40 @@ if (t10Sql("SELECT status FROM accounts WHERE id=$raceId") === 'active') {
 echo "PASS status, cross-backend revocation and content preservation\n";
 
 // 同一會員逐次重置世代，將歷史事件對齊到新事件的視窗左界與 +1μs，重播兩後端。
-t10Sql('UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=2, lock_seconds=300 WHERE id=1');
+t10Sql(
+    'UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=2, lock_seconds=300 WHERE id=1'
+);
 [$boundaryId, , $boundaryEmail] = t10Identity($subject, '邊界會員');
 foreach (['0 microseconds' => 401, '1 microsecond' => 429] as $offset => $status) {
     $responses = [];
     $lockStates = [];
     foreach ([$subject, $laravel] as $base) {
-        t10Sql("UPDATE accounts SET locked_until=NULL, failure_epoch=failure_epoch+1 WHERE id=$boundaryId;
-            INSERT INTO login_failures(account_id,failure_epoch,occurred_at) SELECT id,failure_epoch,clock_timestamp()-interval '10 minutes' FROM accounts WHERE id=$boundaryId;
-            CREATE FUNCTION t10_boundary() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS \$\$
+        t10Sql(("UPDATE accounts SET locked_until=NULL, " .
+            "failure_epoch=failure_epoch+1 WHERE id=$boundaryId;
+            INSERT INTO login_failures(account_id,failure_epoch," .
+            "occurred_at) SELECT id,failure_epoch,clock_timestamp()-interval " .
+            "'10 minutes' FROM accounts WHERE id=$boundaryId;
+            CREATE FUNCTION t10_boundary() RETURNS trigger " .
+            "LANGUAGE plpgsql SECURITY DEFINER SET " .
+            "search_path=pg_catalog,public AS \$\$
             BEGIN
                 IF NEW.account_id=$boundaryId THEN
-                    UPDATE public.login_failures SET occurred_at=NEW.occurred_at-interval '5 minutes'+interval '$offset' WHERE account_id=NEW.account_id AND failure_epoch=NEW.failure_epoch;
+                    UPDATE public.login_failures SET " .
+            "occurred_at=NEW.occurred_at-interval '5 minutes'+interval " .
+            "'$offset' WHERE account_id=NEW.account_id AND " .
+            "failure_epoch=NEW.failure_epoch;
                 END IF;
                 RETURN NEW;
             END; \$\$;
-            CREATE TRIGGER t10_boundary BEFORE INSERT ON login_failures FOR EACH ROW EXECUTE FUNCTION t10_boundary();");
+            CREATE TRIGGER t10_boundary BEFORE INSERT ON " .
+            "login_failures FOR EACH ROW EXECUTE FUNCTION t10_boundary();"));
         try {
-            $response = t10Request($base, 'POST', '/api/auth/login', ['email' => $boundaryEmail, 'password' => 'Wrong123']);
+            $response = t10Request(
+                $base,
+                'POST',
+                '/api/auth/login',
+                ['email' => $boundaryEmail, 'password' => 'Wrong123']
+            );
             t10Check($response, $status, $status === 401 ? 'E0101' : 'E0105');
             $responses[] = $response;
             $lockStates[] = t10Sql("SELECT locked_until IS NOT NULL FROM accounts WHERE id=$boundaryId");
@@ -506,7 +643,9 @@ foreach (['0 microseconds' => 401, '1 microsecond' => 429] as $offset => $status
     t10SameError($responses[0], $responses[1]);
     assert($lockStates === ($status === 401 ? ['f', 'f'] : ['t', 't']));
 }
-t10Sql('UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE id=1');
+t10Sql(
+    'UPDATE login_lockout_settings SET enabled=true, window_minutes=5, failure_threshold=5, lock_seconds=300 WHERE id=1'
+);
 echo "PASS cross-backend error and microsecond boundary parity\n";
 if (! $ticket15 && ! $ticket18) {
     echo "Ticket 10 Symfony management HTTP: PASS\n";
