@@ -1,0 +1,180 @@
+# 僅與固定 HEAD 副本的 compose.yaml 合併；CLI 永遠明示 project 與單一服務。
+services:
+  db:
+    ports: !override []
+    environment:
+      PERF01_FIXTURE: isolated-perf01
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - compute_query_id=on
+      - -c
+      - pg_stat_statements.track=top
+      - -c
+      - pg_stat_statements.track_utility=on
+      - -c
+      - pg_stat_statements.track_planning=off
+      - -c
+      - logging_collector=on
+      - -c
+      - log_destination=jsonlog
+      - -c
+      - log_directory=log
+      - -c
+      - log_filename=perf01.json
+      - -c
+      - log_rotation_age=0
+      - -c
+      - log_rotation_size=0
+      - -c
+      - log_file_mode=0600
+      - -c
+      - log_statement=none
+      - -c
+      - log_min_duration_statement=-1
+      - -c
+      - log_min_error_statement=panic
+      - -c
+      - log_parameter_max_length_on_error=0
+      - -c
+      - log_connections=all
+      - -c
+      - log_disconnections=on
+  laravel:
+    image: perf01_test_laravel:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18501:8000"]
+    healthcheck:
+      disable: true
+  symfony:
+    image: perf01_test_symfony:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18502:8000"]
+    healthcheck:
+      disable: true
+  aspnet-core:
+    image: perf01_test_aspnet-core:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18503:8080"]
+    healthcheck:
+      disable: true
+  django:
+    image: perf01_test_django:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18504:8000"]
+    healthcheck:
+      disable: true
+  flask:
+    image: perf01_test_flask:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18505:8000"]
+    healthcheck:
+      disable: true
+  fastapi:
+    image: perf01_test_fastapi:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18506:8000"]
+    healthcheck:
+      disable: true
+  gin:
+    image: perf01_test_gin:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18507:8000"]
+    healthcheck:
+      disable: true
+  echo:
+    image: perf01_test_echo:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18508:8000"]
+    healthcheck:
+      disable: true
+  fiber:
+    image: perf01_test_fiber:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18509:8000"]
+    healthcheck:
+      disable: true
+  express:
+    image: perf01_test_express:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18510:8000"]
+    healthcheck:
+      disable: true
+  fastify:
+    image: perf01_test_fastify:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18511:8000"]
+    healthcheck:
+      disable: true
+  nestjs:
+    image: perf01_test_nestjs:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    ports: !override ["127.0.0.1:18512:8000"]
+    healthcheck:
+      disable: true
+  sql:
+    image: perf01_test_laravel:${PERF01_SOURCE:?prepare first}
+    build:
+      labels:
+        org.perf01.source: ${PERF01_SOURCE:?prepare first}
+    labels:
+      org.perf01.source: ${PERF01_SOURCE:?prepare first}
+networks:
+  default:
+    name: perf01_test_default
+    ipam:
+      config: !override [{subnet: 10.251.135.0/24}]
+volumes:
+  postgres_data:
+    name: perf01_test_postgres_data
+
