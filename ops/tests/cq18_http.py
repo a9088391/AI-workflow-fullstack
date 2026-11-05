@@ -34,12 +34,13 @@ RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19"),
               "cq24": Path(".scratch/code-quality/cq24"), "cq25": Path(".scratch/code-quality/cq25"),
               "cq26": Path(".scratch/code-quality/cq26"), "cq27": Path(".scratch/code-quality/cq27"),
               "cq28": Path(".scratch/code-quality/cq28"), "cq29": Path(".scratch/code-quality/cq29"),
-              "cq30": Path(".scratch/code-quality/cq30"), "cq31": Path(".scratch/code-quality/cq31")}
+              "cq30": Path(".scratch/code-quality/cq30"), "cq31": Path(".scratch/code-quality/cq31"),
+              "cq34": Path(".local/cq34-recovery")}
 NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}",
           "cq20": r"cq20[0-9a-f]{8}", "cq21": r"cq21[0-9a-f]{8}", "cq22": r"cq22[0-9a-f]{8}",
           "cq23": r"cq23[0-9a-f]{8}", "cq24": r"cq24[0-9a-f]{8}", "cq25": r"cq25[0-9a-f]{8}",
           "cq26": r"cq26[0-9a-f]{8}", "cq27": r"cq27[0-9a-f]{8}", "cq28": r"cq28[0-9a-f]{8}", "cq29": r"cq29[0-9a-f]{8}",
-          "cq30": r"cq30[0-9a-f]{8}", "cq31": r"cq31[0-9a-f]{8}"}
+          "cq30": r"cq30[0-9a-f]{8}", "cq31": r"cq31[0-9a-f]{8}", "cq34": r"cq34[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
@@ -143,32 +144,64 @@ def validate_packet(packet, *, ticket="cq18"):
                 shared.check(re.fullmatch(r"[A-Za-z0-9_-]{22}", item["jti"]) is not None, "時間恢復 jti 不符")
 
 
+# CQ34 在舊 baseline 外包身分與摘要；其他票的原 schema 與檔案格式維持不變。
+def wrapped_packet(packet, receipt):
+    if receipt is None:
+        return packet
+    shared.check(shared.PRESET == "cq34" and receipt["namespace"] == "cq34", "CQ34 receipt 目標不符")
+    body = {"receipt": receipt, "baseline": packet}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {**body, "sha256": digest}
+
+
+# 驗證外層完整性及固定 namespace 後才取回舊 baseline，防止錯來源或不完整 packet 被恢復。
+def unwrapped_packet(value, identity):
+    shared.check(set(value) == {"receipt", "baseline", "sha256"}, "CQ34 recovery 外層欄位不符")
+    body = {"receipt": value["receipt"], "baseline": value["baseline"]}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    shared.check(value["sha256"] == digest and value["receipt"].get("namespace") == "cq34" and
+                 value["receipt"].get("identity") == identity, "CQ34 recovery receipt／來源不符")
+    return value["baseline"], value["receipt"]
+
+
 # 更新恢復記錄先寫同目錄暫存再原子替換，避免中斷留下被截斷的唯一 baseline。
-def save_packet(packet, path):
+def save_packet(packet, path, *, receipt=None):
     temporary = path.with_suffix(".tmp-" + secrets.token_hex(4))
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump(packet, output, ensure_ascii=False)
+            json.dump(wrapped_packet(packet, receipt), output, ensure_ascii=False)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 # 首次服務寫入前同步落盤 baseline；中斷後不需帳密或 JWT 也能精確恢復既有會員鎖定欄位。
-def capture_baseline(nonce, *, ticket="cq18"):
+def capture_baseline(nonce, *, ticket="cq18", receipt=None, preflight=None):
     shared.check(ticket in RECOVERIES and re.fullmatch(NONCES[ticket], nonce) is not None, "恢復 marker 不符")
+    shared.check((ticket == "cq34") == (receipt is not None), "CQ34 baseline 必須綁定專用 receipt")
+    shared.check(callable(preflight) if ticket == "cq34" else preflight is None, "只有 CQ34 必須提供歷史 preflight")
+    if ticket == "cq34":
+        # 與入口共用完整唯讀稽核；失敗先於 SQL／建檔，避免重複政策誤拒已完成的舊 source。
+        preflight(receipt["identity"])
     recovery = RECOVERIES[ticket]
     # fresh baseline 建檔前先拒絕全域同名殘留；restore 仍沿用自己的既有資格。
     shared.clear_boundary_trigger()
     clean_boundary()
     recovery.mkdir(parents=True, exist_ok=True)
-    for path in recovery.glob(f"recovery-{ticket}*.json"):
-        old = json.loads(path.read_text(encoding="utf-8"))
-        validate_packet(old, ticket=ticket)
-        shared.check(old["restored"], f"上次 {ticket.upper()} 尚未恢復，先用 --restore 核對處理")
+    if ticket != "cq34":
+        # 舊票維持原 schema／掃描；CQ34 已由同一 preflight 核對所有檔案及 private 權限。
+        for path in recovery.glob(f"recovery-{ticket}*.json"):
+            old = json.loads(path.read_text(encoding="utf-8"))
+            validate_packet(old, ticket=ticket)
+            shared.check(old["restored"], f"上次 {ticket.upper()} 尚未恢復，先用 --restore 核對處理")
     shared.check(shared.sql(f"SELECT count(*) FROM accounts WHERE email LIKE 't57-{nonce}%' ") == "0",
                  "本票 marker 已存在")
     packet = {
@@ -188,9 +221,14 @@ def capture_baseline(nonce, *, ticket="cq18"):
     path = recovery / f"recovery-{nonce}.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-        json.dump(packet, output, ensure_ascii=False)
+        json.dump(wrapped_packet(packet, receipt), output, ensure_ascii=False)
         output.flush()
         os.fsync(output.fileno())
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     print(f"RECOVERY {path}", flush=True)
     return packet, path
 
@@ -199,15 +237,15 @@ def capture_baseline(nonce, *, ticket="cq18"):
 def restore_sql(statement):
     shared.check(shared.SAFE, "尚未核對隔離恢復資料庫")
     result = subprocess.run(
-        ["docker", "compose", "--profile", "*", "exec", "-T", "db", "psql", "-X", "-q", "-t", "-A",
-         "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles"],
+        shared.compose_argv("exec", "-T", "db", "psql", "-X", "-q", "-t", "-A",
+                            "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles"),
         input=statement, text=True, capture_output=True, check=True, timeout=30,
     )
     return result.stdout.strip()
 
 
 # 以同一交易恢復 baseline 並收束本次角色／sessions；有額外 fixture 的呼叫端須完成清理才標記整體恢復。
-def restore_baseline(packet, path, *, ticket="cq18", mark_restored=True):
+def restore_baseline(packet, path, *, ticket="cq18", mark_restored=True, receipt=None):
     validate_packet(packet, ticket=ticket)
     clean_boundary()
     nonce, settings = packet["nonce"], packet["settings"]
@@ -269,7 +307,7 @@ def restore_baseline(packet, path, *, ticket="cq18", mark_restored=True):
     ) == "0", "本票管理員或有效 session 尚未收束")
     clean_boundary()
     packet["restored"] = mark_restored
-    save_packet(packet, path)
+    save_packet(packet, path, receipt=receipt)
     print("PASS CQ18 baseline 四設定／會員鎖定欄位恢復，臨時管理員及 sessions 已收束", flush=True)
 
 
@@ -542,8 +580,8 @@ def login_claims(login, account_id, role, *, backend=BACKEND):
 # 僅在原 guard 通過後讀對應後端已核對的 key，簽署 fixture；key、JWT 不落盤或印出。
 def signed_token(claims, header=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離金鑰")
-    shared.check(backend in ("laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber", "express", "fastify", "nestjs"), "未核准的簽署 fixture 後端")
-    key = base64.b64decode(Path(f".local/keys/{backend}.key").read_bytes().rstrip(b"\n"), validate=True)
+    shared.check(backend in shared.BACKENDS and (backend != "symfony" or shared.PRESET == "cq34"), "未核准的簽署 fixture 後端")
+    key = base64.b64decode(shared.key_path(backend).read_bytes().rstrip(b"\n"), validate=True)
     shared.check(len(key) == 32, "隔離金鑰長度不符")
     parts = [base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=")
              for value in (header or {"alg": "HS256", "typ": "JWT"}, claims)]
@@ -583,7 +621,7 @@ def session_cases(nonce, *, backend=BACKEND):
 
 
 # 只改新 fixture session 時間；以 DB 前後讀數包住真 HTTP，精確證明 nbf／exp 的前側與相等。
-def expiry_cases(nonce, packet, path, *, backend=BACKEND):
+def expiry_cases(nonce, packet, path, *, backend=BACKEND, receipt=None):
     actor = shared.user(backend, nonce + "t", "member")
     claims = json.loads(base64.urlsafe_b64decode(actor["token"].split(".")[1] + "=="))
     jti = claims["jti"]
@@ -592,7 +630,7 @@ def expiry_cases(nonce, packet, path, *, backend=BACKEND):
     packet["session_times"].append(json.loads(shared.sql(
         "SELECT json_build_object('id',account_id,'jti',jti,'issued_at',issued_at,'expires_at',expires_at)::text "
         f"FROM login_sessions WHERE jti='{jti}' AND account_id={actor['id']}")))
-    save_packet(packet, path)
+    save_packet(packet, path, receipt=receipt)
     try:
         for boundary in ("nbf", "exp"):
             target = int(shared.sql("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")) + 5

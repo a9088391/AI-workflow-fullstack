@@ -3,7 +3,10 @@
 import base64
 from collections import deque
 import json
+import hashlib
+import stat
 from contextlib import contextmanager
+from http.client import HTTPException
 import os
 import re
 import secrets
@@ -14,7 +17,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from urllib.parse import quote
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, urlopen
 from pathlib import Path
 
 from ticket40_http import call
@@ -40,6 +44,130 @@ MESSAGES = {
     "E0201": "內容已更新，請確認最新內容後再送出",
 }
 SAFE = False
+PRESET = "ticket57"
+CQ34_PROJECT = "cq34_test"
+CQ34_FILES = ("compose.yaml", ".local/cq34-compose.yaml")
+CQ34_REPO = Path(__file__).resolve().parents[2]
+CQ34_ROOT = CQ34_REPO / ".local/cq34-fixture"
+CQ34_RECOVERY = None
+
+
+# 固定 preset 只能在尚未 guard 時選一次；不允許任意 project、埠或已開始的目標切換。
+def select_preset(name):
+    global PRESET
+    check(name == "cq34" and PRESET == "ticket57" and not SAFE, "不可切換隔離 preset")
+    PRESET = name
+
+
+# 金鑰路徑由核准的固定 preset 決定，簽署 fixture 不可誤讀展示環境的 key。
+def key_path(backend):
+    check(backend in BACKENDS, "未知金鑰後端")
+    return Path(f".local/{'cq34-keys' if PRESET == 'cq34' else 'keys'}/{backend}.key")
+
+
+# 不跟隨 redirect，避免 CQ34 固定目標的憑證或寫入被轉送別處。
+class NoRedirect(HTTPRedirectHandler):
+    # 原始 redirect 回應交由契約斷言拒絕，不自動重送。
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+CQ34_OPENER = build_opener(ProxyHandler({}), NoRedirect)
+
+
+# CQ34 禁用環境 proxy 與 redirect；舊票保留原 HTTP client 行為。
+def open_response(request, timeout):
+    try:
+        return (CQ34_OPENER.open if PRESET == "cq34" else urlopen)(request, timeout=timeout)
+    except HTTPError:
+        # 完整 HTTP 錯誤仍交原契約驗證；不是 transport 未知結果。
+        raise
+    except (OSError, TimeoutError, HTTPException, KeyboardInterrupt):
+        # 已進入傳輸卻沒有完整回應的協定錯誤／中斷也屬未知，不能讓 finally 標成可重跑。
+        if isinstance(request, Request) and request.get_method() not in ("GET", "HEAD", "OPTIONS"):
+            mark_cq34_uncertain()
+        raise
+
+
+# transport 未知不會因 cleanup 完成而變成成功；持久記錄後禁止下一筆寫入或新 run。
+def mark_cq34_uncertain():
+    if PRESET == "cq34" and CQ34_RECOVERY is not None:
+        packet, path, receipt = CQ34_RECOVERY
+        receipt["uncertain"] = True
+        import cq18_http
+        cq18_http.save_packet(packet, path, receipt=receipt)
+
+
+# 已核 OID／definition 的原 receipt 才能落盤；沒有 receipt 的建立未知 gap 仍保留並停止。
+def record_boundary_receipt(owned):
+    if PRESET == "cq34":
+        check(CQ34_RECOVERY is not None, "CQ34 boundary 未綁 baseline")
+        packet, path, receipt = CQ34_RECOVERY
+        receipt["boundary"] = owned
+        import cq18_http
+        cq18_http.save_packet(packet, path, receipt=receipt)
+
+
+# Compose argv 固定加入 CQ34 身分；舊票仍由原 COMPOSE 環境解析。
+def compose_argv(*args):
+    prefix = ["docker", "compose"]
+    if PRESET == "cq34":
+        prefix += ["-p", CQ34_PROJECT, "-f", CQ34_FILES[0], "-f", CQ34_FILES[1]]
+    return [*prefix, "--profile", "*", *args]
+
+
+# 逐一比對固定副本來源與 mode；NGINX 明確採 HEAD，不讀取秘密或套件產物。
+def cq34_source_identity():
+    ignored = {".local", ".git", ".scratch", "docs", "node_modules", "vendor", "dist", "__pycache__", "obj", "bin"}
+    names = subprocess.check_output(
+        ["git", "-C", str(CQ34_REPO), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+         ".dockerignore", ".env.example", "compose.yaml", "backends", "frontend", "ops", "database"]
+    ).decode().split("\0")
+    digest, count = hashlib.sha256(), 0
+    for name in sorted(set(names) - {""}):
+        relative = Path(name)
+        if any(part in ignored for part in relative.parts) or relative.name == ".env":
+            continue
+        original, copied = CQ34_REPO / relative, CQ34_ROOT / relative
+        check(original.is_file() and not copied.is_symlink() and copied.resolve() == copied and copied.is_file(), "CQ34 來源副本缺檔或含 symlink")
+        expected = (subprocess.check_output(["git", "-C", str(CQ34_REPO), "show", "HEAD:ops/nginx/default.conf"])
+                    if name == "ops/nginx/default.conf" else original.read_bytes())
+        mode = stat.S_IMODE(copied.stat().st_mode)
+        check(copied.read_bytes() == expected and mode == stat.S_IMODE(original.stat().st_mode), "CQ34 來源副本已變")
+        digest.update(name.encode() + b"\0" + str(mode).encode() + b"\0" + expected)
+        count += 1
+    check(count > 0 and all((CQ34_ROOT / f"backends/{name}/Dockerfile").is_file() for name in BACKENDS), "CQ34 必要來源不完整")
+    return digest.hexdigest()
+
+
+# 在首個人工時間寫入前保存原值；舊票無此額外 fixture，維持其既有執行流程。
+def record_time_fixture(table, account_id, *, event_id=None, epoch=None):
+    if PRESET != "cq34":
+        return
+    check(SAFE and CQ34_RECOVERY is not None and type(account_id) is int and account_id > 0, "CQ34 時間 fixture 未綁 baseline")
+    packet, path, receipt = CQ34_RECOVERY
+    nonce = packet["nonce"]
+    check(table in ("accounts", "login_failures"), "未核准的時間 fixture 表")
+    # 固定欄位及 owned account 條件，不能利用此 seam 保存或改動其他資料。
+    if table == "accounts":
+        query = ("SELECT coalesce(json_agg(t),'[]'::json) FROM (SELECT id,locked_until FROM accounts "
+                 f"WHERE id={account_id} AND email LIKE 't57-{nonce}%') t")
+    else:
+        check((event_id is None or type(event_id) is int and event_id > 0) and
+              (epoch is None or type(epoch) is int and epoch >= 0), "事件時間 fixture 識別不符")
+        limit = (f" AND f.id={event_id}" if event_id is not None else "") + (f" AND f.failure_epoch={epoch}" if epoch is not None else "")
+        query = ("SELECT coalesce(json_agg(t),'[]'::json) FROM (SELECT f.id,f.account_id,f.occurred_at "
+                 "FROM login_failures f JOIN accounts a ON a.id=f.account_id "
+                 f"WHERE a.id={account_id} AND a.email LIKE 't57-{nonce}%'" + limit + ") t")
+    rows = json.loads(sql(query))
+    check(rows, "時間 fixture 不屬於本輪帳號")
+    existing = {(item["table"], item["row"]["id"]) for item in receipt["times"]}
+    for row in rows:
+        if (table, row["id"]) not in existing:
+            receipt["times"].append({"table": table, "row": row})
+    # 落盤失敗會阻止後續人工時間寫入；僅保存必要非秘密欄位。
+    import cq18_http
+    cq18_http.save_packet(packet, path, receipt=receipt)
 
 
 # check 在第一個不符契約處停止，避免後續測試寫入掩蓋真正偏差。
@@ -50,7 +178,12 @@ def check(condition, message):
 
 # compose 只使用呼叫者已核對的固定專案與檔案，不接受任意測試目標。
 def compose(*args):
-    return subprocess.check_output(["docker", "compose", "--profile", "*", *args], text=True).strip()
+    if PRESET == "cq34":
+        check(Path.cwd().resolve() == CQ34_ROOT and CQ34_ROOT.resolve() == CQ34_ROOT, "CQ34 cwd 不是固定副本")
+        result = subprocess.run(compose_argv(*args), text=True, capture_output=True, timeout=60)
+        check(result.returncode == 0, "CQ34 Compose 執行失敗")
+        return result.stdout.strip()
+    return subprocess.check_output(compose_argv(*args), text=True).strip()
 
 
 # sql 限制在 guard 通過後的隔離 DB，並讓任何 SQL 錯誤立即中止。
@@ -66,25 +199,63 @@ def container(service):
     check(len(ids) == 1, f"{service} 容器不唯一或未啟動")
     item = json.loads(subprocess.check_output(["docker", "inspect", ids[0]], text=True))[0]
     labels = item["Config"]["Labels"]
-    check(labels.get("com.docker.compose.project") == PROJECT and
+    project = CQ34_PROJECT if PRESET == "cq34" else PROJECT
+    check(labels.get("com.docker.compose.project") == project and
           labels.get("com.docker.compose.service") == service and
           item["State"]["Running"] and item["State"].get("Health", {}).get("Status") == "healthy" and
-          PROJECT + "_default" in item["NetworkSettings"]["Networks"], f"{service} 非隔離健康容器")
+          project + "_default" in item["NetworkSettings"]["Networks"], f"{service} 非隔離健康容器")
+    if PRESET == "cq34":
+        check(labels.get("com.docker.compose.project.working_dir") == str(CQ34_ROOT) and
+              labels.get("com.docker.compose.project.config_files", "").split(",") == [str(CQ34_ROOT / name) for name in CQ34_FILES] and
+              set(item["NetworkSettings"]["Networks"]) == {project + "_default"}, "CQ34 容器來源不符")
+        image = compose("images", "-q", service)
+        check(image and item["Image"].removeprefix("sha256:") == image.removeprefix("sha256:"), "CQ34 實際映像不符")
     return item
 
 
 # guard 先核對執行中的容器、DB volume、金鑰掛載與固定 loopback 埠，再允許任何寫入。
 def guard():
     global SAFE
-    check(os.environ.get("COMPOSE_PROJECT_NAME") == PROJECT, "錯誤 Compose 專案")
-    check(os.environ.get("COMPOSE_FILE") == COMPOSE, "錯誤 Compose 檔")
+    SAFE = False
+    project = CQ34_PROJECT if PRESET == "cq34" else PROJECT
+    files = ":".join(CQ34_FILES) if PRESET == "cq34" else COMPOSE
+    subnet = "10.251.134.0/24" if PRESET == "cq34" else "10.251.57.0/24"
+    check(os.environ.get("COMPOSE_PROJECT_NAME") == project, "錯誤 Compose 專案")
+    check(os.environ.get("COMPOSE_FILE") == files, "錯誤 Compose 檔")
+    source = None
+    if PRESET == "cq34":
+        check(Path.cwd().resolve() == CQ34_ROOT and CQ34_ROOT.resolve() == CQ34_ROOT and CQ34_ROOT.is_dir(), "CQ34 cwd 不是固定副本")
+        check((CQ34_ROOT / CQ34_FILES[1]).read_bytes() == (CQ34_REPO / "ops/tests/cq34_compose.yaml").read_bytes(), "CQ34 template 不符")
+        source = cq34_source_identity()
     config = json.loads(compose("config", "--format", "json"))
-    check(config["name"] == PROJECT and
-          config["volumes"]["postgres_data"]["name"] == PROJECT + "_postgres_data" and
-          config["networks"]["default"]["ipam"]["config"][0]["subnet"] == "10.251.57.0/24", "隔離設定不符")
+    check(config["name"] == project and
+          config["volumes"]["postgres_data"]["name"] == project + "_postgres_data" and
+          config["networks"]["default"]["ipam"]["config"][0]["subnet"] == subnet, "隔離設定不符")
     db = container("db")
-    check(any(m.get("Name") == PROJECT + "_postgres_data" and m.get("Destination") == "/var/lib/postgresql"
+    check(any(m.get("Name") == project + "_postgres_data" and m.get("Destination") == "/var/lib/postgresql"
               for m in db["Mounts"]), "DB 使用非隔離資料卷")
+    keys, images = {}, {"db": db.get("Image")}
+    volume = None
+    if PRESET == "cq34":
+        # 宣告與實際 network/volume 都須符合，DB 不可發布主機埠或使用外部資料卷。
+        declared_volume = config["volumes"]["postgres_data"]
+        check(declared_volume.get("driver", "local") == "local" and not declared_volume.get("driver_opts") and
+              not declared_volume.get("external"), "CQ34 宣告資料卷不是原生 local")
+        check(config["networks"]["default"]["ipam"]["config"] == [{"subnet": subnet}] and
+              config["services"]["db"]["environment"].get("CQ34_FIXTURE") == "isolated-cq34" and
+              "CQ34_FIXTURE=isolated-cq34" in db["Config"]["Env"] and not db["HostConfig"]["PortBindings"], "CQ34 DB 設定不符")
+        network = json.loads(subprocess.check_output(["docker", "network", "inspect", project + "_default"], text=True))[0]
+        check(network["Name"] == project + "_default" and network["Labels"].get("com.docker.compose.project") == project and
+              network["IPAM"]["Config"] == [{"Subnet": subnet, "Gateway": "10.251.134.1"}], "CQ34 實際網段不符")
+        volume = json.loads(subprocess.check_output(["docker", "volume", "inspect", project + "_postgres_data"], text=True))[0]
+        check(volume["Name"] == project + "_postgres_data" and volume["Labels"].get("com.docker.compose.project") == project and
+              volume["Labels"].get("com.docker.compose.volume") == "postgres_data" and volume.get("Driver") == "local" and
+              not volume.get("Options") and
+              any(m.get("Type") == "volume" and m.get("Name") == volume["Name"] and m.get("Destination") == "/var/lib/postgresql"
+                  for m in db["Mounts"]), "CQ34 實際資料卷不符")
+        default_paths = [CQ34_ROOT / f".local/keys/{name}.key" for name in BACKENDS]
+        check(all(path.resolve() == path and path.is_file() for path in default_paths), "CQ34 default key 來源不符")
+        defaults = {hashlib.sha256(path.read_bytes().strip()).hexdigest() for path in default_paths}
     for service in BACKENDS:
         item = container(service)
         internal = "8080/tcp" if service == "aspnet-core" else "8000/tcp"
@@ -94,15 +265,46 @@ def guard():
               f"{service} 未連隔離 DB")
         key_target = f"/run/secrets/{service}-jwt.key"
         check(any(m.get("Destination") == key_target and m.get("RW") is False and
-                  os.path.realpath(m.get("Source", "")) == os.path.realpath(f".local/keys/{service}.key")
+                  os.path.realpath(m.get("Source", "")) == os.path.realpath(key_path(service))
                   for m in item["Mounts"]), f"{service} 金鑰掛載不符")
-    # 所有後端實際 HTTP 就緒後才開啟測試寫入權；健康檢查失敗不能留下可寫狀態。
+        if PRESET == "cq34":
+            path = key_path(service)
+            check(not path.is_symlink() and path.resolve() == CQ34_ROOT / path and path.is_file() and stat.S_IMODE(path.stat().st_mode) == 0o600 and
+                  item["HostConfig"]["PortBindings"] == {internal: [{"HostIp": "127.0.0.1", "HostPort": str(PORTS[service])}]}, "CQ34 key／額外埠不符")
+            encoded = path.read_bytes().strip()
+            fingerprint = hashlib.sha256(encoded).hexdigest()
+            check(len(base64.b64decode(encoded, validate=True)) == 32 and fingerprint not in defaults, "CQ34 key 未獨立")
+            keys[service], images[service] = fingerprint, item["Image"]
+    if PRESET == "cq34":
+        check(len(set(keys.values())) == len(BACKENDS), "CQ34 後端共用 key")
+        for name in ("vue", "nuxt", "react", "next", "angular", "sveltekit"):
+            service = "frontend-" + name
+            images[service] = container(service)["Image"]
+            with open_response(f"http://127.0.0.1:8080/{name}/", timeout=10) as response:
+                check(response.status == 200, "CQ34 固定前端路徑未就緒")
+        nginx = container("nginx")
+        images["nginx"] = nginx["Image"]
+        check(nginx["HostConfig"]["PortBindings"] == {"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8080"}]}, "CQ34 NGINX 埠不符")
+    # 所有 HTTP 與 Origin 已驗證才開啟寫入權，任何失敗都保留 SAFE=False。
     for service, base in BASES.items():
-        with urlopen(base + "/up", timeout=5) as response:
+        with open_response(base + "/up", timeout=5) as response:
             expected = b'{"status":"ok"}' if service in ("symfony", "aspnet-core") else b"OK"
             check(response.status == 200 and response.read() == expected, f"{service} HTTP 未就緒")
+        if PRESET == "cq34":
+            preflight = Request(base + "/api/auth/login", method="OPTIONS", headers={"Origin": "http://localhost:8080", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"})
+            with open_response(preflight, timeout=5) as response:
+                check(response.status == 204 and response.headers.get("Access-Control-Allow-Origin") == "http://localhost:8080", "CQ34 Origin 不符")
+    identity = compose("exec", "-T", "db", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles", "-c", "SELECT current_database()||':'||current_user")
+    check(identity == "articles:articles_owner", "DB 身分不符")
+    if PRESET == "cq34":
+        system = compose("exec", "-T", "db", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles", "-c", "SELECT system_identifier FROM pg_control_system()")
+        check(system.isdecimal(), "CQ34 DB cluster 身分不符")
+    result = None
+    if PRESET == "cq34":
+        result = {"project": project, "root": str(CQ34_ROOT), "source": source, "keys": keys, "images": images,
+                  "volume": volume["Name"], "volume_created": volume["CreatedAt"], "database": system}
     SAFE = True
-    check(sql("SELECT current_database()||':'||current_user") == "articles:articles_owner", "DB 身分不符")
+    return result
 
 
 # expect 精確核對共用 envelope、狀態碼、錯誤文案與 errors，忽略每請求獨立的 log_id。
@@ -125,7 +327,34 @@ def expect(result, status, code=None, fields=None):
 
 # request 保留相同 method、path 與 body，讓每個後端走自己的公開 HTTP 入口。
 def request(backend, method, path, body=None, token=None):
-    return call(BASES[backend], method, path, body, token)
+    if PRESET != "cq34":
+        return call(BASES[backend], method, path, body, token)
+    check(SAFE and backend in BACKENDS, "尚未核對 CQ34 HTTP 目標")
+    check(CQ34_RECOVERY is not None and not CQ34_RECOVERY[2]["uncertain"] or method in ("GET", "HEAD", "OPTIONS"),
+          "CQ34 前筆寫入結果未知，停止新寫入")
+    headers = {"Origin": "http://localhost:8080"}
+    if token is not None:
+        headers["Authorization"] = "Bearer " + token
+    if isinstance(body, (dict, list)):
+        body = json.dumps(body, ensure_ascii=False).encode()
+    elif isinstance(body, str):
+        body = body.encode()
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    try:
+        response = open_response(Request(BASES[backend] + path, data=body, headers=headers, method=method), timeout=15)
+    except HTTPError as error:
+        response = error
+    try:
+        with response:
+            raw = response.read()
+            check(response.headers.get("Access-Control-Allow-Origin") == "http://localhost:8080", "CQ34 回應 Origin 不符")
+            return response.status, json.loads(raw) if raw else None, response.headers
+    except (OSError, TimeoutError, ValueError, HTTPException, KeyboardInterrupt):
+        # body 截斷或讀取中斷同樣不能判定寫入結果；cleanup 只收束已知 fixture，不代表回滾。
+        if method not in ("GET", "HEAD", "OPTIONS"):
+            mark_cq34_uncertain()
+        raise
 
 
 # api_log_lines 從已核對的隔離服務讀近期安全事件，避免輸出日誌中的請求內容。
@@ -470,6 +699,7 @@ def lockout_cases(backend, nonce):
 
         # 只調整本次隔離帳號的期限；資料庫時間在期限兩側各驅動一次真實登入。
         epoch = int(sql(f"SELECT failure_epoch FROM accounts WHERE id={member['id']}"))
+        record_time_fixture("accounts", member["id"])
         sql(f"UPDATE accounts SET locked_until=clock_timestamp()+interval '4 seconds' WHERE id={member['id']}")
         check(sql(f"SELECT clock_timestamp()<locked_until FROM accounts WHERE id={member['id']}") == "t",
               "到期前測資未生效")
@@ -605,11 +835,13 @@ def boundary_trigger(member_id, epoch, first_id, microseconds, *, execute=sql):
         parsed = boundary_receipt(json.loads(raw))
         check(len(parsed['triggers']) == 1, '本輪 DDL pair 未完整建立')
         owned = parsed
+        record_boundary_receipt(owned)
         yield owned
     finally:
         # 工具或 JSON/receipt 失敗不授 ownership；清理再失敗仍保留原案例的例外鏈。
         if owned is not None:
             clear_boundary_trigger(owned, execute=execute)
+            record_boundary_receipt(None)
 
 
 # exact_boundary_cases 以真實第二次登入時間對齊舊事件，分別驗證 HTTP 左界相等與晚一微秒。
@@ -626,6 +858,7 @@ def exact_boundary_cases(backend, nonce, admin_token):
         first_id = sql(f"SELECT id FROM login_failures WHERE account_id={member_id} AND failure_epoch={epoch}")
         check(first_id.isdecimal(), "精確邊界第一筆事件不唯一")
 
+        record_time_fixture("login_failures", member_id, event_id=int(first_id))
         # 應用只有 INSERT 權限；owner 建立的 SECURITY DEFINER 僅可改此帳號／世代的第一筆事件。
         with boundary_trigger(member_id, epoch, int(first_id), microseconds):
             result = request(backend, "POST", "/api/auth/login", wrong)
@@ -665,6 +898,7 @@ def lockout_edge_cases(backend, nonce):
         expect(request(backend, "POST", "/api/auth/login", wrong), 401, "E0101")
         check(sql(f"SELECT count(*) FROM login_failures WHERE account_id={member_id} AND failure_epoch={epoch}") == "2",
               "401 未保存第二筆失敗")
+        record_time_fixture("login_failures", member_id, epoch=epoch)
         # 兩筆都移至短視窗之外；第三次若錯算這兩筆，會錯誤達到門檻 3。
         check(sql(f"WITH shifted AS (UPDATE login_failures SET occurred_at=clock_timestamp()-interval '62 seconds' "
                   f"WHERE account_id={member_id} AND failure_epoch={epoch} RETURNING id) "
@@ -685,6 +919,7 @@ def lockout_edge_cases(backend, nonce):
               "N 調大後 429 未提交第四筆失敗與到期時間")
 
         # 縮短既有鎖定期限後再重試，檢查 429 回傳剩餘秒數，且請求不得延長期限或新增失敗。
+        record_time_fixture("accounts", member_id)
         shortened_until = sql(f"UPDATE accounts SET locked_until=clock_timestamp()+interval '4 seconds' "
                               f"WHERE id={member_id} RETURNING locked_until::text")
         check(sql(f"SELECT clock_timestamp()<locked_until FROM accounts WHERE id={member_id}") == "t",
