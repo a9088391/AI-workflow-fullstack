@@ -15,7 +15,12 @@ class Database
     {
         if ($this->connection === null) {
             $this->connection = new PDO(
-                sprintf('pgsql:host=%s;port=%s;dbname=%s', getenv('DB_HOST') ?: 'db', getenv('DB_PORT') ?: '5432', getenv('DB_DATABASE') ?: 'articles'),
+                sprintf(
+                    'pgsql:host=%s;port=%s;dbname=%s',
+                    getenv('DB_HOST') ?: 'db',
+                    getenv('DB_PORT') ?: '5432',
+                    getenv('DB_DATABASE') ?: 'articles'
+                ),
                 getenv('DB_USERNAME') ?: 'articles_app',
                 getenv('DB_PASSWORD') ?: '',
                 [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_OBJ]

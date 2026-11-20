@@ -177,10 +177,7 @@ class AccountController extends HttpController
         if ($emptyAllowed && $raw === '') {
             return new stdClass();
         }
-        if (
-            $raw === ''
-            || ! str_starts_with(strtolower($request->headers->get('Content-Type', '')), 'application/json')
-        ) {
+        if ($raw === '' || ! $this->hasJsonContentType($request)) {
             throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
         }
         try {

@@ -85,14 +85,19 @@ abstract class HttpController
         }
     }
 
+    /** 只比對分號前的完整媒體型態，容許大小寫與參數但拒絕 application/jsonish 等前綴。 */
+    protected function hasJsonContentType(Request $request): bool
+    {
+        $mediaType = explode(';', $request->headers->get('Content-Type', ''), 2)[0];
+
+        return strtolower(trim($mediaType)) === 'application/json';
+    }
+
     /** 共同 Body 驗證保留欄位順序及逐欄第一個錯誤，嚴格檢查版本整數。 */
     protected function contentBody(Request $request, array $fields): stdClass
     {
         $raw = $request->getContent();
-        if (
-            $raw === ''
-            || ! str_starts_with(strtolower($request->headers->get('Content-Type', '')), 'application/json')
-        ) {
+        if ($raw === '' || ! $this->hasJsonContentType($request)) {
             throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
         }
         try {

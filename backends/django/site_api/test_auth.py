@@ -6,8 +6,11 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.test import RequestFactory
+
+from .accounts import register
 from .core import ApiError, authenticate
-from .views import json_body
+from .input import json_body
 
 
 # 資料庫約束會拒絕半秒紀錄；此測試直接檢查驗證器的額外防線。
@@ -63,3 +66,34 @@ class JsonDepthTests(unittest.TestCase):
         shallow = prefix + 'null,"nickname":"Reader"}'
         request = SimpleNamespace(body=shallow.encode("utf-8"), content_type="application/json")
         self.assertEqual(json_body(request, fields)["nickname"], "Reader")
+
+
+# 以 Django 原生請求走正式解析器，避免測試替身掩蓋 Content-Type 的框架解析。
+class JsonMediaTypeTests(unittest.TestCase):
+    # 近似前綴不是 JSON；合法 charset 與大小寫仍須進入既有欄位驗證。
+    def test_register_requires_exact_json_media_type(self):
+        required = {field: ["此欄位為必填"] for field in ("email", "password", "nickname")}
+        for content_type, errors in (
+            ("application/jsonish", {"_body": ["Request Body 必須為 JSON object"]}),
+            ("application/json; charset=UTF-8", required),
+            ("Application/JSON; charset=UTF-8", required),
+        ):
+            with self.subTest(content_type=content_type), patch("site_api.accounts.connect") as connect:
+                request = RequestFactory().generic(
+                    "POST", "/api/auth/register", data=b"{}", content_type=content_type,
+                )
+                # 原始標頭保留參數；Django 的 content_type 已取出並正規化媒體型態。
+                self.assertEqual(request.META["CONTENT_TYPE"], content_type)
+                self.assertEqual(request.content_type, content_type.split(";", 1)[0].lower())
+                response = register(request)
+                payload = json.loads(response.content)
+                self.assertEqual((response.status_code, payload["error_code"]), (422, "E0001"))
+                self.assertEqual(payload["errors"], errors)
+                connect.assert_not_called()
+
+    # 登出允許的空 Body 先返回，不應被媒體型態檢查擋住。
+    def test_optional_empty_body_precedes_media_type(self):
+        request = RequestFactory().generic(
+            "POST", "/api/auth/logout", data=b"", CONTENT_TYPE="application/jsonish",
+        )
+        self.assertEqual(json_body(request, (), empty_allowed=True), {})

@@ -103,7 +103,7 @@ public sealed class AuthController(JwtToken jwt) : ApiControllerBase(jwt)
         await db.ExecuteAsync("INSERT INTO login_sessions (jti, account_id, backend_id, issued_at, expires_at) VALUES (@jti, @id, 'aspnet-core', @issued, @expires)",
             new() { ["jti"] = jti, ["id"] = Long(account, "id"), ["issued"] = DateTimeOffset.FromUnixTimeSeconds(issued).UtcDateTime, ["expires"] = DateTimeOffset.FromUnixTimeSeconds(expires).UtcDateTime }, cancellationToken);
         await db.CommitAsync(cancellationToken);
-        return ApiEnvelope.Success(new { access_token = token, token_type = "Bearer", expires_at = Database.DisplayTime(DateTimeOffset.FromUnixTimeSeconds(expires).UtcDateTime), user = AccountResource(account) });
+        return ApiEnvelope.Success(new LoginResponse(token, "Bearer", Database.DisplayTime(DateTimeOffset.FromUnixTimeSeconds(expires).UtcDateTime), AccountResource(account)));
     }
 
     /// <summary>撤銷目前 jti 並提交後回成功，不影響同帳號其他獨立登入。</summary>

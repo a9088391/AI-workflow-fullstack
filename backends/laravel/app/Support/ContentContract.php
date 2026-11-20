@@ -108,7 +108,7 @@ trait ContentContract
     {
         // 先分開判定媒體型態、JSON 語法與 object 形狀，維持各自既定的 422／400 回應。
         $raw = $request->getContent();
-        if ($raw === '' || ! str_starts_with(strtolower($request->header('Content-Type', '')), 'application/json')) {
+        if ($raw === '' || ! $this->hasJsonContentType($request)) {
             return $this->invalid(['_body' => ['Request Body 必須為 JSON object']]);
         }
         try {

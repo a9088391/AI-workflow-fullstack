@@ -172,11 +172,9 @@ public sealed class AdministrationController(JwtToken jwt) : ApiControllerBase(j
     }
 
     /// <summary>設定資源只含四個共同契約欄位，維持 JSON 布林與整數型態。</summary>
-    private static object SettingsResource(Dictionary<string, object?> row) => new
-    {
-        enabled = (bool)(row["enabled"] ?? false),
-        window_minutes = Convert.ToInt32(row["window_minutes"]),
-        failure_threshold = Convert.ToInt32(row["failure_threshold"]),
-        lock_seconds = Convert.ToInt32(row["lock_seconds"])
-    };
+    private static object SettingsResource(Dictionary<string, object?> row) => new LoginLockoutResponse(
+        (bool)(row["enabled"] ?? false),
+        Convert.ToInt32(row["window_minutes"]),
+        Convert.ToInt32(row["failure_threshold"]),
+        Convert.ToInt32(row["lock_seconds"]));
 }

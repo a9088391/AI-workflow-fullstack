@@ -173,7 +173,7 @@ class AuthController extends Controller
         if ($raw === '' && $fields === []) {
             return new stdClass();
         }
-        if ($raw === '' || ! str_starts_with(strtolower($request->header('Content-Type', '')), 'application/json')) {
+        if ($raw === '' || ! $this->hasJsonContentType($request)) {
             return $this->invalid(['_body' => ['Request Body 必須為 JSON object']]);
         }
         try {

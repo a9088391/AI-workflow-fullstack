@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from .core import ApiError
-from .views import json_body, save_content, visibility_changes
+from .input import json_body
+from .content import save_content, visibility_changes
 
 
 # 純函式案例隔離共同 JSON 型態與恢復權規則，HTTP 案例另驗資料庫副作用。

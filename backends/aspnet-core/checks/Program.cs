@@ -1,5 +1,18 @@
 using AspNetCore;
 
+// 以 MVC 使用的 Web JSON 選項核對具名 DTO，保護 snake_case、null、整數精度及成功 envelope。
+var responseAccount = new AccountResponse(9007199254740991, null, "作者😀", "member", "active", "2026-11-20 08:00:00");
+CheckResponse(new LoginResponse("fixture", "Bearer", "2026-11-20 16:00:00", responseAccount),
+    """{"access_token":"fixture","token_type":"Bearer","expires_at":"2026-11-20 16:00:00","user":{"id":9007199254740991,"email":null,"nickname":"作者😀","role":"member","status":"active","created_at":"2026-11-20 08:00:00"}}""");
+CheckResponse(new ArticleResponse(1, "標題", "原文\r\n😀", new AuthorResponse(42, null), 2, "aspnet-core", "2026-11-20 08:00:00", "2026-11-20 09:00:00", "hidden", true),
+    """{"id":1,"title":"標題","body":"原文\r\n😀","author":{"id":42,"nickname":null},"version":2,"created_backend":"aspnet-core","created_at":"2026-11-20 08:00:00","updated_at":"2026-11-20 09:00:00","visibility":"hidden","can_restore":true}""");
+CheckResponse(new CommentResponse(3, "留言", new AuthorResponse(42, "作者"), 1, 4, "aspnet-core", "2026-11-20 08:00:00", "2026-11-20 09:00:00", "visible", false),
+    """{"id":3,"body":"留言","author":{"id":42,"nickname":"作者"},"article_id":1,"version":4,"created_backend":"aspnet-core","created_at":"2026-11-20 08:00:00","updated_at":"2026-11-20 09:00:00","visibility":"visible","can_restore":false}""");
+CheckResponse(new PaginationResponse(9007199254740991, 20, 0, 0),
+    """{"page":9007199254740991,"per_page":20,"total":0,"total_pages":0}""");
+CheckResponse(new LoginLockoutResponse(false, 5, 5, 300),
+    """{"enabled":false,"window_minutes":5,"failure_threshold":5,"lock_seconds":300}""");
+
 // PHP 8.4 password_hash 產生的 PHC fixture，檢查此套件的跨後端驗密碼互通。
 const string phpHash = "$argon2id$v=19$m=19456,t=2,p=1$OFJRRXJZdS5EVjVUbkFlRA$D7A0COna0A32je4cpl9dvej3v3f/iVLzQ1LQ9XO/04c";
 Check(await PasswordHash.VerifyAsync("Abc1234", phpHash), "Laravel/PHP PHC should verify");
@@ -183,6 +196,15 @@ finally
     File.Delete(keyFile);
 }
 Console.WriteLine("ASP.NET contract checks passed");
+
+/// <summary>比對完整成功回應的 JSON 結構，避免 records 新增、漏掉或重新命名公開欄位。</summary>
+static void CheckResponse(object data, string expectedData)
+{
+    var result = (Microsoft.AspNetCore.Mvc.ObjectResult)ApiEnvelope.Success(data);
+    var actual = System.Text.Json.JsonSerializer.SerializeToNode(result.Value, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+    var expected = System.Text.Json.Nodes.JsonNode.Parse("{\"success\":true,\"message\":\"OK\",\"data\":" + expectedData + "}");
+    Check(result.StatusCode == 200 && System.Text.Json.Nodes.JsonNode.DeepEquals(actual, expected), "response JSON contract");
+}
 
 /// <summary>在最小 console harness 中保留失敗出口，避免邏輯退化仍回零。</summary>
 static void Check(bool condition, string name)

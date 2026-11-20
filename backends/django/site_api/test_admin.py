@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from .core import ApiError
-from .views import json_body, list_input, login_lockout_settings, member_status, members
+from .input import json_body, list_input
+from .administration import login_lockout_settings, member_status, members
 
 
 # 用原始 Query 與 JSON 保留框架測試客戶端可能正規化掉的錯誤輸入。
@@ -110,8 +111,8 @@ class AdminInputTests(unittest.TestCase):
         connection = MagicMock()
         manager = MagicMock()
         manager.__enter__.return_value = connection
-        with patch("site_api.views.connect", return_value=manager) as connect, patch(
-            "site_api.views.authenticate", return_value=({"id": 1, "role": "admin"}, {})
+        with patch("site_api.administration.connect", return_value=manager) as connect, patch(
+            "site_api.administration.authenticate", return_value=({"id": 1, "role": "admin"}, {})
         ):
             response = login_lockout_settings(request)
         self.assertEqual(response.status_code, 422)
@@ -132,15 +133,15 @@ class AdminAuthorizationTests(unittest.TestCase):
             META={"QUERY_STRING": "page=bad&filters[keyword]=%00"},
         )
         # 未登入也須先拒絕，不讓 Body 或 NUL 改成驗證錯誤。
-        with patch("site_api.views.connect", return_value=manager), patch(
-            "site_api.views.authenticate", side_effect=ApiError("E0002")
+        with patch("site_api.administration.connect", return_value=manager), patch(
+            "site_api.administration.authenticate", side_effect=ApiError("E0002")
         ):
             response = members(request)
             self.assertEqual(response.status_code, 401)
             self.assertEqual(json.loads(response.content)["error_code"], "E0002")
             connection.execute.assert_not_called()
-        with patch("site_api.views.connect", return_value=manager), patch(
-            "site_api.views.authenticate", return_value=({"id": 1, "role": "member"}, {})
+        with patch("site_api.administration.connect", return_value=manager), patch(
+            "site_api.administration.authenticate", return_value=({"id": 1, "role": "member"}, {})
         ):
             response = members(request)
             self.assertEqual(response.status_code, 403)
@@ -161,8 +162,8 @@ class AdminAuthorizationTests(unittest.TestCase):
             method="GET", path="/api/members", headers={}, body=b"",
             META={"QUERY_STRING": "page=3&per_page=2&filters%5Bkeyword%5D=%00"},
         )
-        with patch("site_api.views.connect", return_value=manager), patch(
-            "site_api.views.authenticate", return_value=({"id": 1, "role": "admin"}, {})
+        with patch("site_api.administration.connect", return_value=manager), patch(
+            "site_api.administration.authenticate", return_value=({"id": 1, "role": "admin"}, {})
         ):
             response = members(request)
             payload = json.loads(response.content)

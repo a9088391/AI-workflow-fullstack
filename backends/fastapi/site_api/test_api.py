@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from . import app, core
+from . import accounts, administration, app, content, core
 from .input import json_body, list_input
 
 
@@ -147,8 +147,8 @@ class ApiTests(unittest.TestCase):
             (b"page=1&per_page=20&filters[keyword]=" + b"%F0%9F%98%80" * 255, {"filters.keyword": [core.INVALID]}),
         ):
             connection = Connection([])
-            with self.subTest(query=query), patch.object(app, "connect", return_value=connection), patch.object(
-                app, "authenticate", return_value=({"id": 9, "role": "admin"}, {})
+            with self.subTest(query=query), patch.object(administration, "connect", return_value=connection), patch.object(
+                administration, "authenticate", return_value=({"id": 9, "role": "admin"}, {})
             ):
                 response = asyncio.run(call("GET", "/api/members", query=query))
                 self.assertEqual(response[0]["status"], 422)
@@ -166,7 +166,7 @@ class ApiTests(unittest.TestCase):
             (({"id": 9, "role": "admin"}, {}), 422, "E0001", {"_body": ["此 API 不接受 Request Body"]}),
         ):
             connection = Connection([])
-            with self.subTest(status=status), patch.object(app, "connect", return_value=connection), patch.object(app, "authenticate") as authenticate:
+            with self.subTest(status=status), patch.object(administration, "connect", return_value=connection), patch.object(administration, "authenticate") as authenticate:
                 if isinstance(identity, core.ApiError):
                     authenticate.side_effect = identity
                 else:
@@ -186,11 +186,11 @@ class ApiTests(unittest.TestCase):
         ):
             request = Request(query=b"page=1&per_page=20&filters[keyword]=" + encoded)
             connection = Connection([{"count": 0}])
-            with self.subTest(encoded=encoded), patch.object(app, "connect", return_value=connection), patch.object(
-                app, "authenticate", return_value=({"id": 9, "role": "admin"}, {})
+            with self.subTest(encoded=encoded), patch.object(administration, "connect", return_value=connection), patch.object(
+                administration, "authenticate", return_value=({"id": 9, "role": "admin"}, {})
             ):
                 self.assertEqual(list_input(request, allow_keyword=True), (1, 20, keyword))
-                response = app.members(request, None)
+                response = administration.members(request, None)
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(json.loads(response.body)["data"]["pagination"], {"page": 1, "per_page": 20, "total": 0, "total_pages": 0})
                 self.assertEqual(len(connection.queries), 1)
@@ -248,16 +248,16 @@ class ApiTests(unittest.TestCase):
         row = {"id": 3, "author_id": 1, "title": "原題", "body": "原文", "version": 2,
                "visibility": "hidden", "restore_control": "author"}
         connection = Connection([])
-        app.save_content(connection, "articles", row, 2, {"title": "原題", "body": "原文"})
+        content.save_content(connection, "articles", row, 2, {"title": "原題", "body": "原文"})
         self.assertEqual(connection.queries, [])
         with self.assertRaises(core.ApiError) as stale:
-            app.save_content(connection, "articles", row, 1, {"title": "原題", "body": "原文"})
+            content.save_content(connection, "articles", row, 1, {"title": "原題", "body": "原文"})
         self.assertEqual(stale.exception.code, "E0201")
         admin = {"id": 9, "role": "admin"}
-        self.assertEqual(app.visibility_changes(row, admin, "hidden"),
+        self.assertEqual(content.visibility_changes(row, admin, "hidden"),
                          {"visibility": "hidden", "restore_control": "admin"})
         with self.assertRaises(core.ApiError) as forbidden:
-            app.visibility_changes(row | {"restore_control": "admin"},
+            content.visibility_changes(row | {"restore_control": "admin"},
                                    {"id": 1, "role": "member"}, "visible")
         self.assertEqual(forbidden.exception.code, "E0003")
 
@@ -266,9 +266,9 @@ class ApiTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         connection = LoginConnection(now)
         request = Request(body=b'{"email":"a@example.test","password":"wrong1"}')
-        with patch.object(app, "connect", return_value=connection), \
-             patch.object(app, "verify_password", return_value=False):
-            error = app.login(request, None)
+        with patch.object(accounts, "connect", return_value=connection), \
+             patch.object(accounts, "verify_password", return_value=False):
+            error = accounts.login(request, None)
         self.assertEqual(error.code, "E0105")
         self.assertEqual(error.retry_after, 30)
         self.assertEqual(connection.commits, 1)
@@ -295,17 +295,17 @@ class ApiTests(unittest.TestCase):
     # 公開列表只查公開資料，隱藏詳情不可洩漏存在性。
     def test_public_list_sql_and_hidden_article(self):
         connection = Connection([{"count": 1}, []])
-        with patch.object(app, "connect", return_value=connection):
-            response = app.articles(Request(query=b"page=2&per_page=1"), None)
+        with patch.object(content, "connect", return_value=connection):
+            response = content.articles(Request(query=b"page=2&per_page=1"), None)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.body)["data"]["pagination"],
                          {"page": 2, "per_page": 1, "total": 1, "total_pages": 1})
         self.assertIn("articles.visibility = 'visible'", connection.queries[0][0])
         self.assertEqual(len(connection.queries), 1)
         hidden = Connection([{"visibility": "hidden", "author_id": 9}])
-        with patch.object(app, "connect", return_value=hidden):
+        with patch.object(content, "connect", return_value=hidden):
             with self.assertRaises(core.ApiError) as missing:
-                app.article(Request(), "1")
+                content.article(Request(), "1")
         self.assertEqual(missing.exception.code, "E0004")
 
     # 就緒必須同時確認資料表與正式 JWT 金鑰，避免健康但無法登入。

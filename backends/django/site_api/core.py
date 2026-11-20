@@ -16,6 +16,9 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError, Verificatio
 from django.http import JsonResponse
 from psycopg.rows import dict_row
 
+from .dto import AccountDto, ArticleDto, CommentDto
+
+
 MESSAGES = {
     "E0001": (422, "欄位資料不正確，請確認後再送出"),
     "E0002": (401, "登入已逾期，請重新登入"),
@@ -279,20 +282,29 @@ def authenticate(request, connection, required=True):
     return account, claims
 
 
+# 寫入前依帳號→登入紀錄取得列鎖並重驗撤銷，讓登出與內容寫入有明確提交順序。
+def authenticate_write(request, connection):
+    account, claims = authenticate(request, connection)
+    connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
+    connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+    # 等待鎖期間可能已被停用或登出，不能直接沿用鎖前查到的身分。
+    return authenticate(request, connection)[0]
+
+
 # 統一輸出台北業務時間，避免資料庫連線時區差異。
 def business_time(value):
     return value.astimezone(TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # 只輸出目前帳號允許的欄位，角色與狀態採資料庫當下值。
-def account_resource(account):
+def account_resource(account) -> AccountDto:
     return {key: account[key] for key in ("id", "email", "nickname", "role", "status")} | {
         "created_at": business_time(account["created_at"])
     }
 
 
 # 依可見性與恢復控制者計算布林值，不把內部欄位洩漏到 API。
-def content_resource(row, viewer, kind):
+def content_resource(row, viewer, kind) -> ArticleDto | CommentDto:
     resource = {
         "id": row["id"],
         "author": {"id": row["author_id"], "nickname": row["nickname"]},

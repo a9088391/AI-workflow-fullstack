@@ -1,11 +1,24 @@
 """共同 API 的原始 Query、Body 與分頁驗證。"""
 
-import re
 from urllib.parse import unquote_plus, unquote_to_bytes
+import re
 
-from .core import (ApiError, DECIMAL, INVALID, NULL, PASSWORD, REQUIRED, TYPE,
-                   SPACE, normalize_email, reject_non_json_number, valid_email,
-                   valid_nickname)
+from .core import (
+    ApiError,
+    DECIMAL,
+    INVALID,
+    NULL,
+    PASSWORD,
+    REQUIRED,
+    SPACE,
+    TYPE,
+    normalize_email,
+    reject_non_json_number,
+    valid_email,
+    valid_nickname,
+)
+from .dto import PaginationDto
+
 
 # 解析原始 Query 鍵與值，保留重複、陣列形式及非法 UTF-8 的錯誤。
 def query_values(request, allowed):
@@ -217,7 +230,7 @@ def list_input(request, allow_scope=False, allow_keyword=False):
 
 
 # 精確總數與原頁碼組成共同分頁格式，超頁仍保留 total。
-def pagination(page, per_page, total):
+def pagination(page, per_page, total) -> PaginationDto:
     return {
         "page": page, "per_page": per_page, "total": total,
         "total_pages": (total + per_page - 1) // per_page,

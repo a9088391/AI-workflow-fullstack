@@ -16,6 +16,9 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError, Verificatio
 from flask import jsonify, make_response
 from psycopg.rows import dict_row
 
+from .dto import AccountDto, ArticleDto, CommentDto
+
+
 MESSAGES = {
     "E0001": (422, "欄位資料不正確，請確認後再送出"),
     "E0002": (401, "登入已逾期，請重新登入"),
@@ -277,20 +280,30 @@ def authenticate(request, connection, required=True):
     return account, claims
 
 
+# 寫入交易依帳號、session 順序鎖列再重驗，與登出及停用明確排序。
+def authenticate_write(request, connection):
+    account, claims = authenticate(request, connection)
+    # 等待期間可能已登出或停用，取得相容列鎖後必須重新讀取，不沿用外層結果。
+    connection.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account["id"],))
+    connection.execute("SELECT jti FROM login_sessions WHERE jti = %s FOR UPDATE", (claims["jti"],))
+    # 呼叫端在同一連線交易繼續鎖內容；離開 context 才提交或因例外回滾並釋放所有列鎖。
+    return authenticate(request, connection)[0]
+
+
 # 統一輸出台北業務時間，避免資料庫連線時區差異。
 def business_time(value):
     return value.astimezone(TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # 只輸出目前帳號允許的欄位，角色與狀態採資料庫當下值。
-def account_resource(account):
+def account_resource(account) -> AccountDto:
     return {key: account[key] for key in ("id", "email", "nickname", "role", "status")} | {
         "created_at": business_time(account["created_at"])
     }
 
 
 # 依可見性與恢復控制者計算布林值，不把內部欄位洩漏到 API。
-def content_resource(row, viewer, kind):
+def content_resource(row, viewer, kind) -> ArticleDto | CommentDto:
     # 呼叫端先裁決可讀性；只輸出公開作者欄位及同形資源，不洩漏 restore_control。
     resource = {
         "id": row["id"],

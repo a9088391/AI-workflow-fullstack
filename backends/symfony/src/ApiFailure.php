@@ -8,8 +8,12 @@ use RuntimeException;
 class ApiFailure extends RuntimeException
 {
     /** 將可預期的業務錯誤交給共同 envelope 轉換。 */
-    public function __construct(public string $codeName, public ?array $errors = null, public ?int $retryAfter = null, public ?int $httpStatus = null)
-    {
+    public function __construct(
+        public string $codeName,
+        public ?array $errors = null,
+        public ?int $retryAfter = null,
+        public ?int $httpStatus = null
+    ) {
         parent::__construct($codeName);
     }
 }

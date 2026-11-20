@@ -11,7 +11,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from .core import ApiError, b64url, issue_token, verify_token
-from .views import LOGGER, authenticate_write, create_app, save_content, visibility_changes
+from .core import authenticate_write
+from .http import LOGGER
+from .views import create_app
+from .content import save_content, visibility_changes
 
 
 # 不接觸共用資料庫；測試無效輸入必須在任何 SQL 前被拒絕。
@@ -36,7 +39,7 @@ class FlaskContractTests(unittest.TestCase):
             }),
         )
         for query, errors in cases:
-            with self.subTest(query=query), patch("site_api.views.connect") as connect:
+            with self.subTest(query=query), patch("site_api.accounts.connect") as connect:
                 response = self.client.post("/api/auth/register?" + query, data=b"{", content_type="application/json")
                 self.assertEqual((response.status_code, response.json["errors"]), (422, errors))
                 connect.assert_not_called()
@@ -44,7 +47,7 @@ class FlaskContractTests(unittest.TestCase):
         for query, message in (("page[0]=1", "欄位型態不正確"),
                                ("page=1&page[0]=2", "此參數不可重複"),
                                ("pa%67e=1&page=2", "此參數不可重複")):
-            with self.subTest(query=query), patch("site_api.views.connect"):
+            with self.subTest(query=query), patch("site_api.content.connect"):
                 response = self.client.get("/api/articles?per_page=20&" + query)
                 self.assertEqual((response.status_code, response.json["errors"]), (422, {"page": [message]}))
 
@@ -59,8 +62,8 @@ class FlaskContractTests(unittest.TestCase):
             ("put", "/api/settings/login-lockout?x=1", {}),
         )
         for method, path, body in paths:
-            with self.subTest(path=path), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=({"id": 1, "role": "member"}, {"jti": "j"})
+            with self.subTest(path=path), patch("site_api.administration.connect") as connect, patch(
+                "site_api.administration.authenticate", return_value=({"id": 1, "role": "member"}, {"jti": "j"})
             ):
                 response = getattr(self.client, method)(path, json=body)
                 self.assertEqual((response.status_code, response.json["error_code"]), (403, "E0003"))
@@ -68,14 +71,14 @@ class FlaskContractTests(unittest.TestCase):
 
     # 操作 05 的管理範圍也先驗角色，成功時不套用公開文章可見性條件。
     def test_article_management_scope(self):
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate", return_value=({"id": 1, "role": "member"}, {"jti": "j"})
+        with patch("site_api.content.connect") as connect, patch(
+            "site_api.content.authenticate", return_value=({"id": 1, "role": "member"}, {"jti": "j"})
         ):
             response = self.client.get("/api/articles?page=1&per_page=20&filters%5Bscope%5D=management")
             self.assertEqual((response.status_code, response.json["error_code"]), (403, "E0003"))
             connect.return_value.__enter__.return_value.execute.assert_not_called()
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate", return_value=({"id": 9, "role": "admin"}, {"jti": "j"})
+        with patch("site_api.content.connect") as connect, patch(
+            "site_api.content.authenticate", return_value=({"id": 9, "role": "admin"}, {"jti": "j"})
         ):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = {"count": 0}
@@ -86,7 +89,7 @@ class FlaskContractTests(unittest.TestCase):
     # 搜尋保留特殊字元為字面值，NUL 回驗證錯誤且不查資料，深頁仍回精確總數。
     def test_member_search_sql_and_pagination(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = {"count": 3}
             connection.execute.return_value.fetchall.return_value = []
@@ -99,7 +102,7 @@ class FlaskContractTests(unittest.TestCase):
             self.assertIn("role = 'member'", statements[0].args[0])
             self.assertIn("strpos(translate", statements[0].args[0])
             self.assertEqual(statements[0].args[1], ("a%_\\", "a%_\\"))
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             # 原始百分比編碼經 Flask 邊界解碼後，開頭、中間與結尾 NUL 都必須拒絕。
             for encoded in ("%00abc", "ab%00c", "abc%00"):
                 with self.subTest(encoded=encoded):
@@ -116,7 +119,7 @@ class FlaskContractTests(unittest.TestCase):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         account = {"id": 4, "email": "a@example.test", "nickname": "A君", "role": "member",
                    "status": "disabled", "created_at": datetime.now(timezone.utc)}
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             count = MagicMock()
             count.fetchone.return_value = {"count": 1}
@@ -139,25 +142,25 @@ class FlaskContractTests(unittest.TestCase):
             ("page=1&per_page=20&filters[keyword]=a&filters[keyword]=%00", {"filters.keyword": ["此參數不可重複"]}),
             ("page=1&per_page=20&filters[keyword][0]=%00", {"filters.keyword": ["欄位型態不正確"]}),
         ):
-            with self.subTest(query=query), patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            with self.subTest(query=query), patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
                 response = self.client.get("/api/members?" + query)
                 self.assertEqual((response.status_code, response.json["errors"]), (422, fields))
                 connect.return_value.__enter__.return_value.execute.assert_not_called()
         # 已驗管理員的非空 Body 優先拒絕，不合併 Query 錯誤。
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             response = self.client.get("/api/members?page=bad&filters[keyword]=%00", data=b"{}")
             self.assertEqual((response.status_code, response.json["errors"]), (422, {"_body": ["此 API 不接受 Request Body"]}))
             connect.return_value.__enter__.return_value.execute.assert_not_called()
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", side_effect=ApiError("E0002")):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", side_effect=ApiError("E0002")):
             response = self.client.get("/api/members?page=bad&filters[keyword]=%00", data=b"{}")
             self.assertEqual((response.status_code, response.json["error_code"]), (401, "E0002"))
             connect.return_value.__enter__.return_value.execute.assert_not_called()
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=" + "界" * 255)
             self.assertEqual((response.status_code, response.json["errors"]["filters.keyword"]),
                              (422, ["欄位格式或範圍不正確"]))
             connect.return_value.__enter__.return_value.execute.assert_not_called()
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = {"count": 0}
             response = self.client.get("/api/members?page=1&per_page=20&filters%5Bkeyword%5D=+%09A+%C3%89+")
@@ -165,7 +168,7 @@ class FlaskContractTests(unittest.TestCase):
             self.assertEqual(connection.execute.call_args_list[0].args[1], ("\ta É", "\ta É"))
         # 文字 escape 不是 NUL；254 個非 BMP 碼點在裁切 ASCII 空格後仍合法。
         for encoded, keyword in (("+%5Cu0000+", "\\u0000"), ("+" + "%F0%9F%98%80" * 254 + "+", "😀" * 254)):
-            with self.subTest(encoded=encoded), patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+            with self.subTest(encoded=encoded), patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchone.return_value = {"count": 0}
                 response = self.client.get("/api/members?page=1&per_page=20&filters[keyword]=" + encoded)
@@ -175,13 +178,13 @@ class FlaskContractTests(unittest.TestCase):
     # 管理員帳號與不存在 ID 均隱藏，且詳情只輸出公開的會員欄位。
     def test_member_detail_hides_admin(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
             response = self.client.get("/api/members/4")
             self.assertEqual((response.status_code, response.json["error_code"]), (404, "E0004"))
             self.assertIn("role = 'member'", connection.execute.call_args.args[0])
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = {
                 "id": 4, "email": "reader@example.test", "nickname": "讀者", "role": "member",
@@ -195,8 +198,8 @@ class FlaskContractTests(unittest.TestCase):
     def test_member_status_noop_and_disable(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         for current, expected_updates in (("disabled", 0), ("active", 2)):
-            with self.subTest(current=current), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=admin
+            with self.subTest(current=current), patch("site_api.administration.connect") as connect, patch(
+                "site_api.administration.authenticate", return_value=admin
             ):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchall.return_value = [
@@ -215,8 +218,8 @@ class FlaskContractTests(unittest.TestCase):
     def test_member_status_restore_and_admin_target(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         for target_role, expected in (("member", 200), ("admin", 404)):
-            with self.subTest(target_role=target_role), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=admin
+            with self.subTest(target_role=target_role), patch("site_api.administration.connect") as connect, patch(
+                "site_api.administration.authenticate", return_value=admin
             ):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchall.return_value = [
@@ -231,8 +234,8 @@ class FlaskContractTests(unittest.TestCase):
     # 預驗後若管理員 session 或角色失效，交易內重驗必須阻止狀態變更。
     def test_member_status_rechecks_identity_after_locks(self):
         initial = ({"id": 9, "role": "admin"}, {"jti": "j"})
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate", side_effect=(initial, ApiError("E0002"))
+        with patch("site_api.administration.connect") as connect, patch(
+            "site_api.administration.authenticate", side_effect=(initial, ApiError("E0002"))
         ):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchall.return_value = [
@@ -249,7 +252,7 @@ class FlaskContractTests(unittest.TestCase):
         row = {"id": 8, "author_id": 4, "article_id": 3, "body": "內容", "visibility": "hidden",
                "restore_control": "admin", "version": 2, "created_backend": "flask",
                "created_at": now, "updated_at": now, "nickname": "作者"}
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             count = MagicMock()
             count.fetchone.return_value = {"count": 1}
@@ -275,8 +278,8 @@ class FlaskContractTests(unittest.TestCase):
             ({"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300, "extra": 1}, "extra", "不支援此欄位"),
         )
         for body, field, expected in cases:
-            with self.subTest(body=body), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=admin
+            with self.subTest(body=body), patch("site_api.administration.connect") as connect, patch(
+                "site_api.administration.authenticate", return_value=admin
             ):
                 response = self.client.put("/api/settings/login-lockout", json=body)
                 self.assertEqual((response.status_code, response.json["errors"][field]), (422, [expected]))
@@ -287,7 +290,7 @@ class FlaskContractTests(unittest.TestCase):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         original = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
         next_values = original | {"enabled": False}
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = original
             response = self.client.put("/api/settings/login-lockout", json=next_values)
@@ -304,8 +307,8 @@ class FlaskContractTests(unittest.TestCase):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         original = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
         for body, expected_updates in ((original, 0), (original | {"lock_seconds": 600}, 1)):
-            with self.subTest(body=body), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=admin
+            with self.subTest(body=body), patch("site_api.administration.connect") as connect, patch(
+                "site_api.administration.authenticate", return_value=admin
             ):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchone.return_value = original
@@ -314,7 +317,7 @@ class FlaskContractTests(unittest.TestCase):
                 updates = [call.args[0] for call in connection.execute.call_args_list if call.args[0].startswith("UPDATE ")]
                 self.assertEqual(len(updates), expected_updates)
                 self.assertFalse(any("locked_until" in statement for statement in updates))
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = original | {"id": 1}
             response = self.client.get("/api/settings/login-lockout")
@@ -324,8 +327,8 @@ class FlaskContractTests(unittest.TestCase):
     def test_lockout_settings_rechecks_identity_after_locks(self):
         initial = ({"id": 9, "role": "admin"}, {"jti": "j"})
         body = {"enabled": False, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate", side_effect=(initial, ({"id": 9, "role": "member"}, {"jti": "j"}))
+        with patch("site_api.administration.connect") as connect, patch(
+            "site_api.administration.authenticate", side_effect=(initial, ({"id": 9, "role": "member"}, {"jti": "j"}))
         ):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = body | {"enabled": True}
@@ -337,7 +340,7 @@ class FlaskContractTests(unittest.TestCase):
     def test_lockout_settings_head_never_writes(self):
         admin = ({"id": 9, "role": "admin"}, {"jti": "j"})
         settings = {"enabled": True, "window_minutes": 5, "failure_threshold": 5, "lock_seconds": 300}
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = settings
             response = self.client.open("/api/settings/login-lockout", method="HEAD",
@@ -345,7 +348,7 @@ class FlaskContractTests(unittest.TestCase):
                                         content_type="application/json")
             self.assertEqual(response.status_code, 422)
             connection.execute.assert_not_called()
-        with patch("site_api.views.connect") as connect, patch("site_api.views.authenticate", return_value=admin):
+        with patch("site_api.administration.connect") as connect, patch("site_api.administration.authenticate", return_value=admin):
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = settings
             response = self.client.open("/api/settings/login-lockout", method="HEAD")
@@ -356,7 +359,7 @@ class FlaskContractTests(unittest.TestCase):
     # 4／16 碼接受且 3／17 碼拒絕，確認格式錯誤不進入 DB。
     def test_password_boundaries(self):
         for password in ("abc", "a" * 17, "測試1234", "ab c"):
-            with self.subTest(password=password), patch("site_api.views.connect") as connect:
+            with self.subTest(password=password), patch("site_api.accounts.connect") as connect:
                 response = self.client.post("/api/auth/register", json={
                     "email": "demo@example.test", "password": password, "nickname": "讀者",
                 })
@@ -364,8 +367,8 @@ class FlaskContractTests(unittest.TestCase):
                 self.assertEqual(response.json["errors"]["password"], ["欄位格式或範圍不正確"])
                 connect.assert_not_called()
         for password in ("abcd", "a" * 16):
-            with self.subTest(password=password), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.password_hash", return_value="hash"
+            with self.subTest(password=password), patch("site_api.accounts.connect") as connect, patch(
+                "site_api.accounts.password_hash", return_value="hash"
             ):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchone.return_value = None
@@ -382,18 +385,42 @@ class FlaskContractTests(unittest.TestCase):
             ("/api/auth/register?x=1", b'{}', "x", "不支援此欄位"),
         )
         for path, body, field, message in cases:
-            with self.subTest(path=path), patch("site_api.views.connect") as connect:
+            with self.subTest(path=path), patch("site_api.accounts.connect") as connect:
                 response = self.client.post(path, data=body, content_type="application/json")
                 self.assertEqual(response.status_code, 422)
                 self.assertEqual(response.json["errors"][field], [message])
                 connect.assert_not_called()
-        with patch("site_api.views.connect") as connect:
+        with patch("site_api.content.connect") as connect:
             response = self.client.get("/api/articles?page=1&page=2&per_page=20")
             self.assertEqual(response.json["errors"]["page"], ["此參數不可重複"])
             response = self.client.get("/api/articles?page=1&per_page=20", data="x")
             self.assertEqual(response.json["errors"]["_body"], ["此 API 不接受 Request Body"])
             self.assertEqual(response.status_code, 422)
             self.assertEqual(connect.call_count, 2)
+
+    # 近似前綴不是 JSON；合法 charset 與大小寫仍須進入既有欄位驗證。
+    def test_register_requires_exact_json_media_type(self):
+        required = {field: ["此欄位為必填"] for field in ("email", "password", "nickname")}
+        for content_type, errors in (
+            ("application/jsonish", {"_body": ["Request Body 必須為 JSON object"]}),
+            ("application/json; charset=UTF-8", required),
+            ("Application/JSON; charset=UTF-8", required),
+        ):
+            with self.subTest(content_type=content_type), patch("site_api.accounts.connect") as connect:
+                response = self.client.post("/api/auth/register", data=b"{}", content_type=content_type)
+                self.assertEqual((response.status_code, response.json["error_code"]), (422, "E0001"))
+                self.assertEqual(response.json["errors"], errors)
+                connect.assert_not_called()
+
+    # 登出的空 Body 仍先通過輸入捷徑，認證與撤銷維持原本流程。
+    def test_logout_empty_body_precedes_media_type(self):
+        with patch("site_api.accounts.connect") as connect, patch(
+            "site_api.accounts.authenticate", return_value=({"id": 1}, {"jti": "session"})
+        ) as authenticate:
+            response = self.client.post("/api/auth/logout", data=b"", content_type="application/jsonish")
+        self.assertEqual((response.status_code, response.json["data"]), (200, {}))
+        self.assertEqual(authenticate.call_count, 2)
+        self.assertIn("UPDATE login_sessions SET revoked_at", connect.return_value.__enter__.return_value.execute.call_args.args[0])
 
     # JWT 必須採 Flask issuer/audience；即使其他後端可用同金鑰重簽也不可跨用。
     def test_jwt_backend_and_claims_are_fixed(self):
@@ -426,7 +453,7 @@ class FlaskContractTests(unittest.TestCase):
             results = [MagicMock(), MagicMock()]
             results[0].fetchone.return_value = account
             results[1].fetchone.return_value = session
-            with self.subTest(field=field), patch("site_api.views.connect") as connect, patch(
+            with self.subTest(field=field), patch("site_api.accounts.connect") as connect, patch(
                 "site_api.core.verify_token", return_value=claims
             ):
                 connection = connect.return_value.__enter__.return_value
@@ -451,7 +478,7 @@ class FlaskContractTests(unittest.TestCase):
         for result, row in zip(results, rows):
             result.fetchone.return_value = row
         connection.execute.side_effect = results
-        with patch("site_api.views.connect") as connect, patch("site_api.views.verify_password") as verify:
+        with patch("site_api.accounts.connect") as connect, patch("site_api.accounts.verify_password") as verify:
             connect.return_value.__enter__.return_value = connection
             response = self.client.post("/api/auth/login", json={"email": "demo@example.test", "password": "abcd"})
         self.assertEqual((response.status_code, response.json["error_code"]), (403, "E0102"))
@@ -470,7 +497,7 @@ class FlaskContractTests(unittest.TestCase):
         results = [MagicMock() for _ in rows]
         for result, row in zip(results, rows):
             result.fetchone.return_value = row
-        with patch("site_api.views.connect") as connect, self.assertLogs("site_api", level="INFO") as captured:
+        with patch("site_api.accounts.connect") as connect, self.assertLogs("site_api", level="INFO") as captured:
             connection = connect.return_value.__enter__.return_value
             connection.execute.side_effect = results
             response = self.client.post("/api/auth/login", json={"email": "demo@example.test", "password": "abcd"})
@@ -504,7 +531,7 @@ class FlaskContractTests(unittest.TestCase):
         for result, row in zip(results, rows):
             result.fetchone.return_value = row
         connection.execute.side_effect = results
-        with patch("site_api.views.connect") as connect, patch("site_api.views.verify_password", return_value=False):
+        with patch("site_api.accounts.connect") as connect, patch("site_api.accounts.verify_password", return_value=False):
             connect.return_value.__enter__.return_value = connection
             response = self.client.post(
                 "/api/auth/login", json={"email": "demo@example.test", "password": "abcd"},
@@ -539,7 +566,7 @@ class FlaskContractTests(unittest.TestCase):
         for result, row in zip(results, rows):
             result.fetchone.return_value = row
         connection.execute.side_effect = results
-        with patch("site_api.views.connect") as connect, patch("site_api.views.verify_password") as verify:
+        with patch("site_api.accounts.connect") as connect, patch("site_api.accounts.verify_password") as verify:
             connect.return_value.__enter__.return_value = connection
             response = self.client.post("/api/auth/login", json={"email": "demo@example.test", "password": "abcd"})
         self.assertEqual((response.status_code, response.json["error_code"]), (429, "E0105"))
@@ -555,7 +582,7 @@ class FlaskContractTests(unittest.TestCase):
         self.assertEqual(len(LOGGER.handlers), handlers)
         self.assertEqual(LOGGER.level, logging.INFO)
         self.assertFalse(LOGGER.propagate)
-        with patch("site_api.views.connect") as connect, self.assertLogs("site_api", level="INFO") as captured:
+        with patch("site_api.content.connect") as connect, self.assertLogs("site_api", level="INFO") as captured:
             connection = connect.return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = {"count": 0}
             success = self.client.get("/api/articles?page=1&per_page=20")
@@ -576,8 +603,8 @@ class FlaskContractTests(unittest.TestCase):
 
     # 受保護寫入先查身分，欄位型態、空白與唯讀欄位都不能進入目標查詢。
     def test_author_write_auth_and_validation_order(self):
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate_write", side_effect=ApiError("E0002")
+        with patch("site_api.content.connect") as connect, patch(
+            "site_api.content.authenticate_write", side_effect=ApiError("E0002")
         ):
             response = self.client.put("/api/articles/bad?x=1", data="bad")
             self.assertEqual((response.status_code, response.json["error_code"]), (401, "E0002"))
@@ -589,8 +616,8 @@ class FlaskContractTests(unittest.TestCase):
             ("/api/articles/1", {"title": "好", "body": "內容", "version": 1, "author_id": 2}, "author_id", "不支援此欄位"),
         )
         for path, body, field, message in invalid:
-            with self.subTest(field=field), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate_write", return_value={"id": 1, "role": "member"}
+            with self.subTest(field=field), patch("site_api.content.connect") as connect, patch(
+                "site_api.content.authenticate_write", return_value={"id": 1, "role": "member"}
             ):
                 response = self.client.put(path, json=body)
                 self.assertEqual((response.status_code, response.json["errors"][field]), (422, [message]))
@@ -598,8 +625,8 @@ class FlaskContractTests(unittest.TestCase):
 
     # 發文由登入者及 Flask 寫入作者、來源，成功只回空資料而不推測新 ID。
     def test_article_create_fixed_author_and_source(self):
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate_write", return_value={"id": 8, "role": "member"}
+        with patch("site_api.content.connect") as connect, patch(
+            "site_api.content.authenticate_write", return_value={"id": 8, "role": "member"}
         ):
             response = self.client.post("/api/articles", json={"title": "原題", "body": "第一行\r\n第二行"})
             connection = connect.return_value.__enter__.return_value
@@ -619,8 +646,8 @@ class FlaskContractTests(unittest.TestCase):
             ({"id": 1, "role": "member"}, {"version": 1}, 409),
             ({"id": 1, "role": "member"}, {}, 200),
         ):
-            with self.subTest(expected=expected, changes=changes), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate_write", return_value=viewer
+            with self.subTest(expected=expected, changes=changes), patch("site_api.content.connect") as connect, patch(
+                "site_api.content.authenticate_write", return_value=viewer
             ):
                 current = row | {key: value for key, value in changes.items() if key == "visibility"}
                 if current["visibility"] == "hidden":
@@ -663,7 +690,7 @@ class FlaskContractTests(unittest.TestCase):
     def test_write_identity_locks_and_rechecks(self):
         connection = MagicMock()
         identity = ({"id": 8, "role": "member"}, {"jti": "session"})
-        with patch("site_api.views.authenticate", side_effect=(identity, ApiError("E0002"))) as auth:
+        with patch("site_api.core.authenticate", side_effect=(identity, ApiError("E0002"))) as auth:
             with self.assertRaises(ApiError) as rejected:
                 authenticate_write(MagicMock(), connection)
         self.assertEqual(rejected.exception.code, "E0002")
@@ -678,8 +705,8 @@ class FlaskContractTests(unittest.TestCase):
     def test_my_content_scope_and_over_page(self):
         viewer = {"id": 8, "role": "member"}
         for path, table in (("/api/me/articles", "articles"), ("/api/me/comments", "comments")):
-            with self.subTest(table=table), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=(viewer, {})
+            with self.subTest(table=table), patch("site_api.content.connect") as connect, patch(
+                "site_api.content.authenticate", return_value=(viewer, {})
             ):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchone.return_value = {"count": 3}
@@ -703,8 +730,8 @@ class FlaskContractTests(unittest.TestCase):
     # 父文章下架時，無預覽權回 404；作者預覽權回 403，均不能新增留言。
     def test_comment_create_hidden_parent_order(self):
         for viewer, expected in (({"id": 2, "role": "member"}, 404), ({"id": 1, "role": "member"}, 403)):
-            with self.subTest(expected=expected), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate_write", return_value=viewer
+            with self.subTest(expected=expected), patch("site_api.content.connect") as connect, patch(
+                "site_api.content.authenticate_write", return_value=viewer
             ):
                 connection = connect.return_value.__enter__.return_value
                 connection.execute.return_value.fetchone.return_value = {"author_id": 1, "visibility": "hidden"}
@@ -722,8 +749,8 @@ class FlaskContractTests(unittest.TestCase):
         for result, row in zip(results, rows):
             result.fetchone.return_value = row
         connection.execute.side_effect = results
-        with patch("site_api.views.connect") as connect, patch(
-            "site_api.views.authenticate_write", return_value={"id": 1, "role": "member"}
+        with patch("site_api.content.connect") as connect, patch(
+            "site_api.content.authenticate_write", return_value={"id": 1, "role": "member"}
         ):
             connect.return_value.__enter__.return_value = connection
             response = self.client.put("/api/comments/5", json={"body": "新內文", "version": 1})
@@ -748,8 +775,8 @@ class FlaskContractTests(unittest.TestCase):
             ({"id": 2, "role": "member"}, row, 404),
             ({"id": 2, "role": "member"}, row | {"visibility": "visible", "article_visibility": "visible"}, 403),
         ):
-            with self.subTest(expected=expected), patch("site_api.views.connect") as connect, patch(
-                "site_api.views.authenticate", return_value=(viewer, {})
+            with self.subTest(expected=expected), patch("site_api.content.connect") as connect, patch(
+                "site_api.content.authenticate", return_value=(viewer, {})
             ):
                 connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = target
                 response = self.client.get("/api/comments/5")

@@ -41,56 +41,50 @@ public abstract class ApiControllerBase(JwtToken jwt) : ControllerBase
     }
 
     /// <summary>帳號輸出只含本人可見的六個欄位，不輸出雜湊、鎖定與登入紀錄。</summary>
-    protected static object AccountResource(Dictionary<string, object?> account) => new
-    {
-        id = Long(account, "id"),
-        email = String(account, "email"),
-        nickname = String(account, "nickname"),
-        role = String(account, "role"),
-        status = String(account, "status"),
-        created_at = Database.DisplayTime(Date(account, "created_at"))
-    };
+    protected static object AccountResource(Dictionary<string, object?> account) => new AccountResponse(
+        Long(account, "id"),
+        String(account, "email"),
+        String(account, "nickname"),
+        String(account, "role"),
+        String(account, "status"),
+        Database.DisplayTime(Date(account, "created_at")));
 
     /// <summary>文章只包含公開作者及核准的狀態欄位，恢復能力依目前身分計算。</summary>
     protected static object ArticleResource(Dictionary<string, object?> row, Identity? viewer)
     {
         var own = viewer is not null && Long(viewer.Account, "id") == Long(row, "author_id");
-        return new
-        {
-            id = Long(row, "id"),
-            title = String(row, "title"),
-            body = String(row, "body"),
-            author = new { id = Long(row, "author_id"), nickname = String(row, "nickname") },
-            version = Long(row, "version"),
-            created_backend = String(row, "created_backend"),
-            created_at = Database.DisplayTime(Date(row, "created_at")),
-            updated_at = Database.DisplayTime(Date(row, "updated_at")),
-            visibility = String(row, "visibility"),
-            can_restore = String(row, "visibility") == "hidden" && (viewer is not null && (String(viewer.Account, "role") == "admin" || own && String(row, "restore_control") == "author"))
-        };
+        return new ArticleResponse(
+            Long(row, "id"),
+            String(row, "title"),
+            String(row, "body"),
+            new AuthorResponse(Long(row, "author_id"), String(row, "nickname")),
+            Long(row, "version"),
+            String(row, "created_backend"),
+            Database.DisplayTime(Date(row, "created_at")),
+            Database.DisplayTime(Date(row, "updated_at")),
+            String(row, "visibility"),
+            String(row, "visibility") == "hidden" && (viewer is not null && (String(viewer.Account, "role") == "admin" || own && String(row, "restore_control") == "author")));
     }
 
     /// <summary>留言不附父文章或作者 Email，避免列表擴張公開資料。</summary>
     protected static object CommentResource(Dictionary<string, object?> row, Identity? viewer)
     {
         var own = viewer is not null && Long(viewer.Account, "id") == Long(row, "author_id");
-        return new
-        {
-            id = Long(row, "id"),
-            body = String(row, "body"),
-            author = new { id = Long(row, "author_id"), nickname = String(row, "nickname") },
-            article_id = Long(row, "article_id"),
-            version = Long(row, "version"),
-            created_backend = String(row, "created_backend"),
-            created_at = Database.DisplayTime(Date(row, "created_at")),
-            updated_at = Database.DisplayTime(Date(row, "updated_at")),
-            visibility = String(row, "visibility"),
-            can_restore = String(row, "visibility") == "hidden" && (viewer is not null && (String(viewer.Account, "role") == "admin" || own && String(row, "restore_control") == "author"))
-        };
+        return new CommentResponse(
+            Long(row, "id"),
+            String(row, "body"),
+            new AuthorResponse(Long(row, "author_id"), String(row, "nickname")),
+            Long(row, "article_id"),
+            Long(row, "version"),
+            String(row, "created_backend"),
+            Database.DisplayTime(Date(row, "created_at")),
+            Database.DisplayTime(Date(row, "updated_at")),
+            String(row, "visibility"),
+            String(row, "visibility") == "hidden" && (viewer is not null && (String(viewer.Account, "role") == "admin" || own && String(row, "restore_control") == "author")));
     }
 
     /// <summary>分頁保留原頁碼及資料庫精確總數，超頁回空列表而不修改 total。</summary>
-    protected static object Pagination(long page, int perPage, long total) => new { page, per_page = perPage, total, total_pages = total / perPage + (total % perPage == 0 ? 0 : 1) };
+    protected static object Pagination(long page, int perPage, long total) => new PaginationResponse(page, perPage, total, total / perPage + (total % perPage == 0 ? 0 : 1));
 
     /// <summary>取欄位整數時維持 PostgreSQL bigint，不經浮點數而丟失安全整數精度。</summary>
     protected static long Long(Dictionary<string, object?> row, string name) => Convert.ToInt64(row[name], CultureInfo.InvariantCulture);

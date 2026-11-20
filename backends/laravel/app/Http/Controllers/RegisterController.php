@@ -37,7 +37,7 @@ class RegisterController extends Controller
         }
 
         // 媒體型態與空 Body 屬結構錯誤；JSON 語法錯誤另回 400，不混成欄位驗證失敗。
-        if (! str_starts_with(strtolower($request->header('Content-Type', '')), 'application/json')) {
+        if (! $this->hasJsonContentType($request)) {
             return ApiResponse::error(422, 'E0001', '欄位資料不正確，請確認後再送出', ['_body' => ['Request Body 必須為 JSON object']]);
         }
         if ($request->getContent() === '') {

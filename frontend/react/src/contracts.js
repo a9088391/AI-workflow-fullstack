@@ -9,6 +9,40 @@ export const BACKENDS = {
   fastify: ['Fastify', 'http://localhost:8091'], nestjs: ['NestJS', 'http://localhost:8092'],
 }
 export const FRONTENDS = { vue: 'Vue 3＋Vite', nuxt: 'Nuxt', react: 'React＋Vite', next: 'Next.js', angular: 'Angular', sveltekit: 'SvelteKit' }
+
+/**
+ * HTTP DTO 只描述共同 API 欄位；外部回應仍須通過下方既有驗證器，不能以型別宣告取代驗證。
+ * @typedef {{email: string, password: string}} LoginInputDto
+ * @typedef {LoginInputDto & {nickname: string}} RegisterInputDto
+ * @typedef {{id: number, email: string, nickname: string, role: 'member' | 'admin', status: 'active', created_at: string}} AccountDto
+ * @typedef {Omit<AccountDto, 'role' | 'status'> & {role: 'member', status: 'active' | 'disabled'}} MemberDto
+ * @typedef {{access_token: string, token_type: 'Bearer', expires_at: string, user: AccountDto}} LoginResultDto
+ * @typedef {{id: number, nickname: string}} AuthorDto
+ * @typedef {{id: number, body: string, author: AuthorDto, version: number, created_backend: keyof typeof BACKENDS, created_at: string, updated_at: string, visibility: 'visible' | 'hidden', can_restore: boolean}} ContentDto
+ * @typedef {ContentDto & {title: string}} ArticleDto
+ * @typedef {ContentDto & {article_id: number}} CommentDto
+ * @typedef {{title: string, body: string}} ArticleInputDto
+ * @typedef {{body: string}} CommentInputDto
+ * @typedef {(ArticleInputDto | CommentInputDto) & {version: number}} ContentUpdateInputDto
+ * @typedef {{visibility: 'visible' | 'hidden', version: number}} VisibilityInputDto
+ * @typedef {{status: 'active' | 'disabled'}} MemberStatusInputDto
+ * @typedef {{enabled: boolean, window_minutes: number, failure_threshold: number, lock_seconds: number}} LockoutSettingsDto
+ * @typedef {{page: number, per_page: number, total: number, total_pages: number}} PaginationDto
+ * @typedef {{success: false, message: string, error_code: string, log_id: string, errors?: Object<string, string[]>}} ApiFailureDto
+ */
+
+/**
+ * 列表 DTO 保留完整資源與伺服器分頁，畫面不能自行推算或裁掉讀回欄位。
+ * @template T
+ * @typedef {{list: T[], pagination: PaginationDto}} ListDto
+ */
+
+/**
+ * 成功 envelope 的 data 由各操作驗證；新增／更新的空物件規則由 validWriteSuccess 判定。
+ * @template T
+ * @typedef {{success: true, message: 'OK', data: T}} ApiSuccessDto
+ */
+
 // 從唯一固定清單取出合法 API 基底，儲存資料不得擴大目的地。
 const bases = Object.values(BACKENDS).map((entry) => entry[1])
 const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
@@ -194,6 +228,7 @@ export function validateAccount(input, register = false) {
 }
 
 // 成功登入必須有完整 Account 與原期限，避免不完整回應被當成已授權。
+/** @returns {value is AccountDto} */
 export function validAccount(value) {
   return value && typeof value === 'object' && Number.isSafeInteger(value.id) && value.id > 0
     && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
@@ -202,6 +237,7 @@ export function validAccount(value) {
 }
 
 // 文章與留言只顯示共同契約的完整純文字資源，避免殘缺資料被當成成功。
+/** @returns {item is ArticleDto | CommentDto} */
 export function validContent(item, kind = 'article') {
   return item && typeof item === 'object' && !Array.isArray(item) && Number.isSafeInteger(item.id) && item.id > 0
     && typeof item.body === 'string' && item.body.length > 0
@@ -213,6 +249,7 @@ export function validContent(item, kind = 'article') {
 }
 
 // 分頁回應保留伺服器頁碼與總數，區分真空列表和合法超頁。
+/** @returns {data is ListDto<ArticleDto | CommentDto | MemberDto>} */
 export function validList(data, page, kind = 'article') {
   const p = data?.pagination
   return Array.isArray(data?.list) && p && p.page === page && p.per_page === 20
@@ -224,6 +261,7 @@ export function validList(data, page, kind = 'article') {
 }
 
 // 管理會員資料只接受完整的一般會員，避免錯誤回應或管理員資料出現在清單。
+/** @returns {value is MemberDto} */
 export function validMember(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Number.isSafeInteger(value.id) && value.id > 0
     && typeof value.email === 'string' && value.email === normalizeEmail(value.email) && validEmail(value.email)
@@ -232,6 +270,7 @@ export function validMember(value) {
 }
 
 // 設定四欄須完整且同時符合後端範圍，才可作為表單的伺服器基準。
+/** @returns {value is LockoutSettingsDto} */
 export function validLockout(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && typeof value.enabled === 'boolean'
     && Number.isInteger(value.window_minutes) && value.window_minutes >= 1 && value.window_minutes <= 60
@@ -305,6 +344,7 @@ export function failure(body) {
 }
 
 // 所有業務請求直連目前後端固定基底，讀取共同 envelope 與 Retry-After。
+/** @returns {Promise<{status: number, body: unknown, retryAfter: string | null}>} */
 export async function request(backend, path, options = {}) {
   const response = await fetch(`${backend}${path}`, { ...options, headers: { Accept: 'application/json', ...options.headers } })
   let body

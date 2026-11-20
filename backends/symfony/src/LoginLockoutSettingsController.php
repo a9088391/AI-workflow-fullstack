@@ -106,10 +106,7 @@ class LoginLockoutSettingsController extends HttpController
     {
         // 先區分必要 JSON object、語法錯誤與根型態，避免框架自動轉型改變共同錯誤。
         $raw = $request->getContent();
-        if (
-            $raw === ''
-            || ! str_starts_with(strtolower($request->headers->get('Content-Type', '')), 'application/json')
-        ) {
+        if ($raw === '' || ! $this->hasJsonContentType($request)) {
             throw new ApiFailure('E0001', ['_body' => ['Request Body 必須為 JSON object']]);
         }
         try {

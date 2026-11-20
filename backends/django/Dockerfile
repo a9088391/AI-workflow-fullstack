@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /srv/django
 
 # psycopg 的純 Python 驅動呼叫系統 libpq；只安裝執行所需函式庫。
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5=15.19-0+deb12u1 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5=15.20-0+deb12u1 && rm -rf /var/lib/apt/lists/*
 
 COPY backends/django/requirements.txt ./
 RUN python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.txt
