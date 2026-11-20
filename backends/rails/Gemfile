@@ -1,0 +1,10 @@
+source "https://rubygems.org"
+ruby "4.0.10"
+
+# API-only 只載入 HTTP 與啟動元件；共用資料庫由集中 SQL 管理。
+gem "railties", "8.1.4.1"
+gem "actionpack", "8.1.4.1"
+gem "puma", "8.1.2"
+gem "pg", "1.7.0"
+gem "argon2id", "0.10.0"
+gem "minitest", "5.27.0", group: :test

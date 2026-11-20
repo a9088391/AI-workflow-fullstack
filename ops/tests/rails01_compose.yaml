@@ -1,0 +1,41 @@
+# 只與 compose.yaml 合併並明列服務啟動；-p 必須是 isolated-rails01-*，不得用展示資料。
+# RAILS01_FIXTURE_ROOT 為專用絕對目錄，備份／日誌／各後端金鑰均位於該目錄。
+services:
+  db:
+    environment:
+      RAILS01_FIXTURE: isolated-rails01
+    command: ["postgres", "-c", "cluster_name=${COMPOSE_PROJECT_NAME:?set explicit isolated project name}"]
+  sql:
+    volumes: !override
+      - ./ops/sql:/srv/ops/sql:ro
+      - ./database/sql:/srv/database/sql:ro
+      - ${RAILS01_FIXTURE_ROOT:?set dedicated absolute fixture root}/backups:/backups
+  laravel:
+    ports: !override
+      - "127.0.0.1:${RAILS01_LARAVEL_PORT:?set isolated Laravel port}:8000"
+    volumes: !override
+      - ${RAILS01_FIXTURE_ROOT:?set dedicated absolute fixture root}/laravel-logs:/srv/laravel/storage/logs
+      - ${RAILS01_FIXTURE_ROOT:?set dedicated absolute fixture root}/laravel.key:/run/secrets/laravel-jwt.key:ro
+  rails:
+    build:
+      context: .
+      dockerfile: backends/rails/Dockerfile
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?set isolated DB application password}
+      RAILS01_TEST_PROJECT: ${COMPOSE_PROJECT_NAME:?set explicit isolated project name}
+    volumes:
+      - ${RAILS01_FIXTURE_ROOT:?set dedicated absolute fixture root}/rails.key:/run/secrets/rails-jwt.key:ro
+    ports:
+      - "127.0.0.1:${RAILS01_RAILS_PORT:?set isolated Rails port}:8000"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "ruby", "-rnet/http", "-e", "exit(Net::HTTP.get_response(URI('http://127.0.0.1:8000/up')).code == '200' ? 0 : 1)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
