@@ -255,8 +255,7 @@
 </svelte:head>
 {#if mode === 'missing' || mode === 'member' && !memberId}
   <div class="state-panel not-found">
-    <h1>找不到頁面<span class="title-dot">.</span>
-    </h1>
+    <h1>找不到頁面</h1>
     <a class="button" href={`${BASE}/`}>返回文章列表</a>
   </div>
 {:else}
@@ -264,10 +263,8 @@
     <div class="admin-heading">
       <div>
         <p class="section-mark">文章集 / 管理介面</p>
-        <h1>{mode === 'members' ? '會員管理' : mode === 'member' ? '會員詳情' : mode === 'articles' ? '文章管理' : mode === 'comments' ? '留言管理' : '登入鎖定設定'}<span class="title-dot">.</span>
-        </h1>
+        <h1>{mode === 'members' ? '會員管理' : mode === 'member' ? '會員詳情' : mode === 'articles' ? '文章管理' : mode === 'comments' ? '留言管理' : '登入鎖定設定'}</h1>
       </div>
-      <span class="admin-number" aria-hidden="true">{mode === 'members' ? '01' : mode === 'member' ? '01—A' : mode === 'articles' ? '02' : mode === 'comments' ? '03' : '04'}</span>
     </div>
     {#if $authState === 'active' && $account?.role === 'admin' && $account?.id === ownerId}
       <nav class="admin-tabs" aria-label="管理導覽">

@@ -283,8 +283,7 @@
       {/if}
     </article>
     <section class="comments-section" aria-labelledby="comments-heading">
-      <h2 id="comments-heading">留言<span class="title-dot">.</span>
-      </h2>
+      <h2 id="comments-heading">留言</h2>
       {#if commentsLoading}
         <p class="state-panel" role="status">留言載入中…</p>
       {:else if commentsError}

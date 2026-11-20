@@ -77,7 +77,6 @@ onBeforeUnmount(
   <main class="reading-page author-page">
     <div class="author-heading">
       <div>
-        <p class="section-label">個人內容</p>
         <h1>{{ kind === 'articles' ? '我的文章' : '我的留言' }}</h1>
       </div>
       <a v-if="kind === 'articles' && site.account.value"

@@ -5,7 +5,6 @@
         <h1>會員管理</h1>
         <p class="heading-subtitle">依暱稱或 Email 尋找一般會員，狀態以伺服器重讀為準。</p>
       </div>
-      <span class="heading-flower" aria-hidden="true">❀</span>
     </div>
     <form class="admin-search" (submit)="search($event)" novalidate>
       <label for="member-keyword">搜尋會員</label>
@@ -42,7 +41,6 @@
     @if (content.members(); as data) {
         @if (!data.list.length) {
             <div class="empty-state">
-              <span aria-hidden="true">✿</span>
               <p>
                 {{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : content.hasKeyword() ? '沒有符合搜尋條件的會員。' : '目前尚無會員。' }}
               </p>
@@ -95,7 +93,6 @@
         <p class="eyebrow">MEMBER / 詳情</p>
         <h1>會員詳情</h1>
       </div>
-      <span class="heading-flower" aria-hidden="true">❀</span>
     </div>
     @if (content.request.loading()) {
         <p class="notice" role="status">正在載入會員…</p>

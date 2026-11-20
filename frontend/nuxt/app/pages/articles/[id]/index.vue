@@ -362,7 +362,7 @@ onBeforeUnmount(
     </div>
     <template v-else-if="article">
       <article class="reading-article">
-        <p class="section-label">建立來源 {{ backendName(article.created_backend) }} / {{ article.created_at }}</p>
+        <p class="teaser-meta">建立來源 {{ backendName(article.created_backend) }} / {{ article.created_at }}</p>
         <h1>{{ article.title }}</h1>
         <p class="reading-byline">文字／{{ article.author.nickname }}　·　{{ article.visibility === 'hidden' ? '已下架' : '公開' }}</p>
         <div class="reading-rule" />

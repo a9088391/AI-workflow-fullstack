@@ -1,27 +1,25 @@
 <a class="skip-link" [href]="path + search + '#main'">跳至主要內容</a>
-<div class="landscape" aria-hidden="true"></div>
 <div class="shell">
-  <aside class="sidebar">
-    <a class="brand" href="/angular/">
-      <span class="brand-mark" aria-hidden="true">✦</span>文章集<span class="brand-leaf" aria-hidden="true">❧</span>
-    </a>
-    <p class="sidebar-caption">在文字裡慢慢走一段路</p>
+  <header class="site-header">
+    <a class="brand" href="/angular/">文章集</a>
     <nav class="side-nav" aria-label="主要導覽">
-      <a href="/angular/" [attr.aria-current]="route === 'list' ? 'page' : null"><span aria-hidden="true">▤</span> 所有文章</a>
+      <a href="/angular/" [attr.aria-current]="route === 'list' ? 'page' : null">所有文章</a>
       @if (!account()) {
-        <a href="/angular/login" [attr.aria-current]="route === 'login' ? 'page' : null"><span aria-hidden="true">⌂</span> 登入</a>
-        <a href="/angular/register" [attr.aria-current]="route === 'register' ? 'page' : null"><span aria-hidden="true">✎</span> 註冊</a>
+        <a href="/angular/login" [attr.aria-current]="route === 'login' ? 'page' : null">登入</a>
+        <a href="/angular/register" [attr.aria-current]="route === 'register' ? 'page' : null">註冊</a>
       } @else {
-        <a href="/angular/articles/new" [attr.aria-current]="route === 'article-new' ? 'page' : null"><span aria-hidden="true">✎</span> 發表文章</a>
-        <a href="/angular/me/articles" [attr.aria-current]="route === 'my-articles' ? 'page' : null"><span aria-hidden="true">▤</span> 我的文章</a>
-        <a href="/angular/me/comments" [attr.aria-current]="route === 'my-comments' ? 'page' : null"><span aria-hidden="true">❀</span> 我的留言</a>
+        <a href="/angular/articles/new" [attr.aria-current]="route === 'article-new' ? 'page' : null">發表文章</a>
+        <a href="/angular/me/articles" [attr.aria-current]="route === 'my-articles' ? 'page' : null">我的文章</a>
+        <a href="/angular/me/comments" [attr.aria-current]="route === 'my-comments' ? 'page' : null">我的留言</a>
         @if (account()?.role === 'admin') {
           <details class="admin-nav" [open]="isAdminRoute()">
             <summary>管理介面</summary>
-            <a href="/angular/admin/members">會員管理</a>
-            <a href="/angular/admin/articles">文章管理</a>
-            <a href="/angular/admin/comments">留言管理</a>
-            <a href="/angular/admin/settings/login-lockout">登入鎖定設定</a>
+            <div>
+              <a href="/angular/admin/members">會員管理</a>
+              <a href="/angular/admin/articles">文章管理</a>
+              <a href="/angular/admin/comments">留言管理</a>
+              <a href="/angular/admin/settings/login-lockout">登入鎖定設定</a>
+            </div>
           </details>
         }
       }
@@ -46,8 +44,7 @@
         }
       </nav>
     </details>
-    <div class="sidebar-foot" aria-hidden="true"><span>✿</span><span>❀</span><span>✿</span></div>
-  </aside>
+  </header>
 
   <div class="workspace">
     <header class="toolbar">
@@ -152,20 +149,13 @@
           (visibility)="changeVisibility($event.kind, $event.resource)"
           (invalidated)="invalidateReading($event.sent, $event.failure)" />
       } @else if (route === 'login' || route === 'register') {
-        <div class="form-layout">
-          <div class="form-decoration" aria-hidden="true">
-            <span>✿</span><p>在這裡，<br>開始下一段故事。</p>
-          </div>
-          <section class="account-card" aria-labelledby="account-title">
-            <p class="eyebrow">{{ route === 'register' ? 'JOIN / 註冊' : 'WELCOME BACK / 登入' }}</p>
-            <h1 id="account-title">{{ route === 'register' ? '加入文章集' : '歡迎回來' }}</h1>
-            <p class="form-intro">{{ route === 'register' ? '留下你的名字，開始閱讀與分享。' : '登入後，繼續你的閱讀旅程。' }}</p>
+        <section class="account-card" aria-labelledby="account-title">
+          <h1 id="account-title">{{ route === 'register' ? '加入文章集' : '登入' }}</h1>
           <app-account-form [mode]="route === 'register' ? 'register' : 'login'" [blocked]="writePending()"
             (dirtyChange)="accountDirtyChanged($event)" (completed)="accountCompleted($event)" />
-          </section>
-        </div>
+        </section>
       } @else {
-        <div class="empty-state"><span aria-hidden="true">✿</span><h1>找不到頁面</h1><a href="/angular/">返回文章列表</a></div>
+        <div class="empty-state"><h1>找不到頁面</h1><a href="/angular/">返回文章列表</a></div>
       }
     </main>
   </div>

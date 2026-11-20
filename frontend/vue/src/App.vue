@@ -595,17 +595,13 @@ onBeforeUnmount(() => {
       <section
         v-else-if="page === 'articles' || page === 'article' || page === 'article-new' || page === 'my-articles' || page === 'my-comments' || page === 'comment' || editing"
         class="reading-page"
+        :class="{ 'article-index': page === 'articles' }"
         aria-labelledby="page-title"
       >
         <div class="reading-heading">
           <div>
-            <p class="eyebrow">文章集 / {{
-              page === 'articles' ? '公開閱讀' : page === 'article' ? '文章詳情'
-                : page === 'article-new' ? '會員發表' : page === 'my-articles' ? '會員文章'
-                  : page === 'article-edit' ? '文章編修' : page === 'comment-edit' ? '留言編修' : '會員留言'
-            }}</p>
             <h1 id="page-title">{{
-              page === 'articles' ? '最新文章' : page === 'article' ? '閱讀文章'
+              page === 'articles' ? '所有文章' : page === 'article' ? '閱讀文章'
                 : page === 'article-new' ? '發表文章' : page === 'my-articles' ? '我的文章'
                   : page === 'my-comments' ? '我的留言' : page === 'article-edit' ? '編輯文章'
                     : page === 'comment-edit' ? '編輯留言' : '留言詳情'

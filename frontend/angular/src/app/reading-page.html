@@ -1,11 +1,6 @@
 @if (content.route === 'list' || content.route === 'my-articles') {
   <div class="page-heading">
-    <div>
-      <p class="eyebrow">STORIES / 文章</p>
-      <h1>{{ content.route === 'my-articles' ? '我的文章' : '所有文章' }}</h1>
-      <p class="heading-subtitle">{{ content.route === 'my-articles' ? '公開與下架的文字，都在這裡。' : '沿著文字的路，遇見每個人留下的風景。' }}</p>
-    </div>
-    <span class="heading-flower" aria-hidden="true">❧</span>
+    <h1>{{ content.route === 'my-articles' ? '我的文章' : '所有文章' }}</h1>
   </div>
   @if (content.route === 'my-articles' && content.query.has('created')) {
     <p class="notice" role="status">文章已發表。請從列表選擇要閱讀的文章。</p>
@@ -25,19 +20,22 @@
     <!-- 超頁保留伺服器回傳的原頁碼與總數，不能冒充首頁空資料。 -->
     @if (data.list.length === 0) {
       <div class="empty-state">
-        <span aria-hidden="true">✿</span>
         <p>{{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無文章。' }}</p>
         @if (data.pagination.page > 1) { <a [href]="content.pageHref(1)">回第一頁</a> }
       </div>
     } @else {
       <div class="article-list">
-        <div class="list-head"><span>文章</span><span>發佈日期</span><span>建立來源</span></div>
         @for (item of data.list; track item.id) {
           <article class="article-row">
             <div>
               <h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2>
+              <p class="byline">
+                <span>作者 {{ item.author.nickname }}</span>
+                <time [attr.datetime]="item.created_at.slice(0, 10)">發佈日期 {{ item.created_at.slice(0, 10) }}</time>
+                <span>建立於 {{ content.backendLabel(item.created_backend) }}</span>
+                @if (item.visibility === 'hidden') { <span>已下架</span> }
+              </p>
               <p class="excerpt">{{ item.body }}</p>
-              <p class="byline">作者　{{ item.author.nickname }} @if (item.visibility === 'hidden') { · 已下架 }</p>
               @if (content.route === 'my-articles') {
                 <div class="inline-actions">
                   <a [href]="'/angular/articles/' + item.id + '/edit'">編修</a>
@@ -47,8 +45,6 @@
                 </div>
               }
             </div>
-            <time>{{ item.created_at.slice(0, 10) }}</time>
-            <span>建立於 {{ content.backendLabel(item.created_backend) }}</span>
           </article>
         }
       </div>
@@ -93,7 +89,7 @@
       }
     </article>
     <section class="comments" aria-labelledby="comments-title">
-      <div class="section-heading"><h2 id="comments-title">讀者留言</h2><span aria-hidden="true">✿</span></div>
+      <div class="section-heading"><h2 id="comments-title">讀者留言</h2></div>
       @if (content.commentsLoading()) { <p class="notice" role="status">正在載入留言…</p> }
       @if (content.commentsError(); as failure) {
         <div class="notice error" role="alert">
@@ -134,8 +130,7 @@
   }
 } @else if (content.route === 'my-comments') {
   <div class="page-heading">
-    <div><p class="eyebrow">NOTES / 留言</p><h1>我的留言</h1><p class="heading-subtitle">你留下的話語，連同個別下架的內容。</p></div>
-    <span class="heading-flower" aria-hidden="true">❀</span>
+    <h1>我的留言</h1>
   </div>
   @if (content.loading()) { <p class="notice" role="status">正在載入留言…</p> }
   @if (content.error(); as failure) {

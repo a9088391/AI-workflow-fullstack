@@ -5,9 +5,9 @@ import { ErrorNotice, Pagination } from '../_shared/ui.jsx'
 
 const CREATED_ARTICLE_NOTICE_KEY = 'articleCollection.next.createdArticleNotice'
 
-// 固定的文章側欄建立瑞士式非對稱格線，行動版縮為一般標題區。
+// 建築照片只提供展廳構圖，不重複宣告頁名；窄版移到內容前方，保留原資料閱讀順序。
 function ArticleRail() {
-  return <aside className="article-rail" aria-label="文章集"><p className="rail-kicker">THE ARTICLE COLLECTION</p><p className="rail-title">所有<br />文章</p><p className="rail-foot">閱讀・記錄・分享</p></aside>
+  return <aside className="article-rail" aria-hidden="true" />
 }
 
 // 保留建立來源、作者與日期，列表和詳情共用同一資料語意。
@@ -269,18 +269,17 @@ export function ContentEditor({ kind, id, backend, credential, account, ready, o
   </div>
 }
 
-// 公開文章列表直接用目前後端資料，分別處理載入、真空與超頁。
+// 展廳列表以自然文件順序左右排列；照片不改變文章次序，載入、真空與超頁仍各自呈現。
 export function ArticleList({ backend, credential, ready, page, onAuthFailure }) {
   const read = useApiRead(backend, credential, `/api/articles?page=${page}&per_page=20`, 'articles', page, null, ready, onAuthFailure)
-  return <div className="editorial-layout"><ArticleRail /><section className="article-column" aria-labelledby="list-title">
-    <div className="section-heading"><p className="eyebrow">PUBLIC ARTICLES / 文章索引</p><h1 id="list-title">所有文章</h1></div>
+  return <div className="editorial-layout gallery-index"><ArticleRail /><section className="article-column" aria-labelledby="list-title">
+    <div className="section-heading"><h1 id="list-title">所有文章</h1></div>
     {read.loading && <p className="notice" role="status">正在載入文章…</p>}
     <ErrorNotice error={read.error} retry={read.reload} />
     {read.data && <>{read.data.list.length === 0 ? <p className="notice">{page > 1 || read.data.pagination.total > 0 ? '此頁沒有文章。' : '目前尚無文章。'}</p>
       : <ol className="article-list">{read.data.list.map(
         // 以資料 ID 固定列項，跨頁與重新讀取都不重用錯誤內容。
-        (article, index) => <li key={article.id} className="article-item">
-          <span className="item-number">{String((page - 1) * 20 + index + 1).padStart(2, '0')}</span>
+        (article) => <li key={article.id} className="article-item">
           <div>
             <h2><a href={`/next/articles/${article.id}`}>{article.title}</a></h2>
             <p className="excerpt">{article.body}</p>

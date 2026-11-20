@@ -124,7 +124,6 @@ onBeforeUnmount(
   <main class="reading-page admin-page">
     <div class="author-heading">
       <div>
-        <p class="section-label">文章集 / 管理</p>
         <h1>{{ kind === 'members' ? '會員管理' : kind === 'articles' ? '文章管理' : '留言管理' }}</h1>
       </div>
     </div>

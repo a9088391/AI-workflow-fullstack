@@ -92,7 +92,7 @@ export function Header({ page, pathname, rawReturn, returnTo, backend, onBackend
 
   return <>
     <header className="site-header">
-      <a className="brand" href="/react/">文章集<span> / REACT</span></a>
+      <a className="brand" href="/react/">文章集</a>
       <div className="current">目前前端　<strong>React＋Vite</strong><br />目前後端　<strong>{name}</strong></div>
       <details className="switches">
         <summary>切換版本</summary>
@@ -117,7 +117,6 @@ export function Header({ page, pathname, rawReturn, returnTo, backend, onBackend
           <p className="switch-help">切換後端會清除登入，請重新登入。</p>
         </div>
       </details>
-    </header>
     <button className="mobile-nav-toggle" ref={navToggle} type="button" aria-controls="react-main-nav" aria-expanded={mobileNavOpen} onClick={toggleMobileNav}>{mobileNavOpen ? '關閉導覽' : '開啟導覽'}</button>
     <nav id="react-main-nav" className={`site-nav${mobileNavOpen ? ' open' : ''}`} aria-label="主導覽" onKeyDown={mobileNavKeyDown}>
       <a href="/react/" aria-current={page === 'articles' || page === 'article' ? 'page' : undefined}>所有文章</a>
@@ -142,6 +141,7 @@ export function Header({ page, pathname, rawReturn, returnTo, backend, onBackend
       </>}
       <button className="nav-close" type="button" onClick={closeMobileNav}>關閉導覽</button>
     </nav>
+    </header>
     {logoutError && <div className="shell-error"><ErrorNotice error={logoutError} /></div>}
   </>
 }

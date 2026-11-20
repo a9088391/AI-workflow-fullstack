@@ -98,8 +98,7 @@ async function submit() {
 <template>
   <main class="form-page">
     <div class="form-intro">
-      <p class="section-label">加入讀者</p>
-      <h1>讓文字有一個<br>署名。</h1>
+      <h1>註冊會員</h1>
       <p>建立帳號後，請再登入以使用會員功能。</p>
     </div>
     <form class="auth-form"

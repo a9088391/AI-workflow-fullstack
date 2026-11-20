@@ -107,8 +107,7 @@ async function submitLogout() {
       <div class="masthead-top">
         <a class="wordmark"
           href="/nuxt/"
-          aria-label="文章集，回文章列表">文章集<span class="wordmark-dot">.</span></a>
-        <p class="edition">一份關於文字的日常刊物</p>
+          aria-label="文章集，回文章列表">文章集</a>
         <div class="environment"
           aria-label="目前版本與後端"><span>目前前端 <strong>Nuxt</strong></span><span>目前後端 <strong>{{ backendLabels[site.backend.value] }}</strong></span></div>
       </div>
@@ -186,7 +185,7 @@ async function submitLogout() {
     <div v-if="notice"
       class="site-status"
       role="status">{{ notice }} <small v-if="noticeLogId">log_id：{{ noticeLogId }}</small></div>
-    <div :class="{ 'admin-layout': route.path.startsWith('/admin') && site.account.value?.role === 'admin' }">
+    <div class="page-content" :class="{ 'admin-layout': route.path.startsWith('/admin') && site.account.value?.role === 'admin' }">
       <aside v-if="route.path.startsWith('/admin') && site.account.value?.role === 'admin'"
         class="admin-sidebar"
         aria-label="管理後台">
@@ -206,7 +205,6 @@ async function submitLogout() {
     </div>
     <footer class="footer">
       <span>文章集 / Nuxt</span>
-      <span>留下文字，也留下時間。</span>
     </footer>
   </div>
 </template>

@@ -275,7 +275,6 @@ onBeforeUnmount(
       :href="`/nuxt/${kind === 'article' ? 'articles' : 'comments'}/${id || ''}`">← 返回詳情</a>
     <div class="author-heading">
       <div>
-        <p class="section-label">作者編修</p>
         <h1>編輯{{ kind === 'article' ? '文章' : '留言' }}</h1>
       </div>
     </div>

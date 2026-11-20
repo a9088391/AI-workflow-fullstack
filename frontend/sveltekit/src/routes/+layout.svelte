@@ -65,8 +65,7 @@
 
 <div class="site-shell">
   <header class="site-header">
-    <a class="wordmark" href={`${BASE}/`}>文章集<span class="wordmark-dot">.</span>
-    </a>
+    <a class="wordmark" href={`${BASE}/`}>文章集</a>
     <nav class="main-nav" aria-label="主要導覽">
       <a aria-current={$page.url.pathname === `${BASE}/` ? 'page' : undefined} href={`${BASE}/`}>所有文章</a>
       {#if $authState === 'active'}
@@ -164,8 +163,4 @@
     {#key $page.url.pathname + $page.url.search}{@render children()}
     {/key}
   </main>
-  <footer class="site-footer">
-    <span>文章集 / SvelteKit</span>
-    <span>閱讀與分享，從一篇文章開始。</span>
-  </footer>
 </div>

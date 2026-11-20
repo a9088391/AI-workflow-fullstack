@@ -111,7 +111,6 @@ function restored() { if (!uncertain.value) message.value = '已恢復同帳號�
       href="/nuxt/">← 返回文章列表</a>
     <div class="author-heading">
       <div>
-        <p class="section-label">會員發表</p>
         <h1>發表文章</h1>
       </div>
     </div>

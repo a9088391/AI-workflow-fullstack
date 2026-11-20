@@ -183,7 +183,6 @@ onBeforeUnmount(
   <main class="reading-page admin-page">
     <div class="author-heading">
       <div>
-        <p class="section-label">文章集 / 管理</p>
         <h1>系統設定</h1>
       </div>
     </div>

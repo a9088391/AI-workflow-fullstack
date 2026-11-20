@@ -26,7 +26,6 @@
     <a class="back-link" [href]="editor.route === 'article-new' ? '/angular/me/articles' : '/angular/articles/' + content.validArticleId">← 返回文章</a>
     <div class="page-heading">
       <div><p class="eyebrow">WRITE / 創作</p><h1>{{ editor.articleEdit ? '編修文章' : '發表文章' }}</h1><p class="heading-subtitle">純文字會保留換行，建立來源由後端記錄。</p></div>
-      <span class="heading-flower" aria-hidden="true">✎</span>
     </div>
   } @else { <a class="back-link" href="/angular/me/comments">← 回我的留言</a> }
   @if (content.loading()) { <p class="notice" role="status">{{ editor.route === 'comment-edit' ? '正在載入留言…' : '正在讀取文章…' }}</p> }

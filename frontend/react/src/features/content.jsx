@@ -283,12 +283,11 @@ export function AuthorEditor({ kind, resourceId, backend, credential, account, e
   )
 }
 
-// 公開列表只顯示已核准欄位，保留空資料、超頁與載入失敗區別。
+// 夜景舞台只裝飾公開列表；文章仍依後端順序呈現，保留空資料、超頁與讀取失敗區別。
 export function Articles({ listPage, backend, credential, enabled, onAuthFailure, switchEpoch }) {
   const read = useRead(backend, credential, `/api/articles?page=${listPage}&per_page=20`, listPage, enabled, onAuthFailure, switchEpoch)
-  return <section className="content" aria-labelledby="articles-title">
-    <p className="eyebrow">ARTICLE INDEX / REACT</p><h1 id="articles-title">所有文章</h1>
-    <p className="intro">在這裡閱讀來自各個後端的文章。</p>
+  return <section className="content cinema-index" aria-labelledby="articles-title">
+    <div className="cinema-stage"><h1 id="articles-title">所有文章</h1></div>
     {read.loading && <p role="status">正在載入文章…</p>}
     <ErrorNotice error={read.error} retry={read.retry} />
     {read.data && <>

@@ -203,7 +203,6 @@ onBeforeUnmount(
       href="/nuxt/me/comments">← 我的留言</a>
     <div class="author-heading">
       <div>
-        <p class="section-label">會員留言</p>
         <h1>留言詳情</h1>
       </div>
     </div>

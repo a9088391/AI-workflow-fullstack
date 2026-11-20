@@ -89,10 +89,8 @@ onBeforeUnmount(
   <main class="index-page">
     <div class="index-head">
       <div>
-        <p class="section-label">文字與日常</p>
         <h1>所有文章</h1>
       </div>
-      <p>每篇文字都有它自己的節奏。<br>選一篇，慢慢讀。</p>
     </div>
     <div class="section-rule">
       <span>文章索引</span>
@@ -112,15 +110,13 @@ onBeforeUnmount(
     </div>
     <div v-else-if="data && data.list.length"
       class="article-grid">
-      <article v-for="(article, index) in data.list"
+      <article v-for="article in data.list"
         :key="article.id"
         class="article-teaser">
-        <div class="teaser-number">{{ String((page - 1) * 20 + index + 1).padStart(2, '0') }}</div>
         <div class="teaser-copy">
-          <p class="teaser-meta">{{ article.created_at }}　/　{{ backendName(article.created_backend) }}</p>
           <h2><a :href="`/nuxt/articles/${article.id}`">{{ article.title }}</a></h2>
+          <p class="teaser-meta">{{ article.author.nickname }} · {{ article.created_at }} · {{ backendName(article.created_backend) }}</p>
           <p class="teaser-excerpt">{{ preview(article.body) }}</p>
-          <p class="teaser-author">文字／{{ article.author.nickname }}</p>
         </div>
       </article>
     </div>

@@ -5,7 +5,6 @@
         <h1>文章管理</h1>
         <p class="heading-subtitle">查看公開與下架的文章，從詳情處理狀態。</p>
       </div>
-      <span class="heading-flower" aria-hidden="true">❧</span>
     </div>
     @if (content.request.loading()) {
         <p class="notice" role="status">正在載入文章…</p>
@@ -24,7 +23,6 @@
     @if (content.articles(); as data) {
         @if (data.list.length === 0) {
             <div class="empty-state">
-              <span aria-hidden="true">✿</span>
               <p>
                 {{ data.pagination.page > 1 || data.pagination.total > 0 ? '此頁沒有資料。' : '目前尚無文章。' }}
               </p>
@@ -88,7 +86,6 @@
         <h1>留言管理</h1>
         <p class="heading-subtitle">包含個別下架與所屬文章下架的留言。</p>
       </div>
-      <span class="heading-flower" aria-hidden="true">❀</span>
     </div>
     @if (content.request.loading()) {
         <p class="notice" role="status">正在載入留言…</p>

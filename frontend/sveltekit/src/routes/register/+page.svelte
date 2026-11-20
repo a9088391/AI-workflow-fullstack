@@ -67,8 +67,7 @@
 
 <div class="auth-wrap">
   <div class="auth-intro">
-    <h1>註冊會員<span class="title-dot">.</span>
-    </h1>
+    <h1>註冊會員</h1>
     <p>留下名字，開始參與文章集。</p>
   </div>
   <form class="auth-card" novalidate onsubmit={submit}>

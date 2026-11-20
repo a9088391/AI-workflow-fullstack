@@ -6,11 +6,14 @@
 
 網站根路徑導向 `/vue/`，第一次使用預設 Laravel API。工具列顯示目前前端與後端，可切換為下列任一組合：
 
-| 前端 | 頁面入口 | 前端 | 頁面入口 |
-| --- | --- | --- | --- |
-| Vue 3 + Vite | `/vue/` | Nuxt | `/nuxt/` |
-| React + Vite | `/react/` | Next.js | `/next/` |
-| Angular | `/angular/` | SvelteKit | `/sveltekit/` |
+| 前端 | 頁面入口 | 視覺風格 |
+| --- | --- | --- |
+| Vue 3 + Vite | `/vue/` | 裝幀書牆 |
+| Nuxt | `/nuxt/` | 海岸玻璃 |
+| React + Vite | `/react/` | 午夜放映 |
+| Next.js | `/next/` | 雕塑展廳 |
+| Angular | `/angular/` | 水墨長卷 |
+| SvelteKit | `/sveltekit/` | 孔版海報 |
 
 前端路徑都在 `http://localhost:8080` 下。**同一分頁切換前端**會保留目前後端、同一次登入及原到期時間，並導向對應的語意頁面；例如 Vue 的文章詳情可切到 Nuxt 的同一篇文章。此設計只承諾同一分頁，不承諾跨分頁或跨瀏覽器同步。
 

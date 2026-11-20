@@ -210,7 +210,7 @@ export default function Site({ path, query }) {
     setAuthError(null)
   }
   return <div className="site-shell"><a className="skip-link" href="#main-content">跳至主要內容</a><header className="site-header">
-    <div className="brand-row"><a className="brand" href="/next/">文章集<span aria-hidden="true">.</span></a><nav className="desktop-nav" aria-label="主要導覽"><a aria-current={path === '/next/' ? 'page' : undefined} href="/next/">所有文章</a>{account ? <><a href="/next/articles/new">發表文章</a><a href="/next/me/articles">我的文章</a><a href="/next/me/comments">我的留言</a>{account.role === 'admin' && <AdminMenu />}</> : <><a href="/next/login">登入</a><a href="/next/register">註冊</a></>}</nav></div>
+    <div className="brand-row"><a className="brand" href="/next/">文章集</a><nav className="desktop-nav" aria-label="主要導覽"><a aria-current={path === '/next/' ? 'page' : undefined} href="/next/">所有文章</a>{account ? <><a href="/next/articles/new">發表文章</a><a href="/next/me/articles">我的文章</a><a href="/next/me/comments">我的留言</a>{account.role === 'admin' && <AdminMenu />}</> : <><a href="/next/login">登入</a><a href="/next/register">註冊</a></>}</nav></div>
     <div className="header-controls"><div className="current-labels"><span>目前前端 <strong>Next.js</strong></span><span>目前後端 <strong>{backend ? Object.values(BACKENDS).find(
       // 從固定清單找顯示名稱，不把不可信儲存值直接印到畫面。
       (entry) => entry[1] === backend,

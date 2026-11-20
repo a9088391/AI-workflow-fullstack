@@ -278,16 +278,14 @@
 </svelte:head>
 {#if mode === 'missing' || (id === null && ['article-edit', 'comment', 'comment-edit'].includes(mode))}
   <div class="state-panel not-found">
-    <h1>找不到頁面<span class="title-dot">.</span>
-    </h1>
+    <h1>找不到頁面</h1>
     <p>此頁面尚未提供，或網址不正確。</p>
     <a class="button" href={`${BASE}/`}>返回文章列表</a>
   </div>
 {:else}
   <div class="author-wrap">
     <div class="author-heading">
-      <h1>{mode === 'new' ? '發表文章' : mode === 'articles' ? '我的文章' : mode === 'comments' ? '我的留言' : mode === 'article-edit' ? '編輯文章' : mode === 'comment-edit' ? '編輯留言' : '留言詳情'}<span class="title-dot">.</span>
-      </h1>
+      <h1>{mode === 'new' ? '發表文章' : mode === 'articles' ? '我的文章' : mode === 'comments' ? '我的留言' : mode === 'article-edit' ? '編輯文章' : mode === 'comment-edit' ? '編輯留言' : '留言詳情'}</h1>
       {#if mode === 'articles'}
         <a class="button" href={`${BASE}/articles/new`}>發表文章</a>
       {/if}

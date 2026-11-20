@@ -59,62 +59,59 @@
   <title>所有文章｜文章集</title>
 </svelte:head>
 
-<section class="page-intro list-intro">
-  <div>
-    <p class="section-mark">寫下來，也讀下去。</p>
-    <h1>所有文章<span class="title-dot">.</span>
-    </h1>
+<section class="poster-list" aria-labelledby="articles-heading">
+  <div class="poster-heading"><h1 id="articles-heading">所有文章</h1></div>
+  <div class="poster-content">
+    {#if loading}
+      <p class="state-panel" role="status">文章載入中…</p>
+    {:else if error}
+      <div class="state-panel state-error" role="alert">
+        <p>{error}</p>
+        <button class="button" type="button" onclick={load}>重新讀取</button>
+      </div>
+    {:else if result?.list.length === 0}
+      <div class="state-panel">
+        <!-- 零筆超頁仍保留 API 原頁碼和總數，首頁才顯示整體尚無文章。 -->
+        <p>{result.pagination.page > 1 || result.pagination.total > 0 ? '此頁沒有文章。' : '尚無文章，稍後再來看看。'}</p>
+        {#if result.pagination.page > 1 || result.pagination.total > 0}
+          <p>第 {result.pagination.page} 頁，共 {result.pagination.total} 篇</p>
+          <a class="button" href={`${BASE}/`}>回第一頁</a>
+        {/if}
+      </div>
+    {:else}
+      <div class="article-list">
+        {#each result.list as article (article.id)}
+          <article class="article-card">
+            <h2>
+              <a href={`${BASE}/articles/${article.id}`}>{article.title}</a>
+            </h2>
+            <dl class="meta-row">
+              <div>
+                <dt>作者</dt>
+                <dd>{article.author.nickname}</dd>
+              </div>
+              <div>
+                <dt>發布日期</dt>
+                <dd>{article.created_at.slice(0, 10)}</dd>
+              </div>
+              <div>
+                <dt>建立於</dt>
+                <dd class="accent-text">{BACKENDS[article.created_backend]?.[0] || article.created_backend}</dd>
+              </div>
+            </dl>
+            <p class="card-excerpt">{[...article.body].slice(0, 110).join('')}{[...article.body].length > 110 ? '…' : ''}</p>
+          </article>
+        {/each}
+      </div>
+      <nav class="pagination" aria-label="文章分頁">
+        {#if requestedPage > 1}
+          <a class="button button-outline" href={`${BASE}/?page=${requestedPage - 1}`}>上一頁</a>
+        {/if}
+        <span>第 {result.pagination.page} 頁，共 {result.pagination.total} 篇</span>
+        {#if requestedPage < result.pagination.total_pages}
+          <a class="button button-outline" href={`${BASE}/?page=${requestedPage + 1}`}>下一頁</a>
+        {/if}
+      </nav>
+    {/if}
   </div>
-  <p class="intro-note">來自不同後端的文字，在這裡一起被看見。</p>
 </section>
-{#if loading}
-  <p class="state-panel" role="status">文章載入中…</p>
-{:else if error}
-  <div class="state-panel state-error" role="alert">
-    <p>{error}</p>
-    <button class="button" type="button" onclick={load}>重新讀取</button>
-  </div>
-{:else if result?.list.length === 0}
-  <div class="state-panel">
-    <!-- 零筆超頁仍保留 API 原頁碼和總數，首頁才顯示整體尚無文章。 -->
-    <p>{result.pagination.page > 1 || result.pagination.total > 0 ? '此頁沒有文章。' : '尚無文章，稍後再來看看。'}</p>
-    {#if result.pagination.page > 1 || result.pagination.total > 0}
-      <p>第 {result.pagination.page} 頁，共 {result.pagination.total} 篇</p>
-      <a class="button" href={`${BASE}/`}>回第一頁</a>
-    {/if}
-  </div>
-{:else}
-  <div class="article-grid">
-    {#each result.list as article (article.id)}
-      <article class="article-card">
-        <h2>
-          <a href={`${BASE}/articles/${article.id}`}>{article.title}</a>
-        </h2>
-        <p class="card-excerpt">{[...article.body].slice(0, 110).join('')}{[...article.body].length > 110 ? '…' : ''}</p>
-        <dl class="meta-row">
-          <div>
-            <dt>作者</dt>
-            <dd>{article.author.nickname}</dd>
-          </div>
-          <div>
-            <dt>發布日期</dt>
-            <dd>{article.created_at.slice(0, 10)}</dd>
-          </div>
-          <div>
-            <dt>建立於</dt>
-            <dd class="accent-text">{BACKENDS[article.created_backend]?.[0] || article.created_backend}</dd>
-          </div>
-        </dl>
-      </article>
-    {/each}
-  </div>
-  <nav class="pagination" aria-label="文章分頁">
-    {#if requestedPage > 1}
-      <a class="button button-outline" href={`${BASE}/?page=${requestedPage - 1}`}>上一頁</a>
-    {/if}
-    <span>第 {result.pagination.page} 頁，共 {result.pagination.total} 篇</span>
-    {#if requestedPage < result.pagination.total_pages}
-      <a class="button button-outline" href={`${BASE}/?page=${requestedPage + 1}`}>下一頁</a>
-    {/if}
-  </nav>
-{/if}

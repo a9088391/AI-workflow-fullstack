@@ -137,8 +137,7 @@ async function submit() {
 <template>
   <main class="form-page">
     <div class="form-intro">
-      <p class="section-label">回到文章集</p>
-      <h1>下一頁，<br>由你接續。</h1>
+      <h1>會員登入</h1>
       <p>登入後仍使用同一次登入的原到期時間。</p>
     </div>
     <form class="auth-form"
