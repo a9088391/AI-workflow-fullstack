@@ -326,7 +326,11 @@ class HttpTest < Minitest::Test
     admin_comments = call(:rails, "GET", "/api/articles/#{id}/comments?page=1&per_page=20", token: stranger)[1].fetch("data")
     assert_equal 3, admin_comments.fetch("pagination").fetch("total")
     assert_equal true, call(:rails, "GET", "/api/articles/#{id}", token: stranger)[1].fetch("data").fetch("can_restore")
-    error(call(:rails, "GET", "/api/articles?page=1&per_page=20&filters[scope]=management", token: stranger), 404, "E0004")
+    # 第03票管理範圍已開放，角色升級後也必須包含剛下架的文章及完整管理總數。
+    managed = call(:rails, "GET", "/api/articles?page=1&per_page=100&filters[scope]=management", token: stranger)
+    assert_equal 200, managed.first
+    assert_includes managed[1].fetch("data").fetch("list").map { |row| row.fetch("id") }, id
+    assert_equal @db.exec("SELECT count(*) FROM articles").first.fetch("count"), managed[1].fetch("data").fetch("pagination").fetch("total")
     error(call(:rails, "GET", "/api/articles?filters[scope]=management", token: stranger), 422, "E0001", { "page" => ["此欄位為必填"], "per_page" => ["此欄位為必填"] })
   end
 

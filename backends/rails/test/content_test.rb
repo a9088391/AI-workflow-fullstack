@@ -8,6 +8,8 @@ module ContentSqlObservation
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     result = super
     Thread.current[:rails02_sql]&.push([sql, [], Process.clock_gettime(Process::CLOCK_MONOTONIC) - started])
+    # 無參數批次更新也保留相同故障同步點，供設定關閉後的原子回滾驗證。
+    Thread.current[:rails02_after_sql]&.call(sql)
     result
   end
 

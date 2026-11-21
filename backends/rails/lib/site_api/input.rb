@@ -39,7 +39,7 @@ module SiteApi
           # 非法 UTF-8 以解碼後 bytes 產生唯一 RFC3986 標籤；不同 URL 拼法仍保留相同身分。
           name = URI::DEFAULT_PARSER.escape(identity, /[^A-Za-z0-9._~-]/)
         end
-        array = /\A(page|per_page|filters\[scope\])\[/.match(name)
+        array = /\A(page|per_page|filters\[scope\]|filters\[keyword\])\[/.match(name)
         canonical = array && allowed.include?(array[1]) ? array[1] : name
         identity = canonical.b if canonical != name
         label = canonical.sub(/\Afilters\[([^\]]+)\]\z/, 'filters.\1')
@@ -92,9 +92,12 @@ module SiteApi
     end
 
     # 列表同時彙整必填、重複及範圍錯誤，通過後才回傳可用整數。
-    def pagination(scope: false)
+    def pagination(scope: false, keyword: false)
       no_body
-      values, errors = query(scope ? %w[page per_page filters[scope]] : %w[page per_page])
+      allowed = %w[page per_page]
+      allowed += %w[filters[scope]] if scope
+      allowed += %w[filters[keyword]] if keyword
+      values, errors = query(allowed)
       numbers = {}
       # 同參數的重複／型態錯誤先保留，不能被值驗證覆蓋。
       %w[page per_page].each do |field|
@@ -112,8 +115,14 @@ module SiteApi
       if scope && values.key?("filters[scope]") && values["filters[scope]"] != "management"
         errors["filters.scope"] ||= [INVALID]
       end
+      # 只去除 U+0020；實際 NUL 在進入 PostgreSQL 前拒絕，文字反斜線不受影響。
+      if keyword && values.key?("filters[keyword]") && !errors.key?("filters.keyword")
+        value = values["filters[keyword]"] = values["filters[keyword]"].sub(/\A +/, "").sub(/ +\z/, "")
+        errors["filters.keyword"] = [INVALID] if value.length > 254 || value.include?("\0")
+      end
       raise Error.new("E0001", errors) unless errors.empty?
-      [numbers.fetch("page"), numbers.fetch("per_page")]
+      result = [numbers.fetch("page"), numbers.fetch("per_page")]
+      keyword ? [*result, values.fetch("filters[keyword]", "")] : result
     end
 
     # JSON 重複鍵依共同既有語意採最後值；嚴格 UTF-8、深度與標準數字不能被框架放寬。
@@ -136,11 +145,19 @@ module SiteApi
       errors = {}
       # 必填／null／型態先行；各欄錯誤獨立彙整。
       fields.each do |field|
+        value = parsed[field]
+        valid_type = if field == "enabled"
+                       [true, false].include?(value)
+                     elsif %w[version window_minutes failure_threshold lock_seconds].include?(field)
+                       value.is_a?(Integer)
+                     else
+                       value.is_a?(String)
+                     end
         if !parsed.key?(field)
           errors[field] = [REQUIRED]
-        elsif parsed[field].nil?
+        elsif value.nil?
           errors[field] = ["此欄位不可為 null"]
-        elsif !parsed[field].is_a?(field == "version" ? Integer : String)
+        elsif !valid_type
           errors[field] = [TYPE]
         end
       end
@@ -170,6 +187,15 @@ module SiteApi
       end
       if fields.include?("visibility") && !errors.key?("visibility") && !%w[visible hidden].include?(parsed["visibility"])
         errors["visibility"] = [INVALID]
+      end
+      if fields.include?("status") && !errors.key?("status") && !%w[active disabled].include?(parsed["status"])
+        errors["status"] = [INVALID]
+      end
+      # 關閉功能仍驗完整三個數值；boolean 不能當成 Ruby 整數接受。
+      { "window_minutes" => 60, "failure_threshold" => 100, "lock_seconds" => 86_400 }.each do |field, maximum|
+        if fields.include?(field) && !errors.key?(field) && !parsed[field].between?(1, maximum)
+          errors[field] = [INVALID]
+        end
       end
       raise Error.new("E0001", errors) unless errors.empty?
       parsed

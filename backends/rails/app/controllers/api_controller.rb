@@ -13,7 +13,12 @@ class ApiController < ActionController::Metal
             when "/api/me" then :me
             when "/api/me/articles" then :mine_articles
             when "/api/me/comments" then :mine_comments
+            when "/api/members" then :members
+            when "/api/settings/login-lockout" then :lockout_settings
+            when %r{\A/api/members/([^/]+)/status\z} then :member_status
+            when %r{\A/api/members/([^/]+)\z} then :member
             when "/api/articles" then :articles
+            when "/api/comments" then :managed_comments
             when %r{\A/api/articles/([^/]+)/visibility\z} then :article_visibility
             when %r{\A/api/articles/([^/]+)/comments\z} then :comments
             when %r{\A/api/articles/([^/]+)\z} then :article
@@ -24,8 +29,9 @@ class ApiController < ActionController::Metal
     methods = case route
               when :register, :login, :logout then %w[POST]
               when :articles, :comments then %w[GET POST]
+              when :lockout_settings then %w[GET PUT]
               when :article, :comment then %w[GET PUT]
-              when :article_visibility, :comment_visibility then %w[PUT]
+              when :article_visibility, :comment_visibility, :member_status then %w[PUT]
               else %w[GET]
               end
     allow = [*methods, "OPTIONS"].join(", ")
@@ -59,6 +65,13 @@ class ApiController < ActionController::Metal
 
   # 認證／角色→本文／Query→ID→可讀性的固定順序，不受 Rails 自動解析影響。
   def execute(route, db, input, path)
+    # 管理寫入自行先驗角色，再於交易內鎖定目前身分及管理目標。
+    if route == :member_status
+      return SiteApi::Writing.member_status(request, db, input, path.split("/")[3])
+    end
+    if route == :lockout_settings && request.request_method == "PUT"
+      return SiteApi::Writing.lockout_settings(request, db, input)
+    end
     # 寫入不經讀取分支，避免先解析 Body 或用訪客範圍查目標而破壞認證優先。
     if %w[POST PUT].include?(request.request_method) && %i[articles article comments comment article_visibility comment_visibility].include?(route)
       table = %i[comment comment_visibility comments].include?(route) ? "comments" : "articles"
@@ -66,6 +79,29 @@ class ApiController < ActionController::Metal
       return SiteApi::Writing.execute(request, db, input, table: table, action: action, raw_id: path.split("/")[3])
     end
     case route
+    when :managed_comments
+      viewer, = SiteApi::Writing.administrator(request, db)
+      page, per_page = input.pagination
+      SiteApi::Reading.page(db, viewer, page, per_page, management: "comments")
+    when :lockout_settings
+      SiteApi::Writing.administrator(request, db)
+      input.no_body
+      input.no_query
+      settings = db.exec("SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1").first
+      # 固定設定列不可缺漏；與登入／更新相同明確回認證設定異常，不冒充有效空設定。
+      raise SiteApi::Error.new("E0104") unless settings
+      settings
+    when :members, :member
+      viewer, = SiteApi::Authentication.identity(request, db)
+      raise SiteApi::Error.new("E0003") unless viewer["role"] == "admin"
+      if route == :members
+        page, per_page, keyword = input.pagination(keyword: true)
+        SiteApi::Reading.members(db, page, per_page, keyword)
+      else
+        input.no_body
+        input.no_query
+        SiteApi::Reading.member(db, input.integer(path.split("/")[3], "member_id"))
+      end
     when :health
       SiteApi::Authentication.key
       # 健康檢查只讀既有應用權限可見的業務表；SQL 版本由 Compose 的集中入口門禁保證。
@@ -98,9 +134,7 @@ class ApiController < ActionController::Metal
       viewer = identity&.first
       raise SiteApi::Error.new("E0003") if management && viewer["role"] != "admin"
       page, per_page = input.pagination(scope: true)
-      # 管理用途留待 Ticket 03；此票不以公開列表冒充管理資料或放寬範圍。
-      raise SiteApi::Error.new("E0004") if management
-      SiteApi::Reading.page(db, viewer, page, per_page)
+      SiteApi::Reading.page(db, viewer, page, per_page, management: management ? "articles" : nil)
     when :article, :comments
       identity = SiteApi::Authentication.identity(request, db, required: false)
       viewer = identity&.first

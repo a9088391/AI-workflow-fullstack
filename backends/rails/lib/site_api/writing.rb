@@ -4,6 +4,63 @@ module SiteApi
   module Writing
     module_function
 
+    # 管理角色在參數前驗證；回傳 claims 供交易內鎖後重新查核登入。
+    def administrator(request, db)
+      account, claims = Authentication.identity(request, db)
+      raise Error.new("E0003") unless account["role"] == "admin"
+      [account, claims]
+    end
+
+    # 多帳號依 ID 取鎖後才鎖登入；實際停用才撤銷全部後端 session，恢復不改鎖定。
+    def member_status(request, db, input, raw_id)
+      account, claims = administrator(request, db)
+      input.no_query
+      id = input.integer(raw_id, "member_id")
+      body = input.body(%w[status])
+      # 參數通過才進入寫入交易；雙帳號固定取鎖順序避免交錯管理造成死鎖。
+      db.transaction do
+        db.exec_params("SELECT id FROM accounts WHERE id IN ($1,$2) ORDER BY id FOR UPDATE", [account.fetch("id"), id])
+        db.exec_params("SELECT jti FROM login_sessions WHERE jti=$1 FOR UPDATE", [claims.fetch("jti")])
+        administrator(request, db)
+        # 管理員目標與不存在同為 404；外層認證不能取代此處目前資料判定。
+        target = db.exec_params("SELECT role,status FROM accounts WHERE id=$1", [id]).first
+        raise Error.new("E0004") unless target && target["role"] == "member"
+        next if target["status"] == body.fetch("status")
+        db.exec_params("UPDATE accounts SET status=$1 WHERE id=$2", [body.fetch("status"), id])
+        if body.fetch("status") == "disabled"
+          db.exec_params("UPDATE login_sessions SET revoked_at=clock_timestamp() WHERE account_id=$1 AND revoked_at IS NULL", [id])
+        end
+      end
+      {}
+    end
+
+    # 設定列先序列化登入／管理更新；四欄及關閉副作用共用同一交易，系統失敗全部回滾。
+    def lockout_settings(request, db, input)
+      account, claims = administrator(request, db)
+      input.no_query
+      body = input.body(%w[enabled window_minutes failure_threshold lock_seconds])
+      # 設定與登入共用第一把鎖，避免依過期設定累計或清除錯誤世代。
+      db.transaction do
+        settings = db.exec("SELECT enabled,window_minutes,failure_threshold,lock_seconds FROM login_lockout_settings WHERE id=1 FOR UPDATE").first
+        raise Error.new("E0104") unless settings
+        closing = settings.fetch("enabled") && !body.fetch("enabled")
+        # 關閉需鎖全部帳號；其他更新只鎖管理者，均先帳號後登入並於鎖後重驗角色。
+        if closing
+          db.exec("SELECT id FROM accounts ORDER BY id FOR UPDATE")
+        else
+          db.exec_params("SELECT id FROM accounts WHERE id=$1 FOR UPDATE", [account.fetch("id")])
+        end
+        db.exec_params("SELECT jti FROM login_sessions WHERE jti=$1 FOR UPDATE", [claims.fetch("jti")])
+        administrator(request, db)
+        next if settings == body
+        db.exec_params("UPDATE login_lockout_settings SET enabled=$1,window_minutes=$2,failure_threshold=$3,lock_seconds=$4 WHERE id=1",
+                       body.values_at("enabled", "window_minutes", "failure_threshold", "lock_seconds"))
+        # 只有 true→false 才換世代及清鎖；不刪歷史、不啟用停用帳號，也不撤銷任何登入。
+        db.exec("UPDATE accounts SET failure_epoch=failure_epoch+1,locked_until=NULL WHERE role='member'") if closing
+      end
+      {}
+    end
+
     # 先認證與驗參數，交易內依帳號→session→文章→留言鎖定並重驗，避免撤銷後仍寫入。
     def execute(request, db, input, table:, action:, raw_id: nil)
       account, claims = Authentication.identity(request, db)

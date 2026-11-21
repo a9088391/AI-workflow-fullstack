@@ -4,6 +4,37 @@ module SiteApi
   module Reading
     module_function
 
+    # 一般會員列表與詳情共用本人 DTO，管理員帳號不屬於管理目標。
+    def member(db, id)
+      row = db.exec_params("SELECT id,email,nickname,role,status,created_at FROM accounts WHERE role='member' AND id=$1", [id]).first
+      raise Error.new("E0004") unless row
+      Authentication.account_dto(row)
+    end
+
+    # count 與分頁使用完全相同條件；strpos 按字面包含，translate 只摺疊 ASCII。
+    def members(db, page, per_page, keyword)
+      parameters = keyword.empty? ? [] : [keyword.tr("A-Z", "a-z")]
+      source = "FROM accounts WHERE role='member'"
+      unless keyword.empty?
+        source += " AND (strpos(translate(nickname,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz') COLLATE \"C\",$1)>0 " \
+                  "OR strpos(translate(email,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz') COLLATE \"C\",$1)>0)"
+      end
+      total = db.exec_params("SELECT count(*) #{source}", parameters).first.fetch("count")
+      offset, rows = (page - 1) * per_page, []
+      if offset < total
+        index = parameters.length
+        rows = db.exec_params("SELECT id,email,nickname,role,status,created_at #{source} ORDER BY created_at DESC,id DESC LIMIT $#{index + 1} OFFSET $#{index + 2}",
+                              [*parameters, per_page, offset]).to_a
+      end
+      {
+        # 投影核准欄位，不把失敗世代、密碼或登入資料洩漏至管理列表。
+        list: rows.map do |row|
+          Authentication.account_dto(row)
+        end,
+        pagination: { page: page, per_page: per_page, total: total, total_pages: (total + per_page - 1) / per_page }
+      }
+    end
+
     # 對外內容 DTO 僅含公開作者資訊；恢復旗標依目前身分動態判定。
     def content_dto(row, viewer, comment: false)
       restore = row["visibility"] == "hidden" && viewer &&
@@ -45,10 +76,13 @@ module SiteApi
     end
 
     # 計數與資料採相同條件、固定排序及作者 JOIN；超頁不作無界讀取或改寫頁碼。
-    def page(db, viewer, page, per_page, article_id: nil, mine: nil)
-      table = mine || (article_id ? "comments" : "articles")
+    def page(db, viewer, page, per_page, article_id: nil, mine: nil, management: nil)
+      # management 只由已驗角色的 controller 固定傳入，與作者／公開範圍分開選取條件。
+      table = management || mine || (article_id ? "comments" : "articles")
       parameters = mine ? [viewer.fetch("id")] : article_id ? [article_id] : []
-      where = if mine
+      where = if management
+                ""
+              elsif mine
                 "WHERE #{table}.author_id=$1"
               elsif article_id
                 "WHERE comments.article_id=$1"

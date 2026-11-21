@@ -1,8 +1,12 @@
-# Rails：Ticket 01–02 隔離入口
+# Rails：Ticket 01–03 隔離入口
 
-Ruby `4.0.10`、Rails HTTP／啟動元件 `8.1.4.1`；提供註冊、登入、登出、me、公開文章／留言閱讀，以及文章與留言建立、本人列表、作者編修、下架與恢復。使用共用 PostgreSQL 與集中 SQL 入口，不執行 Rails migration。`filters[scope]=management` 先驗登入／角色及參數，管理員有效請求暫回 `404/E0004`；完整管理用途留待 Ticket 03。
+Ruby `4.0.10`、Rails HTTP／啟動元件 `8.1.4.1`；提供全部 22 個共同 API 操作，包含會員、文章與留言管理及登入鎖定設定。使用共用 PostgreSQL 與集中 SQL 入口，不執行 Rails migration。只有明確 `filters[scope]=management` 的管理員文章列表包含下架內容；管理留言列表包含下架父文的留言，公開列表與原作者操作保留原範圍。
 
 受保護內容寫入於同一交易依帳號→登入紀錄→文章→留言取得必要鎖，鎖後重驗身分；父文章公開檢查、操作權限、版本及內容更新不可分割。本文編修不自動恢復下架內容，管理員接管他人內容的恢復權算實際變更；同值且版本正確不更新版本與時間。建立來源由伺服器填 `rails`，後續更新保留原來源。
+
+管理員只能讀取／停用 `role=member` 的帳號。會員搜尋以暱稱或 Email 字面包含、只摺疊 ASCII 大小寫，關鍵字只去除前後 U+0020；實際 U+0000 拒絕 422，`%`、`_`、反斜線皆無特殊語意。實際停用與全部後端登入撤銷在同一交易；恢復不復活舊登入，也不解除未到期暫時鎖定。
+
+登入與設定更新依設定列→帳號（多筆按 ID）→登入紀錄取鎖。設定四欄原子更新，最後完整提交為準；只有 `true→false` 才在同交易切換所有一般會員的失敗世代、解除鎖定，不刪失敗歷史、不解除停用、不撤銷有效登入。同值或單純數字修改不重做副作用。回退程式不能復原已撤銷登入或已切換的計數世代。
 
 Dockerfile 的 builder／runtime 均鎖定官方 Ruby digest，Gemfile.lock 鎖定套件與 checksum。pg 與 Argon2id 使用 ARM64 原生套件，runtime 不另外安裝系統 libpq。
 
@@ -25,9 +29,12 @@ docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJE
 docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T rails bundle exec ruby test/protocol_test.rb
 docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T -e DB_OWNER_PASSWORD rails bundle exec ruby test/http_test.rb
 docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T -e DB_OWNER_PASSWORD rails bundle exec ruby test/content_test.rb
+docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T -e DB_OWNER_PASSWORD rails bundle exec ruby test/administration_test.rb
 ```
 
 第 02 票沿用同一 Compose YAML 及 `RAILS01_*` guard，但必須另建專屬 project、埠、fixture 和資料卷，不共用第 01 票或展示資料。`content_test.rb` 重用並包含 `http_test.rb` 的全部回歸，再加文章／留言契約、兩方向 Laravel 互通、受控 PostgreSQL 鎖重疊、撤銷／停用競爭、失敗回滾及個人分頁。查詢量與 `EXPLAIN (ANALYZE, BUFFERS)` 從真實公開 Rack 入口擷取 SQL，在容器 `/tmp/rails02-query-plans-*.json` 留存測資量、統計、綁定值與耗時；證據只含合成資料，不記 JWT／jti。測試不自動重送結果不明的寫入。
+
+第 03 票同樣使用獨立 project／埠／資料卷／金鑰。`administration_test.rb` 包含既有 HTTP／內容全部回歸，再加管理角色與逐欄驗證、兩向撤銷、設定／登入／停用／內容／登出真實鎖競爭、故障回滾、時間邊界及會員精確集合／分頁。會員查詢計畫位於容器 `/tmp/rails03-query-plans-*.json`，涵蓋無關鍵字、Email、短字、中文、非 ASCII 大小寫及字面符號，statement 數包含 PG 兩次 type-map 初始化。重跑完整 suite 兩次以確認同一隔離庫可重用，不清空前次資料。
 
 `http_test.rb` 的一般案例使用真實 Puma HTTP、Laravel 與 PostgreSQL；精確時間等號另外經同一 Rails 公開 Rack 入口與真實交易，僅在測試程序固定 `Time.now`／DB 時鐘查詢，完成後恢復。金鑰／DB 不可用另以外部系統邊界替身驗證；它們不代表 live 容器故障或瀏覽器跨來源已通過。
 
