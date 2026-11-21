@@ -1,4 +1,4 @@
-require_relative "../../lib/site_api/reading"
+require_relative "../../lib/site_api/writing"
 
 class ApiController < ActionController::Metal
   # 不透過 params；固定路徑／方法先判定，所有錯誤交最外層共同邊界。
@@ -11,26 +11,38 @@ class ApiController < ActionController::Metal
             when "/api/auth/login" then :login
             when "/api/auth/logout" then :logout
             when "/api/me" then :me
+            when "/api/me/articles" then :mine_articles
+            when "/api/me/comments" then :mine_comments
             when "/api/articles" then :articles
+            when %r{\A/api/articles/([^/]+)/visibility\z} then :article_visibility
             when %r{\A/api/articles/([^/]+)/comments\z} then :comments
             when %r{\A/api/articles/([^/]+)\z} then :article
+            when %r{\A/api/comments/([^/]+)/visibility\z} then :comment_visibility
+            when %r{\A/api/comments/([^/]+)\z} then :comment
             end
     raise SiteApi::Error.new("E0004") unless route
-    method = %i[register login logout].include?(route) ? "POST" : "GET"
+    methods = case route
+              when :register, :login, :logout then %w[POST]
+              when :articles, :comments then %w[GET POST]
+              when :article, :comment then %w[GET PUT]
+              when :article_visibility, :comment_visibility then %w[PUT]
+              else %w[GET]
+              end
+    allow = [*methods, "OPTIONS"].join(", ")
     if request.request_method == "OPTIONS"
       self.status = 204
-      headers["access-control-allow-methods"] = "#{method}, OPTIONS"
+      headers["access-control-allow-methods"] = allow
       headers["access-control-allow-headers"] = "Authorization, Content-Type, Accept"
       self.response_body = ""
       return
     end
-    unless request.request_method == method
+    unless methods.include?(request.request_method)
       # 例外回應由最外層重建，將 Allow 留在請求脈絡，避免隨 controller response 丟失。
-      request.env["site_api.allow"] = "#{method}, OPTIONS"
+      request.env["site_api.allow"] = allow
       raise SiteApi::Error.new("E0005", status: 405)
     end
     input = SiteApi::Input.new(request)
-    # 每個用途共用同一連線，登入／登出自行建立所需交易；讀取不持有寫鎖。
+    # 每個用途共用同一連線，受保護寫入自行建立交易；讀取不持有寫鎖。
     data = SiteApi::Database.open do |db|
       execute(route, db, input, path)
     end
@@ -40,13 +52,19 @@ class ApiController < ActionController::Metal
       self.response_body = "OK"
       return
     end
-    self.status = route == :register ? 201 : 200
+    self.status = request.request_method == "POST" && %i[register articles comments].include?(route) ? 201 : 200
     self.content_type = "application/json; charset=utf-8"
     self.response_body = JSON.generate(success: true, message: "OK", data: data)
   end
 
   # 認證／角色→本文／Query→ID→可讀性的固定順序，不受 Rails 自動解析影響。
   def execute(route, db, input, path)
+    # 寫入不經讀取分支，避免先解析 Body 或用訪客範圍查目標而破壞認證優先。
+    if %w[POST PUT].include?(request.request_method) && %i[articles article comments comment article_visibility comment_visibility].include?(route)
+      table = %i[comment comment_visibility comments].include?(route) ? "comments" : "articles"
+      action = request.request_method == "POST" ? :create : %i[article_visibility comment_visibility].include?(route) ? :visibility : :edit
+      return SiteApi::Writing.execute(request, db, input, table: table, action: action, raw_id: path.split("/")[3])
+    end
     case route
     when :health
       SiteApi::Authentication.key
@@ -64,6 +82,16 @@ class ApiController < ActionController::Metal
       input.no_body
       input.no_query
       SiteApi::Authentication.account_dto(account)
+    when :mine_articles, :mine_comments
+      viewer, = SiteApi::Authentication.identity(request, db)
+      page, per_page = input.pagination
+      SiteApi::Reading.page(db, viewer, page, per_page, mine: route == :mine_articles ? "articles" : "comments")
+    when :comment
+      viewer, = SiteApi::Authentication.identity(request, db)
+      input.no_body
+      input.no_query
+      id = input.integer(path.split("/")[3], "comment_id")
+      SiteApi::Reading.content_dto(SiteApi::Reading.readable_comment(db, id, viewer), viewer, comment: true)
     when :articles
       management = input.management?
       identity = SiteApi::Authentication.identity(request, db, required: management)

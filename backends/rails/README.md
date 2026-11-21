@@ -1,6 +1,8 @@
-# Rails：Ticket 01 隔離入口
+# Rails：Ticket 01–02 隔離入口
 
-Ruby `4.0.10`、Rails HTTP／啟動元件 `8.1.4.1`；只提供註冊、登入、登出、me、文章列表／詳情及文章留言列表。使用共用 PostgreSQL 與集中 SQL 入口，不執行 Rails migration。`filters[scope]=management` 先驗登入／角色及參數，管理員有效請求暫回 `404/E0004`；完整管理用途留待 Ticket 03。
+Ruby `4.0.10`、Rails HTTP／啟動元件 `8.1.4.1`；提供註冊、登入、登出、me、公開文章／留言閱讀，以及文章與留言建立、本人列表、作者編修、下架與恢復。使用共用 PostgreSQL 與集中 SQL 入口，不執行 Rails migration。`filters[scope]=management` 先驗登入／角色及參數，管理員有效請求暫回 `404/E0004`；完整管理用途留待 Ticket 03。
+
+受保護內容寫入於同一交易依帳號→登入紀錄→文章→留言取得必要鎖，鎖後重驗身分；父文章公開檢查、操作權限、版本及內容更新不可分割。本文編修不自動恢復下架內容，管理員接管他人內容的恢復權算實際變更；同值且版本正確不更新版本與時間。建立來源由伺服器填 `rails`，後續更新保留原來源。
 
 Dockerfile 的 builder／runtime 均鎖定官方 Ruby digest，Gemfile.lock 鎖定套件與 checksum。pg 與 Argon2id 使用 ARM64 原生套件，runtime 不另外安裝系統 libpq。
 
@@ -22,7 +24,10 @@ docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJE
 ```sh
 docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T rails bundle exec ruby test/protocol_test.rb
 docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T -e DB_OWNER_PASSWORD rails bundle exec ruby test/http_test.rb
+docker compose --env-file "$RAILS01_FIXTURE_ROOT/fixture.env" -p "$COMPOSE_PROJECT_NAME" -f compose.yaml -f ops/tests/rails01_compose.yaml exec -T -e DB_OWNER_PASSWORD rails bundle exec ruby test/content_test.rb
 ```
+
+第 02 票沿用同一 Compose YAML 及 `RAILS01_*` guard，但必須另建專屬 project、埠、fixture 和資料卷，不共用第 01 票或展示資料。`content_test.rb` 重用並包含 `http_test.rb` 的全部回歸，再加文章／留言契約、兩方向 Laravel 互通、受控 PostgreSQL 鎖重疊、撤銷／停用競爭、失敗回滾及個人分頁。查詢量與 `EXPLAIN (ANALYZE, BUFFERS)` 從真實公開 Rack 入口擷取 SQL，在容器 `/tmp/rails02-query-plans-*.json` 留存測資量、統計、綁定值與耗時；證據只含合成資料，不記 JWT／jti。測試不自動重送結果不明的寫入。
 
 `http_test.rb` 的一般案例使用真實 Puma HTTP、Laravel 與 PostgreSQL；精確時間等號另外經同一 Rails 公開 Rack 入口與真實交易，僅在測試程序固定 `Time.now`／DB 時鐘查詢，完成後恢復。金鑰／DB 不可用另以外部系統邊界替身驗證；它們不代表 live 容器故障或瀏覽器跨來源已通過。
 

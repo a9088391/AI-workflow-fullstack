@@ -117,7 +117,7 @@ module SiteApi
     end
 
     # JSON 重複鍵依共同既有語意採最後值；嚴格 UTF-8、深度與標準數字不能被框架放寬。
-    def body(fields, empty: false)
+    def body(fields, empty: false, comment: false)
       raw = @request.raw_post.to_s.dup.force_encoding(Encoding::UTF_8)
       return {} if empty && raw.empty?
       media = @request.get_header("CONTENT_TYPE").to_s.split(";", 2).first.to_s.strip.downcase
@@ -140,7 +140,7 @@ module SiteApi
           errors[field] = [REQUIRED]
         elsif parsed[field].nil?
           errors[field] = ["此欄位不可為 null"]
-        elsif !parsed[field].is_a?(String)
+        elsif !parsed[field].is_a?(field == "version" ? Integer : String)
           errors[field] = [TYPE]
         end
       end
@@ -158,6 +158,18 @@ module SiteApi
       if fields.include?("nickname") && !errors.key?("nickname")
         nickname = parsed["nickname"]
         errors["nickname"] = [INVALID] unless nickname.length.between?(1, 30) && !nickname.include?("\0") && !BLANK.match?(nickname)
+      end
+      # 文字保留原始碼點與換行；NUL 無法安全寫入 PostgreSQL，必須在信任邊界拒絕。
+      { "title" => 200, "body" => comment ? 2000 : 20_000 }.each do |field, maximum|
+        next unless fields.include?(field) && !errors.key?(field)
+        value = parsed[field]
+        errors[field] = [INVALID] unless value.length.between?(1, maximum) && !value.include?("\0") && !BLANK.match?(value)
+      end
+      if fields.include?("version") && !errors.key?("version") && !parsed["version"].between?(1, MAX_ID)
+        errors["version"] = [INVALID]
+      end
+      if fields.include?("visibility") && !errors.key?("visibility") && !%w[visible hidden].include?(parsed["visibility"])
+        errors["visibility"] = [INVALID]
       end
       raise Error.new("E0001", errors) unless errors.empty?
       parsed
