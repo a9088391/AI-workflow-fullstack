@@ -81,9 +81,33 @@ test('Django session selection is exact and fails closed', () => {
   assert.equal(readSession(s), null)
   saveSession(s, 'django-jwt', '2026-09-24 18:00:00')
   assert.deepEqual(readSession(s), { backend: BACKENDS.django, accessToken: 'django-jwt', expiresAt: '2026-09-24 18:00:00' })
-  assert.equal(selectBackend(s, 'http://localhost:8093'), false)
+  assert.equal(selectBackend(s, 'http://localhost:8094'), false)
   assert.equal(readSession(s).accessToken, 'django-jwt')
   assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+})
+
+// Rails 使用核准固定來源；同分頁原 JWT／期限原樣保留，改選來源才清除憑證。
+test('Rails selection preserves the original session and rejects unknown bases', () => {
+  const s = storage()
+  assert.equal(readBackend(s), API_BASE)
+  assert.equal(BACKENDS.rails, 'http://localhost:8093')
+  assert.equal(selectBackend(s, BACKENDS.rails), true)
+  saveSession(s, 'rails.original-JWT_123', '2026-09-24 18:00:00')
+  const original = s.getItem(SESSION_KEY)
+  assert.equal(readBackend(s), BACKENDS.rails)
+  assert.deepEqual(readSession(s), { backend: BACKENDS.rails, accessToken: 'rails.original-JWT_123', expiresAt: '2026-09-24 18:00:00' })
+  assert.equal(s.getItem(SESSION_KEY), original)
+  for (const invalid of ['http://localhost:8094', 'http://localhost:8093/', 'http://127.0.0.1:8093']) {
+    assert.equal(selectBackend(s, invalid), false)
+    assert.equal(s.getItem(SESSION_KEY), original)
+  }
+  assert.equal(selectBackend(s, BACKENDS.laravel), true)
+  assert.equal(readSession(s), null)
+  // 破壞目前來源時也不能把既存 Rails JWT 配給 Laravel 預設值。
+  s.setItem(BACKEND_KEY, 'http://localhost:8094')
+  s.setItem(SESSION_KEY, original)
+  assert.equal(readBackend(s), API_BASE)
   assert.equal(readSession(s), null)
 })
 

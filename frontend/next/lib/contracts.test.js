@@ -64,6 +64,47 @@ function storage() {
   }
 }
 
+// Rails 只擴充核准清單，既有十二個來源名稱與固定目的地維持不變。
+test('Rails extends the fixed backend registry without changing existing entries', () => {
+  assert.deepEqual(BACKENDS, {
+    laravel: ['Laravel', 'http://localhost:8081'], symfony: ['Symfony', 'http://localhost:8082'],
+    'aspnet-core': ['ASP.NET Core Controllers', 'http://localhost:8083'], django: ['Django', 'http://localhost:8084'],
+    flask: ['Flask', 'http://localhost:8085'], fastapi: ['FastAPI', 'http://localhost:8086'],
+    gin: ['Gin', 'http://localhost:8087'], echo: ['Echo', 'http://localhost:8088'],
+    fiber: ['Fiber', 'http://localhost:8089'], express: ['Express', 'http://localhost:8090'],
+    fastify: ['Fastify', 'http://localhost:8091'], nestjs: ['NestJS', 'http://localhost:8092'],
+    rails: ['Ruby on Rails', 'http://localhost:8093'],
+  })
+})
+
+// 六版共享同一份 Rails 憑證，導覽不可續期或另帶身分；後端改變才要求重新登入。
+test('Rails session survives frontend targets and is cleared only by a backend switch', () => {
+  const tab = storage()
+  const backend = 'http://localhost:8093'
+  const credential = { backend, accessToken: 'rails-original-token', expiresAt: '2026-11-21 20:00:00' }
+  assert.equal(readBackend(tab), 'http://localhost:8081')
+  assert.equal(readSession(tab), null)
+  assert.equal(saveSession(tab, backend, credential.accessToken, credential.expiresAt), true)
+  // 選單資格及安全語意網址都須可用；映射不改共用 session 的三個原始欄位。
+  for (const frontend of ['vue', 'nuxt', 'react', 'next', 'angular', 'sveltekit']) {
+    assert.equal(canSwitchFrontend(frontend, readBackend(tab)), true)
+    assert.equal(frontendTarget('/next/articles/007', frontend), `/${frontend}/articles/007`)
+    assert.equal(frontendTarget('/next/login', frontend, '/next/admin/members/7'), `/${frontend}/login?return_to=${encodeURIComponent(`/${frontend}/admin/members/7`)}`)
+    assert.equal(readBackend(tab), backend)
+    assert.deepEqual(readSession(tab), credential)
+    assert.deepEqual(JSON.parse(tab.getItem(SESSION_KEY)), credential)
+  }
+  // 不合法來源與前端不能取代目前 Rails 登入，也不能讓 JWT 流往任意位址。
+  assert.equal(canSwitchFrontend('__proto__', backend), false)
+  assert.equal(canSwitchFrontend('vue', 'http://localhost:8094'), false)
+  assert.equal(selectBackend(tab, 'http://localhost:8094'), false)
+  assert.equal(saveSession(tab, 'https://attacker.invalid', 'other-token', credential.expiresAt), false)
+  assert.deepEqual(readSession(tab), credential)
+  assert.equal(selectBackend(tab, 'http://localhost:8081'), true)
+  assert.equal(tab.getItem(SESSION_KEY), null)
+  assert.equal(readBackend(tab), 'http://localhost:8081')
+})
+
 // 切換後端必須清 JWT，舊回應不得清掉新登入或恢復舊來源。
 test('shared session keeps original expiry across frontend, but backend change revokes local credential', () => {
   const tab = storage()
@@ -188,7 +229,7 @@ test('author content validation and controls use actual authorship and server re
   assert.equal(canRestoreContent({ ...item, can_restore: true }, other), false)
 })
 
-// Nuxt 可承接十二個固定後端；切換前端只搬移合法路由，不更動來源 JWT 或期限。
+// Nuxt 可承接核准的固定後端；切換前端只搬移合法路由，不更動來源 JWT 或期限。
 test('frontend availability preserves the selected backend and session', () => {
   for (const backend of Object.values(BACKENDS)) assert.equal(canSwitchFrontend('nuxt', backend[1]), true)
   const tab = storage()
@@ -246,6 +287,24 @@ test('article and comment response validation distinguishes invalid data from ov
   assert.deepEqual(successData(200, envelope(comments), 'my-comments', 1), comments)
   assert.deepEqual(successData(200, envelope(comment), 'comment', 8), comment)
   assert.equal(successData(200, envelope(comment), 'comment', 9), null)
+  // 文章、公開留言與會員／管理列表共用來源驗證，讀取後端不限制建立來源。
+  for (const created_backend of ['laravel', 'symfony', 'aspnet-core', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber', 'express', 'fastify', 'nestjs', 'rails']) {
+    const sourcedArticle = { ...article, created_backend }
+    const sourcedComment = { ...comment, created_backend }
+    assert.deepEqual(successData(200, envelope(sourcedArticle), 'article', 8), sourcedArticle)
+    assert.deepEqual(successData(200, envelope(sourcedComment), 'comment', 8), sourcedComment)
+    // 各列表仍走同一份完整資源驗證，保留原分頁與父文章限制。
+    for (const kind of ['articles', 'comments', 'my-comments', 'managed-comments']) {
+      const list = { list: [kind === 'articles' ? sourcedArticle : sourcedComment], pagination: comments.pagination }
+      assert.deepEqual(successData(200, envelope(list), kind, 1), list)
+    }
+  }
+  // 原型屬性與未核准來源均拒絕，避免擴充登錄時誤放寬 DTO 邊界。
+  for (const created_backend of ['unknown', '__proto__', 'constructor', 'rails-unapproved']) {
+    assert.equal(successData(200, envelope({ ...article, created_backend }), 'article', 8), null)
+    assert.equal(successData(200, envelope({ ...comment, created_backend }), 'comment', 8), null)
+    assert.equal(successData(200, envelope({ ...comments, list: [{ ...comment, created_backend }] }), 'comments', 1, 8), null)
+  }
 })
 
 // 登入與寫入只接受指定成功 envelope；欄位明細和追蹤碼完整保留。

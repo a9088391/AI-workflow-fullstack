@@ -1,6 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, isAccount, isAuthProblem, isAuthSuccess, isLogin, normalizeEmail, positiveNumber, readSession, retryAfterSeconds, saveSession, SESSION_KEY, supportsSvelteRoute, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
+import { BACKENDS, BACKEND_KEY, clearSessionIfOwned, countdown, frontendTarget, isAccount, isAuthProblem, isAuthSuccess, isLogin, isReadingArticle, isReadingComment, normalizeEmail, positiveNumber, readBackend, readSession, retryAfterSeconds, saveSession, SESSION_KEY, supportsSvelteRoute, validEmail, validReturn, validateAccount, validateContent } from './contracts.ts';
+
+// Rails 使用共同選單與 DTO 白名單，既有來源不能因第十三個後端加入而失效。
+test('Rails 固定入口與十三種內容來源', function railsSources() {
+  assert.deepEqual(Object.keys(BACKENDS), ['laravel', 'symfony', 'aspnet-core', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber', 'express', 'fastify', 'nestjs', 'rails']);
+  assert.deepEqual(BACKENDS.rails, ['Ruby on Rails', 'http://localhost:8093']);
+  const content = { id: 7, title: '來源文章', body: '來源內文', author: { id: 2, nickname: '作者' }, version: 1, created_at: '2026-11-21 20:00:00', updated_at: '2026-11-21 20:00:00', visibility: 'visible', can_restore: false };
+  // 同形文章與留言套用全部合法來源，另拒絕未知、繼承屬性及不同大小寫。
+  for (const created_backend of [...Object.keys(BACKENDS), 'unknown', '__proto__', 'Rails']) {
+    const accepted = Object.keys(BACKENDS).includes(created_backend);
+    assert.equal(isReadingArticle({ ...content, created_backend }, 7), accepted, created_backend);
+    assert.equal(isReadingComment({ ...content, article_id: 3, created_backend }, 7), accepted, created_backend);
+  }
+});
+
+// 前端導覽只保留同一次 Rails 登入；不同後端或未知目的地仍須拒絕舊憑證。
+test('Rails 跨六前端保留原登入期限', function railsSession() {
+  const tab = storage();
+  assert.equal(readBackend(tab), 'http://localhost:8081');
+  const original = { backend: 'http://localhost:8093', accessToken: 'original-rails-token', expiresAt: '2026-11-22 04:00:00' };
+  assert.equal(saveSession(tab, original), true);
+  // 每個合法目標只改頁面路徑，儲存中的後端、憑證與期限均維持原值。
+  for (const frontend of ['vue', 'nuxt', 'react', 'next', 'angular', 'sveltekit']) {
+    assert.equal(frontendTarget('/angular/articles/7', frontend), `/${frontend}/articles/7`);
+    assert.deepEqual(readSession(tab), original);
+    assert.equal(readBackend(tab), original.backend);
+  }
+  // 未知目的地不能取代目前登入；改選另一合法後端後則清除不匹配憑證。
+  assert.equal(saveSession(tab, { ...original, backend: 'http://localhost:8094' }), false);
+  assert.deepEqual(readSession(tab), original);
+  tab.setItem(BACKEND_KEY, 'http://localhost:8081');
+  assert.equal(readSession(tab), null);
+  assert.equal(tab.getItem(SESSION_KEY), null);
+});
 
 // 認證成功必須含完整 envelope 及符合操作的 HTTP status，防止不完整回應誤導覽。
 test('帳號完整成功 envelope', function authEnvelope() {

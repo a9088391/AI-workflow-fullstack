@@ -13,7 +13,7 @@ const nextTarget = ref(null)
 const angularTarget = ref(null)
 const svelteTarget = ref(null)
 // 選單與標頭共用固定後端名稱，避免改選後顯示與實際 API 來源不一致。
-const backendLabels = { [BACKENDS.laravel]: 'Laravel', [BACKENDS.symfony]: 'Symfony', [BACKENDS.aspnet]: 'ASP.NET Core Controllers', [BACKENDS.django]: 'Django', [BACKENDS.flask]: 'Flask', [BACKENDS.fastapi]: 'FastAPI', [BACKENDS.gin]: 'Gin', [BACKENDS.echo]: 'Echo', [BACKENDS.fiber]: 'Fiber', [BACKENDS.express]: 'Express', [BACKENDS.fastify]: 'Fastify', [BACKENDS.nestjs]: 'NestJS' }
+const backendLabels = { [BACKENDS.laravel]: 'Laravel', [BACKENDS.symfony]: 'Symfony', [BACKENDS.aspnet]: 'ASP.NET Core Controllers', [BACKENDS.django]: 'Django', [BACKENDS.flask]: 'Flask', [BACKENDS.fastapi]: 'FastAPI', [BACKENDS.gin]: 'Gin', [BACKENDS.echo]: 'Echo', [BACKENDS.fiber]: 'Fiber', [BACKENDS.express]: 'Express', [BACKENDS.fastify]: 'Fastify', [BACKENDS.nestjs]: 'NestJS', [BACKENDS.rails]: 'Ruby on Rails' }
 
 // 掛載後才能讀同一分頁的 sessionStorage，伺服器只傳不含憑證的外殼。
 onMounted(

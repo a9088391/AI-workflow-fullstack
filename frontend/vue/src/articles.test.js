@@ -18,6 +18,22 @@ const member = { id: 2, email: 'writer@example.test', nickname: '作者', role: 
 // 使用完整成功 envelope，讓 Express 互動案例只改本次關注的 data。
 const success = (data) => ({ success: true, message: 'OK', data })
 
+// 所有已核准來源共用文章／留言 DTO；Rails 可讀，未知來源仍不得進入列表或詳情。
+test('content DTOs accept Rails and preserve all existing source IDs', () => {
+  const sources = ['laravel', 'symfony', 'aspnet-core', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber', 'express', 'fastify', 'nestjs', 'rails']
+  const pagination = { page: 1, per_page: 20, total: 1, total_pages: 1 }
+  for (const created_backend of [...sources, 'unknown', 'Rails', 'toString']) {
+    const content = { ...sample, created_backend }
+    const comment = { ...content, article_id: 7 }
+    const valid = sources.includes(created_backend)
+    assert.equal(Boolean(articles.readArticle(200, success(content), 7)), valid, created_backend)
+    assert.equal(Boolean(comments.readComment(200, success(comment), 7)), valid, created_backend)
+    assert.equal(Boolean(articles.readArticleList(200, success({ list: [content], pagination }), 1)), valid, created_backend)
+    assert.equal(Boolean(comments.readCommentList(200, success({ list: [comment], pagination }), 1, 7)), valid, created_backend)
+  }
+  assert.equal(articles.backendName('rails'), 'Ruby on Rails')
+})
+
 // 逐端點檢查文字、路徑與完整回應，避免前端自行猜欄位或新 ID。
 test('article contract keeps original text and validates routes and envelopes', () => {
   assert.equal(articles.articlePage('/vue/articles/new'), 'article-new')
@@ -148,6 +164,35 @@ async function respond(request, status, body, headers = {}) {
   request.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } }))
   await setImmediate()
 }
+
+// 真實 App 選單與管理／公開模板均沿用 Rails 顯示名稱；API 來源不限制建立來源。
+test('Rails menu and content sources render through Rails and existing backend reads', async (t) => {
+  const pagination = { page: 1, per_page: 20, total: 1, total_pages: 1 }
+  for (const backend of [auth.BACKENDS.rails, auth.BACKENDS.laravel]) {
+    for (const [path, template] of [
+      ['/vue/', { ...sample, created_backend: 'rails' }],
+      ['/vue/admin/articles', { ...sample, created_backend: 'rails' }],
+      ['/vue/admin/comments', { ...sample, article_id: 7, created_backend: 'rails' }],
+    ]) {
+      for (const [created_backend, label] of [['rails', 'Ruby on Rails'], ['laravel', 'Laravel']]) {
+        const content = { ...template, created_backend }
+        const app = articleApp(path, 'original-jwt', '', false, backend)
+        t.after(app.close)
+        assert.equal(app.requests[0].url, `${backend}/api/me`)
+        assert.equal(app.requests[0].headers.Authorization, 'Bearer original-jwt')
+        await respond(app.requests[0], 200, success({ ...member, role: 'admin' }))
+        await respond(app.requests[1], 200, success({ list: [content], pagination }))
+        // 版本面板預設收合；透過正式事件打開後才檢查實際選項。
+        app.page.toggleVersions()
+        const html = await renderArticleApp(app)
+        assert.match(html, /<option value="http:\/\/localhost:8093">Ruby on Rails<\/option>/)
+        assert.match(html, new RegExp(`建立於 ${label}`))
+        assert.equal(app.page.backendLabel.value, backend === auth.BACKENDS.rails ? 'Ruby on Rails' : 'Laravel')
+        assert.equal(auth.readSession(app.sessionStorage).expiresAt, '2026-09-24 18:00:00')
+      }
+    }
+  }
+})
 
 // 零筆首頁與零筆超頁須有不同提示；有資料的超頁仍保留 API 原總數。
 test('article and comment lists distinguish zero-total overpage from first-page empty state', async (t) => {

@@ -546,6 +546,7 @@ onBeforeUnmount(() => {
               <option :value="BACKENDS.express">Express</option>
               <option :value="BACKENDS.fastify">Fastify</option>
               <option :value="BACKENDS.nestjs">NestJS</option>
+              <option :value="BACKENDS.rails">Ruby on Rails</option>
             </select>
             <p id="backend-help" class="muted">切換後端會清除目前登入並要求重新登入。</p>
           </div>
@@ -1011,7 +1012,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div>
                   <span class="admin-label">作者</span>
-                  <span>{{ item.author.nickname }}</span>
+                  <span>{{ item.author.nickname }} · 建立於 {{ backendName(item.created_backend) }}</span>
                 </div>
                 <div>
                   <span class="admin-label">狀態</span>
@@ -1035,7 +1036,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div>
                   <span class="admin-label">作者</span>
-                  <span>{{ item.author.nickname }}</span>
+                  <span>{{ item.author.nickname }} · 建立於 {{ backendName(item.created_backend) }}</span>
                 </div>
                 <div>
                   <span class="admin-label">狀態</span>

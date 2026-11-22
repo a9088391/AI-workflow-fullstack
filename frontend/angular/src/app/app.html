@@ -64,7 +64,7 @@
           </label>
           <label>切換後端
             <select aria-label="切換目前後端" [value]="backend()" [disabled]="session.operation() === 'logout'" (change)="switchBackend($event)">
-              @for (entry of backends; track entry.id) { <option [value]="entry.base">{{ entry.name }}</option> }
+              @for (entry of backends; track entry.id) { <option [value]="entry.base" [selected]="entry.base === backend()">{{ entry.name }}</option> }
             </select>
           </label>
         </div>

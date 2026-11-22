@@ -75,10 +75,12 @@
         {#if $account?.role === 'admin'}
           <details class="admin-nav" open={$page.url.pathname.startsWith(`${BASE}/admin/`)}>
             <summary>管理介面</summary>
-            <a href={`${BASE}/admin/members`}>會員管理</a>
-            <a href={`${BASE}/admin/articles`}>文章管理</a>
-            <a href={`${BASE}/admin/comments`}>留言管理</a>
-            <a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
+            <nav class="admin-nav-menu" aria-label="上方管理導覽">
+              <a href={`${BASE}/admin/members`}>會員管理</a>
+              <a href={`${BASE}/admin/articles`}>文章管理</a>
+              <a href={`${BASE}/admin/comments`}>留言管理</a>
+              <a href={`${BASE}/admin/settings/login-lockout`}>鎖定設定</a>
+            </nav>
           </details>
         {/if}
       {:else}

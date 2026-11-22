@@ -6,6 +6,51 @@ import {
   retryAfterSeconds, saveSession, uncertainWrite, validReturn, validateAccount, validateContent, validateLockoutSettings
 } from '../src/lib/contracts.js';
 
+// 同一份白名單控制選單與來源 DTO，加入 Rails 時保留原十二種來源及未知值拒絕。
+test('Rails fixed API base and thirteen content sources', () => {
+  assert.deepEqual(Object.keys(BACKENDS), ['laravel', 'symfony', 'aspnet-core', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber', 'express', 'fastify', 'nestjs', 'rails']);
+  assert.deepEqual(BACKENDS.rails, ['Ruby on Rails', 'http://localhost:8093']);
+  const content = { id: 7, title: '來源文章', body: '來源內文', author: { id: 2, nickname: '作者' }, version: 1, created_at: '2026-11-21 20:00:00', updated_at: '2026-11-21 20:00:00', visibility: 'visible', can_restore: false };
+  // 相同資源跨來源可讀，未知、繼承屬性及不同大小寫來源仍不得進入畫面。
+  for (const created_backend of [...Object.keys(BACKENDS), 'unknown', '__proto__', 'Rails']) {
+    const accepted = Object.keys(BACKENDS).includes(created_backend);
+    assert.equal(Boolean(isArticle({ ...content, created_backend })), accepted, created_backend);
+    assert.equal(Boolean(isComment({ ...content, article_id: 3, created_backend }, 3)), accepted, created_backend);
+  }
+});
+
+// 只改前端路徑不應續期或換帳號，未知 API 位址不能取代已驗證的 Rails 登入。
+test('Rails session survives all six frontend routes with its original expiry', (t) => {
+  let now = Date.parse('2026-11-21T12:00:00Z');
+  // 固定 fixture 的登入時刻並由 test context 自動還原，避免日曆時間使路徑斷言提前失敗。
+  t.mock.method(Date, 'now', () => now);
+  const storage = memoryStorage();
+  assert.equal(readBackend(storage), 'http://localhost:8081');
+  const original = { backend: 'http://localhost:8093', accessToken: 'original-rails-token', expiresAt: '2026-11-22 04:00:00' };
+  assert.equal(saveSession(storage, original), true);
+  // 六個安全目的路徑都不能修改共享登入，目標前端仍須另行向後端重驗。
+  for (const frontend of ['vue', 'nuxt', 'react', 'next', 'angular', 'sveltekit']) {
+    assert.equal(frontendTarget('/sveltekit/articles/7', frontend), `/${frontend}/articles/7`);
+    assert.deepEqual(readSession(storage), original);
+    assert.equal(readBackend(storage), original.backend);
+  }
+  // 拒絕未核准目的地並保留原登入；另一合法後端不沿用 Rails 憑證。
+  assert.equal(saveSession(storage, { ...original, backend: 'http://localhost:8094' }), false);
+  assert.deepEqual(readSession(storage), original);
+  storage.setItem(BACKEND_KEY, 'http://localhost:8081');
+  assert.equal(readSession(storage), null);
+  assert.equal(storage.getItem(SESSION_KEY), null);
+  // 到期前一毫秒仍可保存；相等與超過期限均由正式檢查拒絕，不能藉固定時鐘略過到期規則。
+  now = Date.parse('2026-11-21T20:00:00Z') - 1;
+  assert.equal(saveSession(storage, original), true);
+  assert.deepEqual(readSession(storage), original);
+  now += 1;
+  assert.equal(expired(original), true);
+  assert.equal(saveSession(storage, original), false);
+  now += 1;
+  assert.equal(saveSession(storage, original), false);
+});
+
 // 模擬同源分頁儲存，確定六版共用欄位時不依賴框架私有狀態。
 function memoryStorage() {
   const values = new Map();

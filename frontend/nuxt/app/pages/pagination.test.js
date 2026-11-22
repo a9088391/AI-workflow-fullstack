@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { parse } from '@vue/compiler-sfc'
 import { renderToString } from '@vue/server-renderer'
 import * as vue from 'vue'
+import { backendName, readList } from '../utils/contracts.js'
 
 // 編譯正式 Nuxt 頁面模板，直接檢查清單狀態與分頁導覽的可見文字。
 async function renderList(file, state) {
@@ -16,6 +17,31 @@ async function renderList(file, state) {
   app.component('ReauthForm', { template: '<span />' })
   return renderToString(app)
 }
+
+// 真實公開與內容管理模板須顯示共同 DTO 的來源，不能只讓 Rails 通過解析而漏掉標籤。
+test('public and management lists render Rails and existing content source labels', async () => {
+  for (const [created_backend, label] of [['rails', 'Ruby on Rails'], ['laravel', 'Laravel']]) {
+    const content = { id: 7, title: '來源文章', body: '來源內容', author: { id: 2, nickname: '作者' }, version: 1, created_backend, created_at: '2026-09-24 10:00:00', updated_at: '2026-09-24 10:00:00', visibility: 'visible', can_restore: false }
+    const pagination = { page: 1, per_page: 20, total: 1, total_pages: 1 }
+    const envelope = { success: true, message: 'OK', data: { list: [content], pagination } }
+    const data = readList(200, envelope, 1)
+    const publicHtml = await renderList('./index.vue', { data, page: 1, loading: false, error: '', backendName,
+      // 預覽不改變本案例關注的來源，保留完整短文字供真正模板呈現。
+      preview(body) { return body },
+    })
+    assert.match(publicHtml, new RegExp(`作者 · 2026-09-24 10:00:00 · ${label}`))
+    // 管理文章與留言共用模板，但各自須經過正確 DTO 分支再呈現來源。
+    for (const kind of ['articles', 'comments']) {
+      const resource = kind === 'comments' ? { ...content, article_id: 7 } : content
+      const managementData = readList(200, { ...envelope, data: { list: [resource], pagination } }, 1, kind === 'comments' ? 'comment' : 'article')
+      const html = await renderList('../components/AdminList.vue', { kind, site: { ready: { value: true }, account: { value: { role: 'admin' } } }, route: { path: `/nuxt/admin/${kind}`, query: {} }, data: managementData, loading: false, error: '', backendName,
+        // 管理列表沿用目前首頁，不引入額外 Router 或網路替身。
+        requestedPage() { return 1 },
+      })
+      assert.match(html, new RegExp(`建立後端：</span>${label}`))
+    }
+  }
+})
 
 // 零筆超頁仍是原第七頁；首頁零筆與有資料總數的超頁各保留原本語意。
 test('public, article comments, author and admin lists render zero-total overpage', async () => {

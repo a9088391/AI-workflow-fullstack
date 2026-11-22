@@ -187,9 +187,10 @@ test('ASP.NET Core backend selection clears the previous session', () => {
   assert.equal(readBackend(s), 'http://localhost:8083')
 })
 
-// 十二個後端都須讀取 Vue 留下的原 JWT／期限；只有改選後端才清除憑證。
+// 原十二個後端與 Rails 都須雙向沿用原 JWT／期限；只有改選後端才清除憑證。
 test('all Vue backend sessions survive Nuxt and remain bound to their backend', () => {
-  assert.equal(Object.keys(BACKENDS).length, 12)
+  assert.equal(Object.keys(BACKENDS).length, 13)
+  assert.equal(BACKENDS.rails, 'http://localhost:8093')
   for (const [name, backend] of Object.entries(vueAuth.BACKENDS)) {
     const s = storage()
     assert.equal(BACKENDS[name], backend, name)
@@ -199,14 +200,34 @@ test('all Vue backend sessions survive Nuxt and remain bound to their backend', 
     assert.equal(readBackend(s), backend, name)
     assert.deepEqual(readSession(s), original, name)
     assert.equal(s.getItem(SESSION_KEY), JSON.stringify(original), name)
-    assert.equal(selectBackend(s, 'http://localhost:8093'), false, name)
+    assert.equal(selectBackend(s, 'http://localhost:8094'), false, name)
     assert.deepEqual(readSession(s), original, name)
+    // Nuxt 保存同一憑證後，Vue 仍須讀到同帳號使用的原值，不能續期或換來源。
+    saveSession(s, original.accessToken, original.expiresAt)
+    assert.equal(vueAuth.readBackend(s), backend, name)
+    assert.deepEqual(vueAuth.readSession(s), original, name)
     const next = backend === BACKENDS.laravel ? BACKENDS.symfony : BACKENDS.laravel
     assert.equal(selectBackend(s, next), true, name)
     assert.equal(s.getItem(SESSION_KEY), null, name)
     assert.equal(vueAuth.readSession(s), null, name)
     assert.equal(readBackend(s), next, name)
   }
+})
+
+// Rails 與既有後端讀回的來源都走相同 DTO，未知來源不得混入文章或留言畫面。
+test('content source DTOs accept Rails and all existing backends but reject unknown IDs', () => {
+  const sources = ['laravel', 'symfony', 'aspnet-core', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber', 'express', 'fastify', 'nestjs', 'rails']
+  const pagination = { page: 1, per_page: 20, total: 1, total_pages: 1 }
+  for (const created_backend of [...sources, 'unknown', 'Rails', 'toString']) {
+    const content = { ...article, created_backend }
+    const comment = { ...content, article_id: 9 }
+    const valid = sources.includes(created_backend)
+    assert.equal(Boolean(readArticle(200, { success: true, message: 'OK', data: content }, 101)), valid, created_backend)
+    assert.equal(Boolean(readComment(200, { success: true, message: 'OK', data: comment }, 101)), valid, created_backend)
+    assert.equal(Boolean(readList(200, { success: true, message: 'OK', data: { list: [content], pagination } }, 1)), valid, created_backend)
+    assert.equal(Boolean(readList(200, { success: true, message: 'OK', data: { list: [comment], pagination } }, 1, 'comment', 9)), valid, created_backend)
+  }
+  assert.equal(backendName('rails'), 'Ruby on Rails')
 })
 
 // 清除 JWT 若遭瀏覽器拒絕，新後端選擇不能已寫入儲存。

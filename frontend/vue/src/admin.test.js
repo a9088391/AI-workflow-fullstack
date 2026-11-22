@@ -925,9 +925,10 @@ test('lockout 401 then different admin login cannot reuse prior draft', async (t
   assert.doesNotMatch(await rendered(instance.page), /先前結果不明/)
 })
 
-// 同一管理員重新登入仍保留記憶體草稿，GET 只供比較，不替使用者覆蓋未提交內容。
+// 同一管理員在 Rails 重登保留草稿且不自動重送，人工儲存後讀回新值並保留先前未知結果。
 test('lockout 401 then same admin login retains draft for manual save', async (t) => {
-  const instance = app('/vue/admin/settings/login-lockout')
+  // 先以 Rails 管理員讀取原值，再模擬設定寫入遇到登入失效。
+  const instance = app('/vue/admin/settings/login-lockout', '', 'saved-token', auth.BACKENDS.rails)
   t.after(instance.close)
   await respond(instance.requests[0], 200, success(administrator))
   await respond(instance.requests[1], 200, success(lockout))
@@ -937,6 +938,7 @@ test('lockout 401 then same admin login retains draft for manual save', async (t
   await write
   instance.page.lockoutUnknown.value = true
   instance.page.lockoutNeedsReadback.value = true
+  // 正式重登入口只恢復同帳號權限與 GET，不得替使用者提交仍保留的九分鐘草稿。
   instance.page.email.value = administrator.email
   instance.page.password.value = 'abc123'
   await vue.nextTick()
@@ -951,6 +953,39 @@ test('lockout 401 then same admin login retains draft for manual save', async (t
   assert.equal(instance.page.lockoutUnknown.value, true)
   assert.equal(instance.page.lockoutNeedsReadback.value, false)
   assert.match(await rendered(instance.page), /啟用：9 分鐘內失敗/)
+  assert.equal(instance.requests.length, 5)
+  assert.equal(instance.requests[3].method, 'POST')
+  assert.equal(instance.requests[4].url, `${auth.BACKENDS.rails}/api/settings/login-lockout`)
+  assert.equal(instance.requests[4].method ?? 'GET', 'GET')
+
+  // 使用者明確再次儲存才送出完整四欄，成功回應後仍須向同一 Rails 端點讀回。
+  const save = instance.page.submitLockoutSettings()
+  assert.equal(instance.requests.length, 6)
+  assert.equal(instance.requests[5].url, `${auth.BACKENDS.rails}/api/settings/login-lockout`)
+  assert.equal(instance.requests[5].method, 'PUT')
+  assert.deepEqual(JSON.parse(instance.requests[5].body), { ...lockout, window_minutes: 9 })
+  await respond(instance.requests[5], 200, success({}))
+  assert.equal(instance.requests.length, 7)
+  assert.equal(instance.requests[6].url, `${auth.BACKENDS.rails}/api/settings/login-lockout`)
+  assert.equal(instance.requests[6].method ?? 'GET', 'GET')
+  await respond(instance.requests[6], 200, success({ ...lockout, window_minutes: 9 }))
+  await save
+
+  // 回讀完成恢復可操作表單；本次成功不替先前未知 PUT 下結論，也不再自動提交。
+  assert.equal(instance.requests.length, 7)
+  assert.equal(instance.page.lockoutData.value.window_minutes, 9)
+  assert.equal(instance.page.lockoutDraft.value.window_minutes, 9)
+  assert.equal(instance.page.lockoutUnknown.value, true)
+  assert.equal(instance.page.lockoutNeedsReadback.value, false)
+  assert.equal(instance.page.lockoutPending.value, false)
+  assert.equal(instance.page.contentLoading.value, false)
+  assert.equal(instance.page.contentReady.value, true)
+  const html = await rendered(instance.page)
+  assert.match(html, /目前伺服器值：啟用；9 分鐘內失敗 5 次，鎖定 300 秒/)
+  assert.match(html, /已重讀目前伺服器設定；先前結果仍無法單憑目前值判定，請確認後再操作/)
+  assert.match(html, /目前值已重讀，但可能已有其他管理員更新/)
+  assert.match(html, /<button[^>]*type="submit"[^>]*>儲存完整設定<\/button>/)
+  assert.doesNotMatch(html, /<button[^>]*type="submit"[^>]*disabled/)
 })
 
 // 一般會員即使直達管理網址，也不能觸發管理 API 或看到管理導覽。

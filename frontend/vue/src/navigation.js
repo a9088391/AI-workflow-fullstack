@@ -26,7 +26,7 @@ export function selectedBackendLabel(backend) {
   const labels = {
     laravel: 'Laravel', symfony: 'Symfony', aspnet: 'ASP.NET Core Controllers',
     django: 'Django', flask: 'Flask', fastapi: 'FastAPI', gin: 'Gin', echo: 'Echo',
-    fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS',
+    fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS', rails: 'Ruby on Rails',
   }
   for (const [key, value] of Object.entries(BACKENDS)) if (backend === value) return labels[key]
   return 'Laravel'

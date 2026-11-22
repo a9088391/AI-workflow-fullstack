@@ -1,9 +1,9 @@
 export const API_BASE = 'http://localhost:8081'
 export const BACKEND_KEY = 'article-collection.backend.v1'
-export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084', flask: 'http://localhost:8085', fastapi: 'http://localhost:8086', gin: 'http://localhost:8087', echo: 'http://localhost:8088', fiber: 'http://localhost:8089', express: 'http://localhost:8090', fastify: 'http://localhost:8091', nestjs: 'http://localhost:8092' }
+export const BACKENDS = { laravel: API_BASE, symfony: 'http://localhost:8082', aspnet: 'http://localhost:8083', django: 'http://localhost:8084', flask: 'http://localhost:8085', fastapi: 'http://localhost:8086', gin: 'http://localhost:8087', echo: 'http://localhost:8088', fiber: 'http://localhost:8089', express: 'http://localhost:8090', fastify: 'http://localhost:8091', nestjs: 'http://localhost:8092', rails: 'http://localhost:8093' }
 export const SESSION_KEY = 'article-collection.auth.v1'
 const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
-const backends = { laravel: 'Laravel', symfony: 'Symfony', 'aspnet-core': 'ASP.NET Core', django: 'Django', flask: 'Flask', fastapi: 'FastAPI', gin: 'Gin', echo: 'Echo', fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS' }
+const backends = { laravel: 'Laravel', symfony: 'Symfony', 'aspnet-core': 'ASP.NET Core', django: 'Django', flask: 'Flask', fastapi: 'FastAPI', gin: 'Gin', echo: 'Echo', fiber: 'Fiber', express: 'Express', fastify: 'Fastify', nestjs: 'NestJS', rails: 'Ruby on Rails' }
 const blank = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u
 
 // 固定後端顯示名稱與 API 識別值，讓建立來源和目前選擇可讀。

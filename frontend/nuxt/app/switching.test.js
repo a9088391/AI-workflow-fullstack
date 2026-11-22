@@ -214,9 +214,10 @@ test('frontend switch preserves session and ignores delayed me', async (t) => {
   assert.deepEqual(app.redirects, ['/vue/'])
 })
 
-// Nuxt 掛載時讀取十二個固定來源的共用憑證，標頭與選單都取同一份顯示名稱。
+// Nuxt 掛載時讀取原十二個來源與 Rails 的共用憑證，標頭與選單都取同一份名稱。
 test('Nuxt initializes every backend with its original session and menu label', async (t) => {
-  const names = ['Laravel', 'Symfony', 'ASP.NET Core Controllers', 'Django', 'Flask', 'FastAPI', 'Gin', 'Echo', 'Fiber', 'Express', 'Fastify', 'NestJS']
+  const names = ['Laravel', 'Symfony', 'ASP.NET Core Controllers', 'Django', 'Flask', 'FastAPI', 'Gin', 'Echo', 'Fiber', 'Express', 'Fastify', 'NestJS', 'Ruby on Rails']
+  assert.equal(Object.keys(BACKENDS).length, names.length)
   for (const [index, [name, backend]] of Object.entries(BACKENDS).entries()) {
     const page = switchingPage('index', true, backend)
     t.after(page.close)
@@ -230,6 +231,7 @@ test('Nuxt initializes every backend with its original session and menu label', 
     assert.equal(page.app.site.backend.value, backend, name)
     assert.equal(page.app.backendLabels[backend], names[index], name)
     assert.equal(page.requests[0].url, `${backend}/api/me`, name)
+    assert.equal(page.requests[0].options.headers.Authorization, 'Bearer same-token', name)
     assert.deepEqual(readSession(page.storage), { backend, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' }, name)
     assert.ok(html.includes(`<span>目前後端 <strong>${names[index]}</strong></span>`), name)
     const backendSelect = renderedSelect(html, 'nuxt-backend-version')
@@ -248,6 +250,11 @@ test('Nuxt initializes every backend with its original session and menu label', 
         { value: 'sveltekit', label: 'SvelteKit', disabled: false },
       ])
     }
+    // 目標驗權成功只恢復同帳號，不重新簽發 JWT 或改寫原到期時間。
+    respond(page.requests[0], 200, { success: true, message: 'OK', data: account })
+    await setImmediate()
+    assert.equal(page.app.site.account.value.id, account.id, name)
+    assert.deepEqual(readSession(page.storage), { backend, accessToken: 'same-token', expiresAt: '2026-09-24 18:00:00' }, name)
   }
 })
 

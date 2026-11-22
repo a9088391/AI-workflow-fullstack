@@ -122,7 +122,8 @@ async function submit() {
     } else if (response.status === 403 && failure.code === 'E0102') {
       site.forget(failure.message)
     }
-    if (secondsLeft.value > 0) await showError('登入暫時鎖定', {}, failure.logId)
+    // 倒數只補充鎖定時間，摘要仍須保留共同錯誤文案與追蹤碼。
+    if (secondsLeft.value > 0) await showError(failure.message, {}, failure.logId)
     else if (!(response.status === 429 && failure.code === 'E0105' && retryAfterSeconds(response.retryAfter) === null)) await showError(failure.message, failure.errors, failure.logId)
   } catch {
     if (!request.signal.aborted && !site.leaving.value) await showError('無法確認登入結果；請手動重新驗證後再試。')

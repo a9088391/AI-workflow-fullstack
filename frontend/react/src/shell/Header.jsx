@@ -110,7 +110,7 @@ export function Header({ page, pathname, rawReturn, returnTo, backend, onBackend
           <label htmlFor="backend">目前後端</label>
           <select id="backend" value={backend} onChange={switchBackend}>
             {Object.entries(BACKENDS).map(
-              // 十二個後端共享 API 路徑，只需更換固定基底。
+              // 核准後端共享 API 路徑，只需更換固定基底。
               ([id, [label, url]]) => <option key={id} value={url}>{label}</option>,
             )}
           </select>

@@ -21,6 +21,7 @@ test('navigation preserves IDs and existing frontend return target differences',
   assert.equal(frontendDestination('invalid', '/vue/', null), null)
   assert.equal(selectedBackendLabel(BACKENDS.aspnet), 'ASP.NET Core Controllers')
   assert.equal(selectedBackendLabel(BACKENDS.nestjs), 'NestJS')
+  assert.equal(selectedBackendLabel(BACKENDS.rails), 'Ruby on Rails')
 })
 
 // import 節點可跨行且含 alias；普通字串中的 import 文字不能被來源切割誤刪。

@@ -15,6 +15,7 @@ const passwordElement = ref(null)
 const logId = ref('')
 const pending = ref(false)
 const secondsLeft = ref(0)
+const retryReady = ref(false)
 let controller = null
 let timer = null
 let deadline = 0
@@ -22,8 +23,8 @@ let deadline = 0
 // 倒數依實際時鐘計算，背景分頁節流不延長登入鎖定提示。
 function tick() {
   secondsLeft.value = remainingSeconds(deadline)
-  // 歸零只清計時器並恢復人工操作，不因倒數結束自動送帳密。
-  if (secondsLeft.value === 0) { clearInterval(timer); timer = null; if (error.value === '登入暫時鎖定') error.value = '' }
+  // 歸零清掉鎖定摘要並提示可人工重試；不宣稱後端已解鎖，也不自動送帳密。
+  if (secondsLeft.value === 0) { clearInterval(timer); timer = null; error.value = ''; retryReady.value = true }
 }
 
 // 只接受伺服器有效 Retry-After，不自造鎖定期限。
@@ -31,6 +32,7 @@ function startCountdown(value) {
   const seconds = retryAfterSeconds(value)
   if (seconds === null) return false
   clearInterval(timer)
+  retryReady.value = false
   deadline = Date.now() + seconds * 1000
   tick()
   if (secondsLeft.value > 0) timer = setInterval(tick, 250)
@@ -43,6 +45,8 @@ function focusFirstError() { if (errors.value.email?.length) emailElement.value?
 // 原頁重新登入只恢復同帳號操作；不同帳號交由父表單丟棄舊文字。
 async function submit() {
   if (pending.value || secondsLeft.value > 0 || site.leaving.value) return
+  // 新的人工嘗試取代前次到期提示，格式不符時也只呈現本次驗證結果。
+  retryReady.value = false
   // 先回饋共同欄位格式，避免無效帳密送到後端並影響登入判定。
   const checked = validateCredentials({ email: email.value, password: password.value })
   if (Object.keys(checked.errors).length) { errors.value = checked.errors; error.value = '請確認 Email 與密碼格式。'; await nextTick(); summaryElement.value?.focus(); return }
@@ -74,7 +78,7 @@ async function submit() {
     // 倒數與停用分開處理；沒有有效秒數時不虛構鎖定時間。
     if (response.status === 429 && failure.code === 'E0105') {
       if (!startCountdown(response.retryAfter)) error.value = `${failure.message}。無法取得有效倒數秒數，請稍後再試。`
-      else error.value = '登入暫時鎖定'
+      else error.value = failure.message
     } else {
       if (response.status === 403 && failure.code === 'E0102') site.forget(failure.message)
       error.value = failure.message
@@ -88,14 +92,19 @@ async function submit() {
   } finally { if (controller === request) { controller = null; pending.value = false } }
 }
 
+watch([email, password],
+  // 帳密改變後舊嘗試的到期提示不再適用，同步清除以免誤示可重試狀態。
+  () => { retryReady.value = false },
+  { flush: 'sync' },
+)
 watch([site.backend, site.leaving],
-  // 切換後端或前端時立刻取消原登入請求與倒數。
-  () => { controller?.abort(); clearInterval(timer); timer = null; secondsLeft.value = 0 },
+  // 切換後端或前端時立刻取消原登入請求，清除倒數與到期提示。
+  () => { controller?.abort(); clearInterval(timer); timer = null; secondsLeft.value = 0; retryReady.value = false },
   { flush: 'sync' },
 )
 onBeforeUnmount(
-  // 離開恢復表單時清除計時器與在途請求。
-  () => { controller?.abort(); clearInterval(timer) },
+  // 離開恢復表單時清除計時器、在途請求與僅屬本表單的到期提示。
+  () => { controller?.abort(); clearInterval(timer); retryReady.value = false },
 )
 </script>
 
@@ -115,6 +124,9 @@ onBeforeUnmount(
         @click="focusFirstError">前往第一個錯誤欄位</button></p>
     <p v-if="secondsLeft > 0"
       class="lock-message">登入暫時鎖定，約剩 {{ formatCountdown(secondsLeft) }}</p>
+    <p v-if="retryReady"
+      class="form-success"
+      role="status">可再次嘗試登入。</p>
     <label for="reauth-email">Email</label>
     <input id="reauth-email"
       ref="emailElement"

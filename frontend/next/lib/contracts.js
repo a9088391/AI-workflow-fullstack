@@ -7,6 +7,7 @@ export const BACKENDS = {
   gin: ['Gin', 'http://localhost:8087'], echo: ['Echo', 'http://localhost:8088'],
   fiber: ['Fiber', 'http://localhost:8089'], express: ['Express', 'http://localhost:8090'],
   fastify: ['Fastify', 'http://localhost:8091'], nestjs: ['NestJS', 'http://localhost:8092'],
+  rails: ['Ruby on Rails', 'http://localhost:8093'],
 }
 export const FRONTENDS = { vue: 'Vue 3＋Vite', nuxt: 'Nuxt', react: 'React＋Vite', next: 'Next.js', angular: 'Angular', sveltekit: 'SvelteKit' }
 
@@ -44,7 +45,7 @@ export const FRONTENDS = { vue: 'Vue 3＋Vite', nuxt: 'Nuxt', react: 'React＋Vi
  * @typedef {{success: true, message: 'OK', data: T}} ApiSuccessDto
  */
 
-// 前端切換只接受固定的六版與十二個 API 來源，避免不明目的地接收共用登入。
+// 前端切換只接受固定的六版與核准 API 來源，避免不明目的地接收共用登入。
 export function canSwitchFrontend(frontend, backend) {
   return Object.hasOwn(FRONTENDS, frontend) && bases.includes(backend)
 }

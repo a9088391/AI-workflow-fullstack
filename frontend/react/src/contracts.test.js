@@ -14,6 +14,45 @@ function storage() {
   return { values, getItem, setItem, removeItem }
 }
 
+// Rails 只擴充已核准的固定清單，既有十二個來源名稱與目的地都不可被改寫。
+test('Rails extends the fixed backend registry without changing existing entries', () => {
+  assert.deepEqual(BACKENDS, {
+    laravel: ['Laravel', 'http://localhost:8081'], symfony: ['Symfony', 'http://localhost:8082'],
+    'aspnet-core': ['ASP.NET Core Controllers', 'http://localhost:8083'], django: ['Django', 'http://localhost:8084'],
+    flask: ['Flask', 'http://localhost:8085'], fastapi: ['FastAPI', 'http://localhost:8086'],
+    gin: ['Gin', 'http://localhost:8087'], echo: ['Echo', 'http://localhost:8088'],
+    fiber: ['Fiber', 'http://localhost:8089'], express: ['Express', 'http://localhost:8090'],
+    fastify: ['Fastify', 'http://localhost:8091'], nestjs: ['NestJS', 'http://localhost:8092'],
+    rails: ['Ruby on Rails', 'http://localhost:8093'],
+  })
+})
+
+// 六版只搬移安全頁面，Rails 共用登入須保留原 JWT 與期限；改後端才清除憑證。
+test('Rails session survives frontend targets and is cleared only by a backend switch', () => {
+  const tab = storage()
+  const backend = 'http://localhost:8093'
+  const credential = { backend, accessToken: 'rails-original-token', expiresAt: '2026-11-21 20:00:00' }
+  assert.equal(readBackend(tab), 'http://localhost:8081')
+  assert.equal(readSession(tab), null)
+  assert.equal(saveSession(tab, backend, credential.accessToken, credential.expiresAt), true)
+  // 導覽不得把 token 加入網址，也不能替目標前端另存帳號或更新到期時間。
+  for (const frontend of ['vue', 'nuxt', 'react', 'next', 'angular', 'sveltekit']) {
+    assert.equal(frontendTarget('/react/articles/007', frontend), `/${frontend}/articles/007`)
+    assert.equal(frontendTarget('/react/login', frontend, '/react/admin/members/7'), `/${frontend}/login?return_to=${encodeURIComponent(`/${frontend}/admin/members/7`)}`)
+    assert.equal(readBackend(tab), backend)
+    assert.deepEqual(readSession(tab), credential)
+    assert.deepEqual(JSON.parse(tab.getItem(SESSION_KEY)), credential)
+  }
+  // 未核准目的地與偽造前端不可改掉目前有效的 Rails 登入。
+  assert.equal(frontendTarget('/react/articles/7', '__proto__'), null)
+  assert.equal(selectBackend(tab, 'http://localhost:8094'), false)
+  assert.equal(saveSession(tab, 'https://attacker.invalid', 'other-token', credential.expiresAt), false)
+  assert.deepEqual(readSession(tab), credential)
+  assert.equal(selectBackend(tab, 'http://localhost:8081'), true)
+  assert.equal(tab.getItem(SESSION_KEY), null)
+  assert.equal(readBackend(tab), 'http://localhost:8081')
+})
+
 // 必須使用 Vue／Nuxt 同樣的 key、三欄值與原期限，切後端先清除憑證。
 test('shared session schema and backend switch', () => {
   const s = storage()
@@ -226,6 +265,21 @@ test('article and comment envelopes retain all fields and pagination', () => {
   assert.equal(validList({ list: [], pagination: { page: 9, per_page: 20, total: 4, total_pages: 1 } }, 9), true)
   assert.equal(validList({ list: [{ ...article, created_backend: 'unknown' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }, 1), false)
   assert.equal(validList({ list: [{ ...comment, article_id: '7' }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }, 1, 'comment'), false)
+  // 來源由建立後端決定；不論目前選哪個 API，文章與留言均接受全部核准來源。
+  for (const created_backend of ['laravel', 'symfony', 'aspnet-core', 'django', 'flask', 'fastapi', 'gin', 'echo', 'fiber', 'express', 'fastify', 'nestjs', 'rails']) {
+    for (const [item, kind] of [[article, 'article'], [comment, 'comment']]) {
+      const content = { ...item, created_backend }
+      assert.equal(validContent(content, kind), true, `${kind}: ${created_backend}`)
+      assert.equal(validList({ list: [content], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }, 1, kind), true)
+    }
+  }
+  // 物件原型名稱亦非核准來源，不能因新增 Rails 而放寬信任邊界。
+  for (const created_backend of ['unknown', '__proto__', 'constructor', 'rails-unapproved']) {
+    for (const [item, kind] of [[article, 'article'], [comment, 'comment']]) {
+      assert.equal(validContent({ ...item, created_backend }, kind), false)
+      assert.equal(validList({ list: [{ ...item, created_backend }], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } }, 1, kind), false)
+    }
+  }
 })
 
 // 登入錯誤碼必須分辨帳密錯誤、失效與停用，保留 422 欄位訊息。

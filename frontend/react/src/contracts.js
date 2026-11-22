@@ -7,6 +7,7 @@ export const BACKENDS = {
   gin: ['Gin', 'http://localhost:8087'], echo: ['Echo', 'http://localhost:8088'],
   fiber: ['Fiber', 'http://localhost:8089'], express: ['Express', 'http://localhost:8090'],
   fastify: ['Fastify', 'http://localhost:8091'], nestjs: ['NestJS', 'http://localhost:8092'],
+  rails: ['Ruby on Rails', 'http://localhost:8093'],
 }
 export const FRONTENDS = { vue: 'Vue 3＋Vite', nuxt: 'Nuxt', react: 'React＋Vite', next: 'Next.js', angular: 'Angular', sveltekit: 'SvelteKit' }
 
