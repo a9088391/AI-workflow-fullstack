@@ -2,6 +2,17 @@
 
 本專案以本機展示為驗收目標。以下結果來自專用的 Docker Compose 環境與合成資料。驗收分為框架測試、HTTP／PostgreSQL 契約、瀏覽器操作及查詢效能。
 
+## 乾淨安裝交付驗證
+
+Main 以 source commit `1dff692ee4f707341114a1566527396f275ae716` 建立乾淨 tracked-source context，使用獨立 Compose project 與合成資料，在 macOS 完成首次安裝、真 UI 操作及停止／重啟驗證。此紀錄不代表完整第 05 票整合套件已重跑。
+
+| 範圍 | 結果與界線 |
+| --- | --- |
+| 首次安裝與就緒 | `ops/setup.sh` exit 0。22 個容器中 21 個服務健康（DB、13 後端、6 前端及 NGINX），SQL job exit 0，套用 9 支 SQL；建立管理員及 13 份互異、32-byte、0600 權限的後端金鑰。Docker layer cache 可用。 |
+| 真 UI 與 API | Vue 建立文章及留言；六版切換均讀到相同文章、留言並沿用同一 session 到期時間。SvelteKit 切換至 Rails 後依契約要求重新登入，新增留言保留 Rails 來源，管理鎖定設定 UI 可讀取。13 個 API 均通過登入、`/me`、文章、留言與管理設定讀取。 |
+| 停止與重啟 | `ops/stop.sh` 與一般 `ops/start.sh` 均 exit 0。重啟前後資料表整體雜湊、設定、13 份金鑰及 16 個 session 的原到期時間不變；既有 13 個 API token 仍可讀取 `/me`。 |
+| 執行環境與未涵蓋範圍 | macOS，Docker client 28.0.1、server 29.8.2、Compose 5.5.0。未測其他 OS／架構、無 layer cache 安裝或從遠端 clone；本次未重跑完整 22 操作與 78 種搭配套件。 |
+
 ## Rails05 增量驗證狀態
 
 第 05 票的本機整合與真 UI 驗證範圍如下；本段不代替 L3 四路 Review、development acceptance 或 Git／部署授權。可重現入口及隔離前提見[開發指南](developer-guide.md#rails05-十三後端-http-回歸)，啟停與回復步驟見[維運指南](database-operations.md)。
