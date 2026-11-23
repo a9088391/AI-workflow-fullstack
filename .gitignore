@@ -6,3 +6,20 @@
 /backends/laravel/.phpunit.cache
 /backends/laravel/storage/logs/*.log
 /backends/laravel/bootstrap/cache/*.php
+
+# 工作流文件與工具產物只留本機，保留檔案供代理讀取，避免一般 Git 提交帶入。
+AGENTS.md
+CLAUDE.md
+CONTEXT.md
+CONTEXT-MAP.md
+/docs/agents/
+/docs/adr/
+/src/*/docs/adr/
+/.scratch/
+/.out-of-scope/
+/.agents/skills/
+/.impeccable/
+/PRODUCT.md
+/DESIGN.md
+/design-system/
+/.codegraph/
