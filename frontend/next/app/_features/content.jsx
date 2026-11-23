@@ -5,7 +5,7 @@ import { ErrorNotice, Pagination } from '../_shared/ui.jsx'
 
 const CREATED_ARTICLE_NOTICE_KEY = 'articleCollection.next.createdArticleNotice'
 
-// 建築照片只提供展廳構圖，不重複宣告頁名；窄版移到內容前方，保留原資料閱讀順序。
+// 建築照片只提供展廳構圖；頁面容器決定照片位置，資料閱讀順序留在語意內容中。
 function ArticleRail() {
   return <aside className="article-rail" aria-hidden="true" />
 }
@@ -202,14 +202,16 @@ export function ContentEditor({ kind, id, backend, credential, account, ready, o
     }
     if (result.error?.errors) setErrors(result.error.errors)
   }
-  return <div className="editorial-layout">
-    <ArticleRail />
-    <div className="article-column editor-page">
-      <a className="back-link" href={creating ? '/next/me/articles' : `/next/${article ? 'articles' : 'comments'}/${id}`}>
-        ← 返回{creating ? '我的文章' : '詳情'}
-      </a>
-      <div className="section-heading"><h1>{creating ? '發表文章' : article ? '編輯文章' : '編輯留言'}</h1></div>
-      {creating && <p>文章發表後立即公開，由目前後端記錄建立來源。</p>}
+  return <div className={`editorial-layout${creating ? ' gallery-writing' : ''}`}>
+    {creating ? <section className="writing-intro" aria-labelledby="editor-title">
+      <a className="back-link" href="/next/me/articles">← 返回我的文章</a>
+      <div className="section-heading"><h1 id="editor-title">發表文章</h1></div>
+      <ArticleRail />
+      <p>文章發表後立即公開，由目前後端記錄建立來源。</p>
+    </section> : <ArticleRail />}
+    <div className={`article-column editor-page${creating ? ' writing-controls' : ''}`}>
+      {!creating && <a className="back-link" href={`/next/${article ? 'articles' : 'comments'}/${id}`}>← 返回詳情</a>}
+      {!creating && <div className="section-heading"><h1>{article ? '編輯文章' : '編輯留言'}</h1></div>}
       {!creating && ready && read.loading && <p role="status" className="notice">正在讀取內容…</p>}
       {!creating && <ErrorNotice error={read.error} retry={read.reload} />}
       {!article && read.data && <section className="related">
@@ -408,9 +410,8 @@ export function ArticlePage({ backend, credential, account, ready, id, page, onA
     else setCommentPage(1)
     if (page !== 1) window.history.replaceState(null, '', `/next/articles/${id}?page=1#comments`)
   }
-  return <div className="editorial-layout">
-    <ArticleRail />
-    <article className="article-column detail">
+  return <div className="editorial-layout gallery-reading">
+    <article className="article-column detail reading-story">
       <a className="back-link" href="/next/">← 返回文章列表</a>
       {account?.role === 'admin' && <a className="back-link admin-return" href="/next/admin/articles">← 返回文章管理</a>}
       {read.loading && <p className="notice" role="status">正在載入文章…</p>}
@@ -430,6 +431,10 @@ export function ArticlePage({ backend, credential, account, ready, id, page, onA
           credential={credential} active={Boolean(read.data && account)} onAuthFailure={onAuthFailure}
           formNavigation={formNavigation} onRefresh={read.reload} />
       </div>}
+    </article>
+    <ArticleRail />
+    {/* 留言及輸入移到同一側欄；DOM 仍先呈現清單再呈現表單。 */}
+    <section className="article-discussion" aria-label="文章留言與輸入">
       {read.data && <CommentList backend={backend} credential={credential} account={account} ready={ready}
         articleId={numericId} page={commentPage} onAuthFailure={onAuthFailure} onRead={setComments} firstPage={commentRevision} />}
       {snapshot && <div hidden={!read.data}>
@@ -437,7 +442,7 @@ export function ArticlePage({ backend, credential, account, ready, id, page, onA
           ready={ready && Boolean(read.data)} onAuthFailure={onAuthFailure} formNavigation={formNavigation}
           comments={comments} reloadComments={reloadComments} reloadArticle={read.reload} />
       </div>}
-    </article>
+    </section>
   </div>
 }
 

@@ -93,10 +93,10 @@
   <title>會員登入｜文章集</title>
 </svelte:head>
 
-<div class="auth-wrap">
+<div class="auth-wrap poster-account poster-login">
+  <div class="poster-art" aria-hidden="true"></div>
   <div class="auth-intro">
     <h1>會員登入</h1>
-    <p>登入後即可發表文章與留言。</p>
   </div>
   <form class="auth-card" novalidate onsubmit={submit}>
     {#if error}

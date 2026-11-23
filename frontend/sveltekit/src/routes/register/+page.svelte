@@ -65,10 +65,10 @@
   <title>註冊會員｜文章集</title>
 </svelte:head>
 
-<div class="auth-wrap">
+<div class="auth-wrap poster-account poster-register">
+  <div class="poster-art" aria-hidden="true"></div>
   <div class="auth-intro">
     <h1>註冊會員</h1>
-    <p>留下名字，開始參與文章集。</p>
   </div>
   <form class="auth-card" novalidate onsubmit={submit}>
     {#if error}

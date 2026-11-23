@@ -174,5 +174,118 @@ footer { grid-column: 1 / -1; padding: 1.2rem; border-top: 1px solid #554838; co
   .admin-detail p { grid-template-columns: 1fr; gap: .2rem; }
   .admin-toolbar input, .admin-toolbar .secondary, .settings .primary { width: 100%; max-width: none; }
 }
+
+/* 午夜放映登入與註冊沿用同一表單，雨夜照片只改變外層構圖。 */
+.account-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr);
+  width: min(100%, 1120px);
+  max-width: 1120px;
+  min-height: 500px;
+  margin: clamp(1rem, 4vh, 3rem) auto;
+  border: 1px solid #554838;
+  background: #211c16;
+}
+.account-page .account-art {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 100%;
+  background: url('./assets/midnight.webp') 76% center / cover;
+  border-left: 1px solid #795736;
+}
+.account-page .account-panel {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  width: min(100%, 620px);
+  margin-inline: auto;
+  padding: clamp(1.5rem, 4vw, 3.5rem);
+}
+.account-page h1 { color: #f0c583; }
+.account-page .intro, .account-page .account-link { color: #d5c2a7; }
+.account-page .primary { width: 100%; }
+.account-register .account-art { background-position: 82% center; }
+/* 登入採橫向雨夜橫幅與置中表單，避免和註冊頁共用左右分欄。 */
+.account-login { grid-template-columns: minmax(0, 1fr); grid-template-rows: clamp(220px, 25vw, 320px) auto; min-height: 0; }
+.account-login .account-art { grid-column: 1; grid-row: 1; min-height: 0; border: 0; border-bottom: 1px solid #795736; background-position: center 54%; }
+.account-login .account-panel { grid-column: 1; grid-row: 2; width: min(100%, 620px); }
+
+/* 閱讀正文留在左側；留言版帶在故事和照片之後，表單仍排在留言清單後。 */
+.reading-article {
+  display: grid;
+  grid-template-columns: minmax(0, 1.23fr) minmax(260px, .77fr);
+  grid-template-areas: "story art" "discussion discussion";
+  gap: 0 clamp(1.5rem, 3.2vw, 3rem);
+  max-width: none;
+}
+.reading-story { grid-area: story; min-width: 0; max-width: 900px; }
+.reading-art {
+  grid-area: art;
+  min-width: 0;
+  min-height: 100%;
+  background: url('./assets/midnight.webp') 72% center / cover;
+  border-left: 1px solid #795736;
+}
+.discussion-band {
+  grid-area: discussion;
+  display: grid;
+  grid-template-columns: minmax(0, .76fr) minmax(0, 1.24fr);
+  align-items: start;
+  gap: .5rem clamp(1.5rem, 3.2vw, 3rem);
+  margin-top: 2rem;
+  padding: .5rem 1rem 1rem;
+  border-top: 1px solid #795736;
+  background: #171411;
+}
+.discussion-band .comments {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  min-width: 0;
+  padding-top: 1rem;
+  border: 0;
+}
+.discussion-band .comments h2, .discussion-band .comments > .pagination { grid-column: 1 / -1; }
+.discussion-band .comments .comment { min-width: 0; padding: .9rem 0; }
+.discussion-band > div:not([hidden]) { min-width: 0; padding-left: clamp(1rem, 2vw, 2rem); border-left: 1px solid #795736; }
+.discussion-band .comment-composer { margin: 0; padding-top: 1rem; border: 0; }
+.discussion-band .comment-composer .primary { align-self: flex-end; }
+
+/* 發文表單與照片使用兩欄；文章編輯仍沿用原本的單欄表單。 */
+.editor-writing {
+  display: grid;
+  grid-template-columns: minmax(0, 1.38fr) minmax(250px, .62fr);
+  max-width: none;
+  border: 1px solid #554838;
+  background: #1d1915;
+}
+.editor-writing .editor-copy { grid-column: 1; min-width: 0; padding: clamp(1.5rem, 4vw, 3.5rem); }
+.editor-writing .editor-copy h1 { color: #f0c583; }
+.editor-writing .editor-art {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 100%;
+  background: url('./assets/midnight.webp') 72% center / cover;
+  border-left: 1px solid #795736;
+}
+.editor-writing .editor-copy form .primary { align-self: flex-end; min-width: 180px; }
+.editor-writing .editor-copy > .back:last-child { display: flex; width: fit-content; margin-left: auto; }
+
+@media (max-width: 767px) {
+  .account-page { grid-template-columns: minmax(0, 1fr); min-height: 0; margin: 0 auto 1.5rem; }
+  .account-page .account-art { grid-column: 1; grid-row: 1; height: clamp(150px, 30vh, 220px); min-height: 0; border: 0; border-bottom: 1px solid #795736; }
+  .account-page .account-panel { grid-column: 1; grid-row: 2; padding: 1.4rem; }
+  .reading-article { grid-template-columns: minmax(0, 1fr); grid-template-areas: "story" "art" "discussion"; gap: 0; }
+  .reading-story { max-width: none; }
+  .reading-art { min-height: 170px; border: 0; border-top: 1px solid #795736; border-bottom: 1px solid #795736; background-position: 72% 58%; }
+  .discussion-band { grid-template-columns: minmax(0, 1fr); gap: 0; margin-inline: -1rem; padding: .5rem 1rem 1.25rem; }
+  .discussion-band > div:not([hidden]) { padding: 1rem 0 0; border: 0; border-top: 1px solid #795736; }
+  .editor-writing { grid-template-columns: minmax(0, 1fr); }
+  .editor-writing .editor-art { grid-column: 1; grid-row: 1; height: 150px; min-height: 0; border: 0; border-bottom: 1px solid #795736; }
+  .editor-writing .editor-copy { grid-column: 1; grid-row: 2; padding: 1.4rem; }
+  .editor-writing .editor-copy form .primary { align-self: stretch; width: 100%; }
+}
 @media (min-width: 768px) and (max-width: 1023px) { .admin-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: no-preference) { .primary:not(:disabled), .secondary { transition: transform 140ms ease-out, background-color 140ms ease-out; } }

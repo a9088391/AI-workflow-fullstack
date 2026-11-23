@@ -1680,6 +1680,8 @@ test('Gin uses its own session and ordered public auth and reading requests', as
   assert.equal(detail.requests[0].headers.Authorization, 'Bearer gin-jwt')
   await respond(detail.requests[0], 200, { success: true, message: 'OK', data: member })
   assert.equal(detail.requests[1].url, `${auth.BACKENDS.gin}/api/articles/7`)
+  // 文章尚未取得時保留頁面名稱；完成讀取後再以唯一主標呈現文章標題。
+  assert.match(await renderArticleApp(detail), /<h1 id="page-title">閱讀文章<\/h1>/)
   await respond(detail.requests[1], 200, { success: true, message: 'OK', data: sample })
   assert.equal(detail.requests[2].url, `${auth.BACKENDS.gin}/api/articles/7/comments?page=1&per_page=20`)
   await respond(detail.requests[2], 200, { success: true, message: 'OK', data: { list: [], pagination: { page: 1, per_page: 20, total: 0, total_pages: 0 } } })
@@ -1687,7 +1689,8 @@ test('Gin uses its own session and ordered public auth and reading requests', as
   assert.equal(detail.page.canEdit.value, true)
   assert.equal(detail.page.canManageVisibility.value, true)
   const rendered = await renderArticleApp(detail)
-  assert.match(rendered, /閱讀文章/)
+  assert.match(rendered, /<h1 id="page-title">標題<\/h1>/)
+  assert.equal((rendered.match(/<h1\b/g) ?? []).length, 1)
   assert.match(rendered, /發表留言/)
   assert.match(rendered, /編輯文章/)
   assert.match(rendered, /我的文章/)

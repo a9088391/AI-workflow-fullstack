@@ -86,7 +86,7 @@ onBeforeUnmount(
 </script>
 
 <template>
-  <main class="index-page">
+  <main class="index-page coastal-catalog">
     <div class="index-head">
       <div>
         <h1>所有文章</h1>

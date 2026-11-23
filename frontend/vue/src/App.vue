@@ -447,7 +447,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="site-shell" @keydown="onEscape">
+  <div class="site-shell" :class="`book-${page}`" @keydown="onEscape">
     <header class="site-header">
       <div class="header-inner">
         <div class="brand-row">
@@ -555,8 +555,8 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main id="main-content" class="main-content">
-      <section v-if="page === 'register'" class="form-page" aria-labelledby="page-title">
+    <main id="main-content" class="main-content" :class="`book-${page}`">
+      <section v-if="page === 'register'" class="form-page book-account-page" aria-labelledby="page-title">
         <h1 id="page-title">註冊會員</h1>
         <p class="intro">建立帳號後即可登入並發表文章。</p>
         <section v-if="summary" ref="errorSummary" class="error-summary" tabindex="-1" aria-labelledby="error-title">
@@ -596,13 +596,14 @@ onBeforeUnmount(() => {
       <section
         v-else-if="page === 'articles' || page === 'article' || page === 'article-new' || page === 'my-articles' || page === 'my-comments' || page === 'comment' || editing"
         class="reading-page"
-        :class="{ 'article-index': page === 'articles' }"
+        :class="{ 'article-index': page === 'articles', 'book-reading-page': page === 'article', 'book-writing-page': page === 'article-new' }"
         aria-labelledby="page-title"
       >
         <div class="reading-heading">
           <div>
+            <!-- 文章資料尚未就緒時顯示頁面名稱，載入後由同一個主標呈現文章標題。 -->
             <h1 id="page-title">{{
-              page === 'articles' ? '所有文章' : page === 'article' ? '閱讀文章'
+              page === 'articles' ? '所有文章' : page === 'article' ? (articleData && contentReady ? articleData.title : '閱讀文章')
                 : page === 'article-new' ? '發表文章' : page === 'my-articles' ? '我的文章'
                   : page === 'my-comments' ? '我的留言' : page === 'article-edit' ? '編輯文章'
                     : page === 'comment-edit' ? '編輯留言' : '留言詳情'
@@ -676,7 +677,6 @@ onBeforeUnmount(() => {
             <p class="article-meta">
               {{ articleData.author.nickname }} · {{ articleData.created_at }} · 建立於 {{ backendName(articleData.created_backend) }}<span v-if="articleData.visibility === 'hidden'"> · 已下架</span>
             </p>
-            <h2>{{ articleData.title }}</h2>
             <div class="article-body">{{ articleData.body }}</div>
           </article>
           <button
@@ -1065,7 +1065,7 @@ onBeforeUnmount(() => {
           </p>
         </template>
       </section>
-      <section v-else-if="page === 'login'" class="form-page" aria-labelledby="page-title">
+      <section v-else-if="page === 'login'" class="form-page book-account-page" aria-labelledby="page-title">
         <h1 id="page-title">會員登入</h1>
         <p class="intro">登入後即可發表文章與查看自己的文章。</p>
         <p v-if="registered" class="success-note" role="status">帳號已建立，請輸入帳密登入。</p>

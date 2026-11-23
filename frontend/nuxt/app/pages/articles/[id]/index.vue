@@ -305,43 +305,48 @@ onBeforeUnmount(
 </script>
 
 <template>
-  <main class="reading-page">
+  <main class="reading-page coastal-reading"
+    :class="{ 'has-feedback': (!site.account.value && commentOwner !== null) || visibilityError || writeError || uncertain }">
     <a class="back-link"
       href="/nuxt/">← 所有文章</a>
     <a v-if="site.account.value?.role === 'admin'"
       class="back-link admin-return"
       href="/nuxt/admin/articles">返回文章管理</a>
-    <ReauthForm v-if="!site.account.value && commentOwner !== null"
-      :owner-id="commentOwner"
-      @restored="restoredComment"
-      @different="clearComment" />
-    <div v-if="visibilityError"
-      class="state-block"
-      role="alert">
-      <p>{{ visibilityError }}</p>
-      <small v-if="visibilityLogId">log_id：{{ visibilityLogId }}</small>
-      <button type="button"
-        class="inline-button"
-        :disabled="loading || visibilityPending"
-        @click="refreshVisibility">重讀文章確認</button>
-    </div>
-    <p v-if="writeError"
-      ref="commentSummary"
-      class="form-error"
-      tabindex="-1"
-      role="alert">{{ writeError }}<small v-if="writeLogId">log_id：{{ writeLogId }}</small><button v-if="fieldErrors.body?.length && article?.visibility === 'visible'"
-        type="button"
-        class="inline-button"
-        @click="focusCommentError">前往留言欄位</button></p>
-    <div v-if="uncertain"
-      class="state-actions">
-      <button type="button"
-        class="inline-button"
-        :disabled="loading"
-        @click="load">重讀留言列表</button>
-      <button type="button"
-        class="inline-button"
-        @click="checkedComment">我已查證結果</button>
+    <!-- 有恢復或寫入回饋時才建立此列，空狀態不增加閱讀頁間距。 -->
+    <div v-if="(!site.account.value && commentOwner !== null) || visibilityError || writeError || uncertain"
+      class="reading-feedback">
+      <ReauthForm v-if="!site.account.value && commentOwner !== null"
+        :owner-id="commentOwner"
+        @restored="restoredComment"
+        @different="clearComment" />
+      <div v-if="visibilityError"
+        class="state-block"
+        role="alert">
+        <p>{{ visibilityError }}</p>
+        <small v-if="visibilityLogId">log_id：{{ visibilityLogId }}</small>
+        <button type="button"
+          class="inline-button"
+          :disabled="loading || visibilityPending"
+          @click="refreshVisibility">重讀文章確認</button>
+      </div>
+      <p v-if="writeError"
+        ref="commentSummary"
+        class="form-error"
+        tabindex="-1"
+        role="alert">{{ writeError }}<small v-if="writeLogId">log_id：{{ writeLogId }}</small><button v-if="fieldErrors.body?.length && article?.visibility === 'visible'"
+          type="button"
+          class="inline-button"
+          @click="focusCommentError">前往留言欄位</button></p>
+      <div v-if="uncertain"
+        class="state-actions">
+        <button type="button"
+          class="inline-button"
+          :disabled="loading"
+          @click="load">重讀留言列表</button>
+        <button type="button"
+          class="inline-button"
+          @click="checkedComment">我已查證結果</button>
+      </div>
     </div>
     <p v-if="loading && !article"
       class="state-block"

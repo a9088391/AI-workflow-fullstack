@@ -1,6 +1,6 @@
 @if (content.route === 'list' || content.route === 'my-articles') {
-  <div class="page-heading">
-    <h1>{{ content.route === 'my-articles' ? '我的文章' : '所有文章' }}</h1>
+  <div class="page-heading" [class.ink-catalog-heading]="content.route === 'list'">
+    <h1>{{ content.route === 'my-articles' ? '我的文章' : '文章列表' }}</h1>
   </div>
   @if (content.route === 'my-articles' && content.query.has('created')) {
     <p class="notice" role="status">文章已發表。請從列表選擇要閱讀的文章。</p>
@@ -26,7 +26,7 @@
     } @else {
       <div class="article-list">
         @for (item of data.list; track item.id) {
-          <article class="article-row">
+          <article class="article-row" [class.ink-catalog-entry]="content.route === 'list'">
             <div>
               <h2><a [href]="'/angular/articles/' + item.id">{{ item.title }}</a></h2>
               <p class="byline">
@@ -56,7 +56,7 @@
     </nav>
   }
 } @else if (content.route === 'article') {
-  <a class="back-link" href="/angular/">← 回所有文章</a>
+  <a class="back-link ink-story-back" href="/angular/">返回文章列表</a>
   @if (content.query.has('commented')) { <p class="notice" role="status">留言已發表，正在讀取第一頁留言。</p> }
   @if (content.loading()) { <p class="notice" role="status">正在載入文章…</p> }
   @if (content.error(); as failure) {
@@ -70,8 +70,8 @@
     </div>
   }
   @if (content.article(); as story) {
-    <article class="reading">
-      <p class="eyebrow">ARTICLE / 閱讀</p><h1>{{ story.title }}</h1>
+    <article class="reading ink-story">
+      <h1>{{ story.title }}</h1>
       <div class="story-meta">
         <span>作者　<strong>{{ story.author.nickname }}</strong></span>
         <time>{{ story.created_at.slice(0, 10) }}</time>

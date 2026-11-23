@@ -227,7 +227,8 @@
   <title>{article?.title || '文章閱讀'}｜文章集</title>
 </svelte:head>
 
-<div class="reading-wrap">
+<div class="reading-wrap poster-reading">
+  <div class="poster-art" aria-hidden="true"></div>
   <a class="back-link" href={`${BASE}/`}>← 返回文章列表</a>
   {#if articleLoading}
     <p class="state-panel" role="status">文章載入中…</p>

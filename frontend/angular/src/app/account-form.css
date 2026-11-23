@@ -22,3 +22,9 @@ input[aria-invalid="true"] { border-color: var(--ink-accent); }
 .reauth-form label { margin-top: 12px; }
 .reauth-form input { padding: 12px; border-color: var(--ink-field); background: var(--ink-panel); color: var(--ink-text); }
 .reauth-form .primary-button { max-width: 270px; }
+
+/* 登入及註冊採小圓角欄位，重登入沿用原頁的錯誤與恢復版面。 */
+form:not(.reauth-form) input { min-height: 44px; border-radius: 3px; }
+form:not(.reauth-form) .field-error:empty { display: none; }
+form:not(.reauth-form) .primary-button { justify-content: center; min-height: 44px; border-radius: 3px; }
+form:not(.reauth-form) .form-foot { text-align: center; margin: 5px 0 0; }

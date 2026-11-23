@@ -205,80 +205,84 @@ export function AuthorEditor({ kind, resourceId, backend, credential, account, e
     if (result.problem?.code === 'E0003' || result.problem?.code === 'E0004') { setBlocked(true); read.retry(); if (!isArticle) parent.retry() }
   }
   return (
-    <section className="content editor">
-      <p className="eyebrow">AUTHOR / REACT</p>
-      <h1>{creating ? '發表文章' : isArticle ? '編輯文章' : '編輯留言'}</h1>
-      {creating && <p className="intro">文章會公開發表，建立來源由目前後端記錄。</p>}
-      {!creating && read.loading && enabled && <p role="status">正在讀取內容…</p>}
-      {!creating && <ErrorNotice error={read.error} retry={read.retry} />}
-      {!isArticle && sourceItem && (
-        <section className="related">
-          <h2>所屬文章</h2>
-          {parent.loading && <p role="status">正在確認文章可見性…</p>}
-          {parent.data && <p><a href={`/react/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}</p>}
-          {parent.error && <>
-            <ErrorNotice error={{ ...parent.error, message: parent.error.code === 'E0004' ? '所屬文章目前無法讀取。' : parent.error.message }} />
-            <button type="button" className="secondary" onClick={parent.retry}>單獨重試文章讀取</button>
-          </>}
-        </section>
-      )}
-      {!creating && read.data && !allowed && <p className="notice error">只有內容作者可編修；管理員自己的內容也依作者規則。</p>}
-      {notice && <ErrorNotice error={notice} focusRef={summary} />}
-      {(creating || initial.current) && allowed && <>
-        {creating ? <p>發表後由目前後端記錄建立來源、作者與時間。</p> : <Metadata item={sourceItem} />}
-        {write.uncertain && (
-          <div className="notice">
-            <p>結果尚未確認；請先查證資料，不會自動重送。</p>
-            <a href={creating ? '/react/me/articles' : `/react/${isArticle ? 'articles' : 'comments'}/${resourceId}`}>前往查證</a>
-            {!creating && <button type="button" className="secondary" onClick={checkLatest}>在此重讀</button>}
-          </div>
-        )}
-        {creating && write.uncertain && (
-          <div className="related">
-            <button type="button" className="secondary" onClick={checkCreated}>查證我的文章第一頁</button>
-            {checkingUnknown && verification.loading && <p role="status">正在讀取我的文章…</p>}
-            {checkingUnknown && <ErrorNotice error={verification.error} retry={verification.retry} />}
-            {checkingUnknown && verification.data && <>
-              <p>此列表供人工查證，不能只憑第一頁判定這次是否建立成功。</p>
-              <ul>{verification.data.list.map(
-                // 顯示資源 ID 與時間協助人工比較，不替使用者推定建立結果。
-                (item) => <li key={item.id}><a href={`/react/articles/${item.id}`}>{item.title}</a> · {item.created_at}</li>,
-              )}</ul>
-              <button type="button" className="secondary" onClick={acceptCreatedCheck}>已查證，允許手動再送</button>
+    <section className={`content editor${creating ? ' editor-writing' : ''}`}>
+      {/* 草稿面板與裝飾照片分欄，只有新增文章套用午夜放映構圖。 */}
+      <div className="editor-copy">
+        <p className="eyebrow">AUTHOR / REACT</p>
+        <h1>{creating ? '發表文章' : isArticle ? '編輯文章' : '編輯留言'}</h1>
+        {creating && <p className="intro">文章會公開發表，建立來源由目前後端記錄。</p>}
+        {!creating && read.loading && enabled && <p role="status">正在讀取內容…</p>}
+        {!creating && <ErrorNotice error={read.error} retry={read.retry} />}
+        {!isArticle && sourceItem && (
+          <section className="related">
+            <h2>所屬文章</h2>
+            {parent.loading && <p role="status">正在確認文章可見性…</p>}
+            {parent.data && <p><a href={`/react/articles/${parent.data.id}`}>{parent.data.title}</a> · {parent.data.visibility === 'visible' ? '公開' : '已下架'}</p>}
+            {parent.error && <>
+              <ErrorNotice error={{ ...parent.error, message: parent.error.code === 'E0004' ? '所屬文章目前無法讀取。' : parent.error.message }} />
+              <button type="button" className="secondary" onClick={parent.retry}>單獨重試文章讀取</button>
             </>}
-          </div>
+          </section>
         )}
-        {conflict && (
-          <div className="notice">
-            <p>版本衝突。請先讀取最新內容，比較後自行整合；不會自動重送。</p>
-            <button type="button" className="secondary" onClick={checkLatest}>讀取最新版本</button>
-          </div>
-        )}
-        {checked && read.data && !read.loading && !read.error && (
-          <div className="comparison">
-            <h2>最新版本（僅供比較）</h2>
-            {isArticle && <p className="prose">{read.data.title}</p>}
-            <p className="prose">{read.data.body}</p>
-            <p>版本 {read.data.version}</p>
-            <button type="button" className="secondary" onClick={acceptLatest}>已比較，採用最新版本號</button>
-          </div>
-        )}
-        <form noValidate onSubmit={submit}>
-          {isArticle && <>
-            <label htmlFor="title">標題</label>
-            <input id="title" value={title} onChange={editTitle} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? 'title-error' : undefined} />
-            {errors.title && <p className="field-error" id="title-error">{errors.title.join('；')}</p>}
-          </>}
-          <label htmlFor="body">{isArticle ? '文章內文' : '留言內容'}</label>
-          <textarea id="body" rows={10} value={body} onChange={editBody} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />
-          {errors.body && <p className="field-error" id="body-error">{errors.body.join('；')}</p>}
-          {!parentVisible && !isArticle && <p className="notice">確認所屬文章公開後才能送出留言編修。</p>}
-          <button className="primary" type="submit" disabled={!enabled || write.pending || write.uncertain || conflict || !parentVisible}>
-            {write.pending ? '處理中…' : creating ? '發表文章' : '儲存修改'}
-          </button>
-        </form>
-      </>}
-      <a className="back" href={creating ? '/react/me/articles' : isArticle ? `/react/articles/${resourceId}` : `/react/comments/${resourceId}`}>返回{creating ? '我的文章' : '詳情'}</a>
+        {!creating && read.data && !allowed && <p className="notice error">只有內容作者可編修；管理員自己的內容也依作者規則。</p>}
+        {notice && <ErrorNotice error={notice} focusRef={summary} />}
+        {(creating || initial.current) && allowed && <>
+          {creating ? <p>發表後由目前後端記錄建立來源、作者與時間。</p> : <Metadata item={sourceItem} />}
+          {write.uncertain && (
+            <div className="notice">
+              <p>結果尚未確認；請先查證資料，不會自動重送。</p>
+              <a href={creating ? '/react/me/articles' : `/react/${isArticle ? 'articles' : 'comments'}/${resourceId}`}>前往查證</a>
+              {!creating && <button type="button" className="secondary" onClick={checkLatest}>在此重讀</button>}
+            </div>
+          )}
+          {creating && write.uncertain && (
+            <div className="related">
+              <button type="button" className="secondary" onClick={checkCreated}>查證我的文章第一頁</button>
+              {checkingUnknown && verification.loading && <p role="status">正在讀取我的文章…</p>}
+              {checkingUnknown && <ErrorNotice error={verification.error} retry={verification.retry} />}
+              {checkingUnknown && verification.data && <>
+                <p>此列表供人工查證，不能只憑第一頁判定這次是否建立成功。</p>
+                <ul>{verification.data.list.map(
+                  // 顯示資源 ID 與時間協助人工比較，不替使用者推定建立結果。
+                  (item) => <li key={item.id}><a href={`/react/articles/${item.id}`}>{item.title}</a> · {item.created_at}</li>,
+                )}</ul>
+                <button type="button" className="secondary" onClick={acceptCreatedCheck}>已查證，允許手動再送</button>
+              </>}
+            </div>
+          )}
+          {conflict && (
+            <div className="notice">
+              <p>版本衝突。請先讀取最新內容，比較後自行整合；不會自動重送。</p>
+              <button type="button" className="secondary" onClick={checkLatest}>讀取最新版本</button>
+            </div>
+          )}
+          {checked && read.data && !read.loading && !read.error && (
+            <div className="comparison">
+              <h2>最新版本（僅供比較）</h2>
+              {isArticle && <p className="prose">{read.data.title}</p>}
+              <p className="prose">{read.data.body}</p>
+              <p>版本 {read.data.version}</p>
+              <button type="button" className="secondary" onClick={acceptLatest}>已比較，採用最新版本號</button>
+            </div>
+          )}
+          <form noValidate onSubmit={submit}>
+            {isArticle && <>
+              <label htmlFor="title">標題</label>
+              <input id="title" value={title} onChange={editTitle} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? 'title-error' : undefined} />
+              {errors.title && <p className="field-error" id="title-error">{errors.title.join('；')}</p>}
+            </>}
+            <label htmlFor="body">{isArticle ? '文章內文' : '留言內容'}</label>
+            <textarea id="body" rows={10} value={body} onChange={editBody} disabled={!enabled || write.pending} aria-invalid={Boolean(errors.body)} aria-describedby={errors.body ? 'body-error' : undefined} />
+            {errors.body && <p className="field-error" id="body-error">{errors.body.join('；')}</p>}
+            {!parentVisible && !isArticle && <p className="notice">確認所屬文章公開後才能送出留言編修。</p>}
+            <button className="primary" type="submit" disabled={!enabled || write.pending || write.uncertain || conflict || !parentVisible}>
+              {write.pending ? '處理中…' : creating ? '發表文章' : '儲存修改'}
+            </button>
+          </form>
+        </>}
+        <a className="back" href={creating ? '/react/me/articles' : isArticle ? `/react/articles/${resourceId}` : `/react/comments/${resourceId}`}>返回{creating ? '我的文章' : '詳情'}</a>
+      </div>
+      {creating && <aside className="editor-art" aria-hidden="true" />}
     </section>
   )
 }
@@ -394,61 +398,68 @@ export function Article({ articleId, listPage, pathname, backend, credential, ac
   // 新留言後先回第一頁再重讀，避免以當前超頁錯認建立失敗。
   function reloadFirstComments() { setCommentPage(1); comments.retry() }
   return (
-    <section className="content reading">
-      <a className="back" href={account?.role === 'admin' ? '/react/admin/articles' : '/react/'}>← 返回{account?.role === 'admin' ? '文章管理' : '文章列表'}</a>
-      {article.loading && <p role="status">正在載入文章…</p>}
-      <ErrorNotice error={article.error} retry={article.retry} />
-      {article.data && <>
-        <article>
-          <p className="eyebrow">ARTICLE / {article.data.id}</p>
-          <h1>{article.data.title}</h1>
-          <Metadata item={article.data} />
-          <p>{article.data.visibility === 'hidden' ? '已下架' : '公開'}</p>
-          <div className="prose">{article.data.body}</div>
-        </article>
-        {canEditContent(article.data, account) && <a className="back" href={`/react/articles/${article.data.id}/edit`}>編輯文章</a>}
-      </>}
-      {/* 操作留在留言列表之前，重讀只隱藏，不卸載各自的寫入狀態。 */}
-      {snapshot && <div hidden={!article.data || !account}>
-        <VisibilityActions item={article.data || snapshot} read={article} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={article.retry} enabled={enabled && Boolean(article.data) && Boolean(account)} onDraftChange={changeVisibilityDraft} />
-      </div>}
-      {article.data && <>
-        <section className="comments" aria-labelledby="comments-title">
-          <h2 id="comments-title">留言</h2>
-          {comments.loading && <p role="status">正在載入留言…</p>}
-          <ErrorNotice error={comments.error} retry={comments.retry} />
-          {comments.data && <>
-            {/* 指定超頁先顯示此頁無資料，避免把第 99 頁誤說成首頁尚無留言。 */}
-            {comments.data.list.length === 0
-              ? <p className="notice">{emptyCommentMessage(comments.data.pagination)}</p>
-              : comments.data.list.map(
-                // 使用留言 ID 保留穩定身分，全文依純文字呈現。
-                (item) => (
-                  <article className="comment" key={item.id}>
-                    <Metadata item={item} />
-                    <p className="prose">{item.body}</p>
-                    {account && (account.id === item.author.id || account.role === 'admin') && <a href={`/react/comments/${item.id}`}>留言詳情</a>}
-                  </article>
-                ),
+    <section className="content reading reading-article">
+      {/* 故事與留言保留原本控制流程；照片只作側景並在窄版堆疊。 */}
+      <div className="reading-story">
+        <a className="back" href={account?.role === 'admin' ? '/react/admin/articles' : '/react/'}>← 返回{account?.role === 'admin' ? '文章管理' : '文章列表'}</a>
+        {article.loading && <p role="status">正在載入文章…</p>}
+        <ErrorNotice error={article.error} retry={article.retry} />
+        {article.data && <>
+          <article>
+            <p className="eyebrow">ARTICLE / {article.data.id}</p>
+            <h1>{article.data.title}</h1>
+            <Metadata item={article.data} />
+            <p>{article.data.visibility === 'hidden' ? '已下架' : '公開'}</p>
+            <div className="prose">{article.data.body}</div>
+          </article>
+          {canEditContent(article.data, account) && <a className="back" href={`/react/articles/${article.data.id}/edit`}>編輯文章</a>}
+        </>}
+        {/* 操作留在留言列表之前，重讀只隱藏，不卸載各自的寫入狀態。 */}
+        {snapshot && <div hidden={!article.data || !account}>
+          <VisibilityActions item={article.data || snapshot} read={article} kind="article" account={account} backend={backend} credential={credential} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onRefresh={article.retry} enabled={enabled && Boolean(article.data) && Boolean(account)} onDraftChange={changeVisibilityDraft} />
+        </div>}
+      </div>
+      <aside className="reading-art" aria-hidden="true" />
+      {/* 留言清單和輸入框共用下方版帶；DOM 仍先列留言，手機順序不變。 */}
+      <div className="discussion-band">
+        {article.data && <>
+          <section className="comments" aria-labelledby="comments-title">
+            <h2 id="comments-title">留言</h2>
+            {comments.loading && <p role="status">正在載入留言…</p>}
+            <ErrorNotice error={comments.error} retry={comments.retry} />
+            {comments.data && <>
+              {/* 指定超頁先顯示此頁無資料，避免把第 99 頁誤說成首頁尚無留言。 */}
+              {comments.data.list.length === 0
+                ? <p className="notice">{emptyCommentMessage(comments.data.pagination)}</p>
+                : comments.data.list.map(
+                  // 使用留言 ID 保留穩定身分，全文依純文字呈現。
+                  (item) => (
+                    <article className="comment" key={item.id}>
+                      <Metadata item={item} />
+                      <p className="prose">{item.body}</p>
+                      {account && (account.id === item.author.id || account.role === 'admin') && <a href={`/react/comments/${item.id}`}>留言詳情</a>}
+                    </article>
+                  ),
+                )}
+              {/* 留言分頁直接呈現 API 原頁碼與總筆數，超頁也不誤報為零筆。 */}
+              {showCommentPagination(comments.data.pagination) && (
+                <nav className="pagination" aria-label="留言分頁">
+                  <span>第 {comments.data.pagination.page} 頁／共 {comments.data.pagination.total_pages} 頁，{comments.data.pagination.total} 筆</span>
+                  {commentPage > 1 && <button className="text-button" onClick={previousComments}>上一頁</button>}
+                  {commentPage < comments.data.pagination.total_pages && <button className="text-button" onClick={nextComments}>下一頁</button>}
+                  {commentPage > comments.data.pagination.total_pages && <button className="text-button" onClick={firstComments}>返回第一頁</button>}
+                </nav>
               )}
-            {/* 留言分頁直接呈現 API 原頁碼與總筆數，超頁也不誤報為零筆。 */}
-            {showCommentPagination(comments.data.pagination) && (
-              <nav className="pagination" aria-label="留言分頁">
-                <span>第 {comments.data.pagination.page} 頁／共 {comments.data.pagination.total_pages} 頁，{comments.data.pagination.total} 筆</span>
-                {commentPage > 1 && <button className="text-button" onClick={previousComments}>上一頁</button>}
-                {commentPage < comments.data.pagination.total_pages && <button className="text-button" onClick={nextComments}>下一頁</button>}
-                {commentPage > comments.data.pagination.total_pages && <button className="text-button" onClick={firstComments}>返回第一頁</button>}
-              </nav>
-            )}
-          </>}
-        </section>
-      </>}
-      {/* 保留各寫入元件的生命週期；重讀或失權時隱藏快照，成功重驗後才恢復操作。 */}
-      {snapshot && (
-        <div hidden={!article.data}>
-          <CommentComposer pathname={pathname} article={article.data || snapshot} backend={backend} credential={credential} account={account} enabled={enabled && Boolean(article.data)} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onDraftChange={changeCommentDraft} onCreated={reloadFirstComments} onArticleRefresh={article.retry} commentsRead={comments} />
-        </div>
-      )}
+            </>}
+          </section>
+        </>}
+        {/* 保留各寫入元件的生命週期；重讀或失權時隱藏快照，成功重驗後才恢復操作。 */}
+        {snapshot && (
+          <div hidden={!article.data}>
+            <CommentComposer pathname={pathname} article={article.data || snapshot} backend={backend} credential={credential} account={account} enabled={enabled && Boolean(article.data)} onAuthFailure={onAuthFailure} switchEpoch={switchEpoch} onDraftChange={changeCommentDraft} onCreated={reloadFirstComments} onArticleRefresh={article.retry} commentsRead={comments} />
+          </div>
+        )}
+      </div>
     </section>
   )
 }

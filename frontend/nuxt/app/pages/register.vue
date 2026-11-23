@@ -96,15 +96,13 @@ async function submit() {
 </script>
 
 <template>
-  <main class="form-page">
-    <div class="form-intro">
-      <h1>註冊會員</h1>
-      <p>建立帳號後，請再登入以使用會員功能。</p>
-    </div>
+  <main class="form-page coastal-register">
+    <div class="form-art" aria-hidden="true"></div>
     <form class="auth-form"
       novalidate
       @submit.prevent="submit">
-      <h2>註冊會員</h2>
+      <h1>註冊會員</h1>
+      <p class="form-note">建立帳號後，請再登入以使用會員功能。</p>
       <template v-if="created">
         <p ref="successElement"
           class="form-success"

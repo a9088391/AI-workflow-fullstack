@@ -49,7 +49,7 @@
   @if (lockEnded()) { <p class="notice" role="status">可再次嘗試登入</p> }
   <button class="primary-button" type="submit" [disabled]="blocked() || !!session.operation() || !!lockedTime()">
     {{ session.operation() ? '處理中…' : mode() === 'register' ? '建立帳號' : mode() === 'reauth' ? '重新登入' : '登入' }}
-    <span aria-hidden="true">→</span>
+    @if (mode() === 'reauth') { <span aria-hidden="true">→</span> }
   </button>
   @if (mode() !== 'reauth') {
     <p class="form-foot">

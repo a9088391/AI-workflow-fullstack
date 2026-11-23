@@ -283,11 +283,13 @@
     <a class="button" href={`${BASE}/`}>返回文章列表</a>
   </div>
 {:else}
-  <div class="author-wrap">
+  <div class="author-wrap" class:poster-writing={mode === 'new'}>
     <div class="author-heading">
       <h1>{mode === 'new' ? '發表文章' : mode === 'articles' ? '我的文章' : mode === 'comments' ? '我的留言' : mode === 'article-edit' ? '編輯文章' : mode === 'comment-edit' ? '編輯留言' : '留言詳情'}</h1>
       {#if mode === 'articles'}
         <a class="button" href={`${BASE}/articles/new`}>發表文章</a>
+      {:else if mode === 'new'}
+        <a href={`${BASE}/`}>返回文章列表</a>
       {/if}
     </div>
     {#if $authState === 'checking'}
@@ -398,24 +400,28 @@
             {/if}
           {/if}
           <p class="author-hint">{mode === 'new' ? '標題和內文會以純文字公開；發表後回到我的文章。' : '修改後以原 ID 重新讀取；建立來源由伺服器保留。'}</p>
-          <form class="author-form author-card" novalidate onsubmit={submit}>
-            {#if !commentMode}
-              <label for="author-title">標題</label>
-              <input id="author-title" bind:value={title} oninput={markDirty} aria-invalid={Boolean(fieldErrors.title)} disabled={processing} />
-              <p class="form-hint">1–200 個字，不可全為空白。</p>
-              {#if fieldErrors.title}
-                <p class="field-error">{fieldErrors.title.join('、')}</p>
+          <!-- 發文的海報和欄位並排，編輯及查證分支仍使用同一個表單。 -->
+          <div class:poster-draft-grid={mode === 'new'}>
+            {#if mode === 'new'}<div class="poster-art" aria-hidden="true"></div>{/if}
+            <form class="author-form author-card" novalidate onsubmit={submit}>
+              {#if !commentMode}
+                <label for="author-title">標題</label>
+                <input id="author-title" bind:value={title} oninput={markDirty} aria-invalid={Boolean(fieldErrors.title)} disabled={processing} />
+                <p class="form-hint">1–200 個字，不可全為空白。</p>
+                {#if fieldErrors.title}
+                  <p class="field-error">{fieldErrors.title.join('、')}</p>
+                {/if}
               {/if}
-            {/if}
-            <label for="author-body">{commentMode ? '留言內文' : '文章內文'}</label>
-            <textarea id="author-body" bind:value={body} oninput={markDirty} aria-invalid={Boolean(fieldErrors.body)} disabled={processing}>
-            </textarea>
-            <p class="form-hint">{commentMode ? '1–2,000' : '1–20,000'} 個字，保留換行。</p>
-            {#if fieldErrors.body}
-              <p class="field-error">{fieldErrors.body.join('、')}</p>
-            {/if}
-            <button class="button" type="submit" disabled={processing || unknown || conflict || completed || mode === 'comment-edit' && parentState !== 'visible'}>{processing ? '處理中…' : mode === 'new' ? '發表文章' : '儲存修改'}</button>
-          </form>
+              <label for="author-body">{commentMode ? '留言內文' : '文章內文'}</label>
+              <textarea id="author-body" bind:value={body} oninput={markDirty} aria-invalid={Boolean(fieldErrors.body)} disabled={processing}>
+              </textarea>
+              <p class="form-hint">{commentMode ? '1–2,000' : '1–20,000'} 個字，保留換行。</p>
+              {#if fieldErrors.body}
+                <p class="field-error">{fieldErrors.body.join('、')}</p>
+              {/if}
+              <button class="button" type="submit" disabled={processing || unknown || conflict || completed || mode === 'comment-edit' && parentState !== 'visible'}>{processing ? '處理中…' : mode === 'new' ? '發表文章' : '儲存修改'}</button>
+            </form>
+          </div>
           {#if editing}
             <div class="author-actions">
               <button class="button button-outline" type="button" disabled={processing} onclick={load}>重新讀取最新內容</button>

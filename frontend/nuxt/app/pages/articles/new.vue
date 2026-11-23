@@ -106,7 +106,7 @@ function restored() { if (!uncertain.value) message.value = '已恢復同帳號�
 </script>
 
 <template>
-  <main class="reading-page author-page">
+  <main class="reading-page author-page coastal-writing">
     <a class="back-link"
       href="/nuxt/">← 返回文章列表</a>
     <div class="author-heading">

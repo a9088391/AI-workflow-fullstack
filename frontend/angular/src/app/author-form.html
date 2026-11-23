@@ -1,7 +1,7 @@
 @if (mode() === 'comment-new') {
   @if (content.article(); as story) {
     @if (session.account() && story.visibility === 'visible') {
-      <form class="content-form" (submit)="editor.submit($event)" novalidate>
+      <form class="content-form ink-comment-form" (submit)="editor.submit($event)" novalidate>
         <h3>留下留言</h3>
         @if (Object.keys(editor.operation.errors()).length) {
           <div class="field-summary" role="alert">
@@ -23,9 +23,13 @@
   }
 } @else {
   @if (editor.route === 'article-new' || editor.articleEdit) {
-    <a class="back-link" [href]="editor.route === 'article-new' ? '/angular/me/articles' : '/angular/articles/' + content.validArticleId">← 返回文章</a>
-    <div class="page-heading">
-      <div><p class="eyebrow">WRITE / 創作</p><h1>{{ editor.articleEdit ? '編修文章' : '發表文章' }}</h1><p class="heading-subtitle">純文字會保留換行，建立來源由後端記錄。</p></div>
+    <a class="back-link" [class.ink-draft-back]="editor.route === 'article-new'" [href]="editor.route === 'article-new' ? '/angular/me/articles' : '/angular/articles/' + content.validArticleId">返回文章</a>
+    <div class="page-heading" [class.ink-draft-heading]="editor.route === 'article-new'">
+      <div>
+        @if (editor.articleEdit) { <p class="eyebrow">WRITE / 創作</p> }
+        <h1>{{ editor.articleEdit ? '編修文章' : '發表文章' }}</h1>
+        @if (editor.articleEdit) { <p class="heading-subtitle">純文字會保留換行，建立來源由後端記錄。</p> }
+      </div>
     </div>
   } @else { <a class="back-link" href="/angular/me/comments">← 回我的留言</a> }
   @if (content.loading()) { <p class="notice" role="status">{{ editor.route === 'comment-edit' ? '正在載入留言…' : '正在讀取文章…' }}</p> }
@@ -56,7 +60,7 @@
         }
       </article>
     }
-    <form class="content-form" (submit)="editor.submit($event)" novalidate>
+    <form class="content-form" [class.ink-draft]="editor.route === 'article-new'" (submit)="editor.submit($event)" novalidate>
       @if (Object.keys(editor.operation.errors()).length) {
         <div class="field-summary" role="alert">
           <strong>請檢查下列欄位</strong>
@@ -73,7 +77,7 @@
         <small class="field-error">{{ editor.operation.errors()['title']?.join('；') }}</small>
       }
       <label for="body">{{ editor.route === 'comment-edit' ? '純文字留言' : '純文字內文' }}</label>
-      <textarea id="body" name="body" [rows]="editor.route === 'comment-edit' ? 9 : 14" [(ngModel)]="editor.bodyDraft" (ngModelChange)="editor.changed()"
+      <textarea id="body" name="body" [rows]="editor.route === 'article-new' ? 6 : editor.route === 'comment-edit' ? 9 : 14" [(ngModel)]="editor.bodyDraft" (ngModelChange)="editor.changed()"
         [disabled]="!!session.operation() || writes.pending()" [attr.aria-invalid]="editor.operation.errors()['body'] ? 'true' : null"></textarea>
       <small class="field-error">{{ editor.operation.errors()['body']?.join('；') }}</small>
       <button class="primary-button" type="submit" [disabled]="editor.blocked()">{{ writes.pending() ? '處理中…' : editor.route === 'article-new' ? '發表文章' : '儲存修改' }}</button>

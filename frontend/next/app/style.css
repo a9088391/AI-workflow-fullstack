@@ -160,3 +160,119 @@ button:disabled,select:disabled{cursor:not-allowed;opacity:.58}
 .gallery-index>.article-column>.notice{max-width:35%}
 @media(min-width:768px) and (max-width:1023px){.gallery-index>.article-rail{left:40%;width:20%;min-height:600px}.gallery-index .article-list{column-gap:26%;row-gap:48px}.gallery-index .section-heading h1{font-size:clamp(50px,7vw,72px)}.gallery-index .article-item h2{font-size:27px}.gallery-index .article-item .meta{font-size:13px}}
 @media(max-width:767px){.gallery-index{padding-top:28px;min-height:0}.gallery-index>.article-rail{position:static;width:100%;height:230px;min-height:0;max-height:none;background-position:center 64%;margin:0 0 28px}.gallery-index .section-heading{width:100%;min-height:0;padding:0 0 28px}.gallery-index .section-heading h1{font-size:clamp(43px,12vw,76px);white-space:normal}.gallery-index .article-list{display:block;padding-top:0}.gallery-index .article-item{border-top:1px solid #c4c6b8;padding:25px 0}.gallery-index .article-item h2{font-size:clamp(25px,6vw,34px)}.gallery-index .pagination,.gallery-index>.article-column>.notice{max-width:none}.gallery-index .article-item .meta{font-size:14px;margin-bottom:12px}.gallery-index .article-item .excerpt{font-size:17px}}
+
+/* 公開帳號頁以展廳照片平衡右側表單；原表單狀態仍由 AccountForm 呈現。 */
+.route-login>.form-page,.route-register>.form-page {
+  display: grid;
+  grid-template-columns: minmax(0, .72fr) minmax(0, 1.28fr);
+  grid-template-areas: "art intro" "art form" "art foot";
+  gap: 0 clamp(20px, 4.6vw, 50px);
+  width: min(100%, 1280px);
+  max-width: none;
+  min-height: 560px;
+  margin: clamp(20px, 4vw, 56px) auto;
+  padding: clamp(20px, 4.8vw, 53px);
+  border: 1px solid #d5d5c9;
+  background: #fbfaf7;
+}
+.route-login>.form-page::before,.route-register>.form-page::before {
+  content: "";
+  grid-area: art;
+  min-width: 0;
+  min-height: 100%;
+  background: url('./assets/gallery-stair.webp') 48% 63% / cover;
+  border-right: 1px solid #8f9283;
+}
+.route-login .form-intro,.route-register .form-intro { grid-area: intro; min-width: 0; margin: 0; }
+.route-login>.form-page>.account-form,.route-register>.form-page>.account-form { grid-area: form; min-width: 0; }
+.route-login>.form-page>.form-foot,.route-register>.form-page>.form-foot { grid-area: foot; margin-top: 24px; text-align: left; }
+.route-register .form-intro h1 { padding-block: 8px; border-block: 1px solid #8f9283; }
+
+/* 詳情桌面分成文章、中央肖像與留言；兩側內容仍依 DOM 閱讀。 */
+.gallery-reading {
+  grid-template-columns: minmax(0, 1.12fr) minmax(125px, .66fr) minmax(0, 1.02fr);
+  grid-template-areas: "story photo discussion";
+  align-items: start;
+  gap: 19px;
+  padding: 30px clamp(18px, 3.35vw, 38px);
+}
+.gallery-reading .reading-story { grid-area: story; min-width: 0; }
+.gallery-reading>.article-rail {
+  grid-area: photo;
+  position: static;
+  width: 100%;
+  height: auto;
+  min-height: 480px;
+  max-height: 850px;
+  aspect-ratio: 2 / 3.4;
+  background-position: 50% 60%;
+}
+.gallery-reading .article-discussion { grid-area: discussion; min-width: 0; border-top: 1px solid var(--edge); padding-top: 9px; }
+.gallery-reading .article-discussion>.comments { padding-top: 0; border-top: 0; }
+.gallery-reading .article-discussion>.composer { margin-top: 24px; padding-top: 18px; }
+
+/* 新文章標題與樓梯照留在左側，欄位、錯誤及送出操作集中在右側。 */
+.gallery-writing {
+  grid-template-columns: minmax(0, .79fr) minmax(0, 1.21fr);
+  grid-template-areas: "intro draft";
+  column-gap: clamp(16px, 3.55vw, 41px);
+  padding: 27px clamp(22px, 4.1vw, 44px);
+  background: #f4f3ef;
+}
+.gallery-writing .writing-intro {
+  grid-area: intro;
+  display: grid;
+  grid-template-rows: auto auto minmax(130px, 1fr) auto;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+.gallery-writing .writing-intro .section-heading { border: 0; padding: 0; }
+.gallery-writing .writing-intro .section-heading h1 { font-size: clamp(31px, 4.6vw, 48px); }
+.gallery-writing .writing-intro>.article-rail {
+  width: 100%;
+  height: clamp(150px, 20vw, 230px);
+  min-height: 0;
+  max-height: 230px;
+  margin-top: 2px;
+  background-position: 50% 62%;
+}
+.gallery-writing .writing-controls { grid-area: draft; padding: 16px 0 3px clamp(14px, 2.7vw, 28px); border-left: 1px solid var(--edge); }
+.gallery-writing .writing-controls .account-form { padding: 0; }
+.gallery-writing .writing-controls .account-form>.red-button { justify-self: start; margin-top: 14px; }
+
+@media(min-width:768px) and (max-width:1023px) {
+  .gallery-reading { grid-template-columns: minmax(0, 1.12fr) minmax(130px, .66fr); grid-template-areas: "story photo" "discussion discussion"; }
+  .gallery-reading>.article-rail { min-height: 330px; max-height: 460px; }
+  .gallery-writing { grid-template-columns: minmax(0, .65fr) minmax(0, 1.35fr); gap: 20px; }
+  .gallery-writing .writing-intro>.article-rail { height: 170px; }
+}
+@media(max-width:767px) {
+  .route-login>.form-page,.route-register>.form-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "art" "intro" "form" "foot";
+    gap: 0;
+    min-height: 0;
+    margin: 0 auto 28px;
+    padding: 0;
+    border: 0;
+  }
+  .route-login>.form-page::before,.route-register>.form-page::before { min-height: 180px; margin-bottom: 20px; border: 0; border-bottom: 1px solid #8f9283; }
+  .route-login .form-intro,.route-register .form-intro { padding: 0 0 16px; }
+  .gallery-reading {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "story" "photo" "discussion";
+    gap: 18px;
+    padding: 28px 0 50px;
+  }
+  .gallery-reading>.article-rail { height: 180px; min-height: 0; max-height: none; aspect-ratio: auto; background-position: center 63%; }
+  .gallery-writing {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "intro" "draft";
+    gap: 18px;
+    padding: 0;
+  }
+  .gallery-writing .writing-intro { grid-template-rows: auto auto 140px auto; gap: 12px; }
+  .gallery-writing .writing-intro>.article-rail { height: 140px; min-height: 140px; margin: 0; }
+  .gallery-writing .writing-controls { padding: 0; border: 0; }
+}

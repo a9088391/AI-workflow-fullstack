@@ -241,8 +241,8 @@ export default function Site({ path, query }) {
       : authStatus === 'expired' && <a href={`/next/login?return_to=${encodeURIComponent(validReturn(path) ? path : '/next/')}`}>重新登入</a>}
     {(authorPath || adminPath) && authStatus === 'guest' && <p className="notice">請先<a href={`/next/login?return_to=${encodeURIComponent(path)}`}>登入</a>。</p>}
   </div>
-  {/* 所有路由共用唯一主要內容地標，跳過導覽可原生聚焦，不加入一般 Tab 順序。 */}
-  <main id="main-content" tabIndex={-1}>{path === '/next/' || path === '/next' ? <ArticleList backend={backend} credential={account ? credential : null} ready={ready} page={page} onAuthFailure={handleAuthFailure} />
+  {/* 主要內容地標供跳過導覽；公開帳號路由標記只讓各自的視覺延伸生效。 */}
+  <main id="main-content" tabIndex={-1} className={path === '/next/login' ? 'route-login' : path === '/next/register' ? 'route-register' : undefined}>{path === '/next/' || path === '/next' ? <ArticleList backend={backend} credential={account ? credential : null} ready={ready} page={page} onAuthFailure={handleAuthFailure} />
     : articleId ? <ArticlePage backend={backend} credential={account ? credential : null} account={account} ready={ready} id={articleId} page={page} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
       : path === '/next/articles/new' ? <ContentEditor kind="article" backend={backend} credential={credential} account={account} ready={authorReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />
       : articleEditId ? <ContentEditor kind="article" id={articleEditId} backend={backend} credential={credential} account={account} ready={authorReady} onAuthFailure={handleAuthFailure} formNavigation={formNavigation} />

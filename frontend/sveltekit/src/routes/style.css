@@ -168,49 +168,171 @@ h1{font-size:clamp(2.4rem,6vw,5rem);letter-spacing:-.035em;line-height:1.12;marg
 @media(max-width:390px){.meta-row{grid-template-columns:1fr}.meta-row div+div{border-left:0;padding-left:0;border-top:1px solid var(--print-rule);padding-top:6px}}
 @media(min-width:768px) and (max-width:1023px){.meta-row{grid-template-columns:1fr}.meta-row div+div{border-left:0;padding-left:0;border-top:1px solid var(--print-rule);padding-top:6px}}
 
-/* 海報標題是正常文字，列表往下增加時仍保留由上而下的閱讀順序。 */
+/* 孔版海報與文章內容分開，標題和日期欄仍維持由上往下的閱讀動線。 */
 .poster-list {
   display: grid;
-  grid-template-columns: minmax(240px, .65fr) minmax(0, 1.35fr);
-  gap: clamp(22px, 4vw, 64px);
-  align-items: start;
-  margin: 16px auto 58px;
+  grid-template-columns: minmax(0, .58fr) minmax(0, 1fr);
+  align-items: stretch;
+  margin: 10px auto 36px;
+  background: var(--print-panel);
 }
+.poster-art {
+  min-width: 0;
+  min-height: 120px;
+  background: var(--print-accent) url('./print-collage.webp') 37% center / cover no-repeat;
+}
+.poster-list > .poster-art { border-right: 2px solid var(--print-ink); }
 .poster-heading {
-  min-height: clamp(410px, 65vw, 690px);
-  padding: clamp(36px, 6vw, 92px) clamp(22px, 5vw, 70px);
-  background: #b72b45 url('./print-collage.webp') center top / cover no-repeat;
+  padding: 13px 18px;
+  background: var(--print-accent);
+  color: var(--print-panel);
+  border-bottom: 2px solid var(--print-ink);
 }
-.poster-heading h1 {
-  max-width: 2.2em;
-  color: #fff8e5;
-  font-size: clamp(3.1rem, 6.5vw, 6.5rem);
-  letter-spacing: .04em;
-  line-height: .98;
-  text-shadow: 0 2px 3px #7a1834;
-}
-.poster-content { min-width: 0; }
-.poster-content .article-card { padding: 16px 0 19px; border-bottom: 1px solid var(--print-rule); background: transparent; }
-.poster-content .article-card h2 { margin: 0; font-size: clamp(1.375rem, 2.6vw, 2rem); }
+.poster-heading h1 { font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.22; }
+.poster-content { min-width: 0; padding: clamp(15px, 3vw, 35px); }
+.poster-content .article-card { padding: 11px 0 14px; border-bottom: 1px solid var(--print-rule); background: transparent; }
+.poster-content .article-card h2 { margin: 0; font-size: clamp(1.3rem, 2.2vw, 1.85rem); }
 .poster-content .article-card h2 a { display: inline-flex; align-items: center; min-height: 44px; }
-.poster-content .meta-row { display: flex; flex-wrap: wrap; gap: 2px 15px; padding: 0; border: 0; margin: 0; }
+.poster-content .meta-row { display: flex; flex-wrap: wrap; gap: 2px 11px; padding: 0; border: 0; margin: 0; }
 .poster-content .meta-row div { display: flex; align-items: baseline; gap: 4px; padding: 0; border: 0; }
 .poster-content .meta-row dd { font-size: .8125rem; }
-.poster-content .card-excerpt { margin: 5px 0 0; }
-.poster-content .pagination { justify-content: flex-start; margin: 24px 0 0; }
+.poster-content .card-excerpt { margin: 4px 0 0; font-size: .92rem; }
+.poster-content .pagination { justify-content: flex-start; margin: 20px 0 0; }
+@media (min-width: 1024px) {
+  .poster-content .article-card { display: grid; grid-template: "title details" auto "excerpt details" auto / minmax(0, 1fr) minmax(0, 9.7rem); gap: 0 16px; }
+  .poster-content .article-card h2 { grid-area: title; }
+  .poster-content .card-excerpt { grid-area: excerpt; }
+  .poster-content .meta-row { grid-area: details; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: end; align-content: start; padding-top: 4px; text-align: right; }
+  .poster-content .meta-row div { justify-content: end; flex-wrap: wrap; }
+  .poster-content .meta-row div:has(time) { order: -1; font-variant-numeric: tabular-nums; }
+}
 .wordmark, h1, h2 { font-family: var(--print-serif); }
 .wordmark { letter-spacing: 0; }
 .wordmark, .main-nav a { min-height: 44px; display: inline-flex; align-items: center; }
 .switch-panel summary { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .switch-panel summary::after { content: '⌄'; }
 .admin-row { border-width: 0 0 1px; }
-@media (max-width: 767px) {
-  .poster-list { grid-template-columns: minmax(0, 1fr); margin-top: 8px; gap: 12px; }
-  .poster-heading { min-height: 136px; padding: 30px 20px; background-position: center 28%; }
-  .poster-heading h1 { max-width: none; font-size: clamp(2.4rem, 11vw, 4.3rem); }
-}
 @media (max-width: 1023px) {
   .switch-panel summary { justify-content: flex-start; }
   .site-header { gap: 8px; }
   .header-account:empty { display: none; }
+}
+
+/* 閱讀與創作沿印刷版的墨線排列；右側圖樣保留給閱讀，發文改用左側海報。 */
+.poster-reading {
+  position: relative;
+  isolation: isolate;
+  padding: 11px calc(31% + 16px) 13px 0;
+}
+.poster-reading > .poster-art {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 31%;
+  z-index: -1;
+  border: 1px solid var(--print-ink);
+  background-position: 62% center;
+}
+.poster-reading .reading-card, .poster-reading .comments-section { border-width: 0; }
+.poster-reading .reading-card { border-top: 3px solid var(--print-ink); padding-top: 24px; }
+.poster-reading .reading-card h1 { margin-bottom: 14px; font-size: clamp(1.9rem, 3.65vw, 3.25rem); }
+.poster-reading .reading-body { margin-top: 15px; padding-top: 15px; }
+.poster-reading .comments-section { margin-top: 0; border-bottom: 3px solid var(--print-ink); padding-top: 10px; }
+.poster-reading .comments-section h2 { border-top: 2px solid var(--print-accent); padding-top: 11px; color: var(--print-accent); }
+.poster-reading .comment-item .meta-row { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.poster-reading .comment-item .meta-row > div { display: grid; border: 0; padding: 0; }
+.poster-reading .comments-section .author-form { margin: 15px 0 0; padding: 0; border: 0; }
+.poster-reading .comments-section textarea { min-height: 100px; }
+.poster-reading .comments-section .pagination { justify-content: flex-start; margin: 18px 0; }
+
+.poster-writing {
+  padding: 15px;
+  background: var(--print-paper);
+}
+.poster-writing .author-heading {
+  align-items: center;
+  flex-direction: row;
+  color: var(--print-panel);
+  background: var(--print-accent);
+  padding: 12px 17px;
+  margin: 0;
+}
+.poster-writing .author-heading h1 { font-size: clamp(1.7rem, 4vw, 3.3rem); line-height: 1.24; }
+.poster-writing .author-heading a { display: inline-flex; align-items: center; min-height: 44px; color: inherit; }
+.poster-draft-grid { display: grid; grid-template-columns: minmax(0, .59fr) minmax(0, 1fr); gap: 13px; margin-top: 13px; }
+.poster-draft-grid > .poster-art { border: 1px solid var(--print-ink); background-position: center 67%; }
+.poster-draft-grid .author-form {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  border-top: 2px solid var(--print-ink);
+  background: var(--print-panel);
+  padding: 17px clamp(16px, 3vw, 34px);
+}
+.poster-writing .author-form textarea { min-height: 155px; }
+.poster-writing .form-hint { margin: 0 0 4px; }
+.poster-writing .author-form, .poster-reading .author-form { gap: 8px; }
+
+/* 登入讓海報獨立在左，註冊把紙面置於整張海報前，兩頁都保留清楚的欄位焦點。 */
+.poster-account {
+  display: grid;
+  max-width: 1090px;
+  margin: 10px auto 44px;
+  min-height: 420px;
+  align-content: stretch;
+  padding: 17px;
+}
+.poster-login {
+  grid-template: "art title" auto "art controls" 1fr / minmax(0, .8fr) minmax(0, 1.2fr);
+  gap: 0 clamp(12px, 3vw, 36px);
+  background: var(--print-panel);
+}
+.poster-login > .poster-art { grid-area: art; border: 1px solid var(--print-ink); background-position: center; }
+.poster-account .auth-intro, .poster-account .auth-card {
+  width: min(100%, 455px);
+  justify-self: center;
+  background: var(--print-panel);
+  padding-inline: clamp(16px, 2.45vw, 31px);
+}
+.poster-account .auth-intro { grid-area: title; margin: 0; padding-top: 25px; padding-bottom: 10px; }
+.poster-account .auth-intro h1 { font-size: clamp(2rem, 4vw, 3.5rem); padding-bottom: 12px; }
+.poster-login .auth-intro h1 { padding-top: 10px; border-top: 2px solid var(--print-ink); border-bottom: 1px solid var(--print-rule); }
+.poster-account .auth-card { grid-area: controls; border: 0; padding-top: 5px; padding-bottom: 22px; }
+.poster-account .auth-card input { height: 44px; border-radius: 4px; margin-bottom: 14px; }
+.poster-account .auth-card input[aria-invalid="true"] { margin-bottom: 5px; }
+.poster-account .auth-card label { font-size: .94rem; }
+.poster-account .auth-submit { min-height: 44px; font-size: 1rem; }
+.poster-account .auth-foot { margin-top: 12px; padding: 0; text-align: left; border: 0; font-size: .875rem; }
+.poster-account .auth-foot a { display: inline-flex; align-items: center; min-height: 44px; }
+.poster-register {
+  grid-template: ". title" auto ". controls" 1fr / minmax(0, .55fr) minmax(0, 1fr);
+  background: var(--print-accent) url('./print-collage.webp') 48% 63% / cover no-repeat;
+}
+.poster-register > .poster-art { display: none; }
+.poster-register .auth-intro, .poster-register .auth-card { border: 2px solid var(--print-ink); }
+.poster-register .auth-intro { border-bottom: 0; }
+.poster-register .auth-intro h1 { border-bottom: 3px solid var(--print-accent); }
+.poster-register .auth-card { border-top: 0; }
+:is(.poster-account, .poster-writing, .poster-reading) .button:not(.button-outline)[type="submit"] {
+  border-radius: 4px 0 4px 4px;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%);
+}
+:is(.poster-account, .poster-writing, .poster-reading) .button:not(.button-outline)[type="submit"]:focus-visible {
+  outline-color: var(--print-panel);
+  outline-offset: -5px;
+}
+@media (max-width: 767px) {
+  .poster-list, .poster-draft-grid { grid-template-columns: minmax(0, 1fr); }
+  .poster-list > .poster-art { min-height: 110px; border: 0; background-position: center 44%; }
+  .poster-content { padding: 9px 13px 22px; }
+  .poster-reading { padding: 0; }
+  .poster-reading > .poster-art { position: static; width: 100%; min-height: 90px; background-position: center 46%; }
+  .poster-writing { padding: 0; }
+  .poster-draft-grid { gap: 8px; }
+  .poster-writing .author-heading { flex-wrap: wrap; }
+  .poster-draft-grid > .poster-art { min-height: 94px; background-position: center 53%; }
+  .poster-draft-grid .author-form { padding: 14px 15px 19px; }
+  .poster-account { grid-template: "art" auto "title" auto "controls" auto / minmax(0, 1fr); margin-top: 4px; padding: 0; }
+  .poster-account > .poster-art { display: block; grid-area: art; min-height: 96px; background-position: center 48%; }
+  .poster-account .auth-intro, .poster-account .auth-card { border: 0; }
+  .poster-register { background: var(--print-panel); }
 }

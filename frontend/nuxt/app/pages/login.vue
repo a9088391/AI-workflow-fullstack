@@ -136,15 +136,13 @@ async function submit() {
 </script>
 
 <template>
-  <main class="form-page">
-    <div class="form-intro">
-      <h1>會員登入</h1>
-      <p>登入後仍使用同一次登入的原到期時間。</p>
-    </div>
+  <main class="form-page coastal-login">
+    <div class="form-art" aria-hidden="true"></div>
     <form class="auth-form"
       novalidate
       @submit.prevent="submit">
-      <h2>會員登入</h2>
+      <h1>會員登入</h1>
+      <p class="form-note">登入後仍使用同一次登入的原到期時間。</p>
       <p v-if="registered"
         class="form-success"
         role="status">註冊成功，請登入。</p>

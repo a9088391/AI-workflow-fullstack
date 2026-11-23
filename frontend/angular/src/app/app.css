@@ -120,3 +120,68 @@ h1 { margin: 0; font-size: clamp(32px, 4.4vw, 62px); line-height: 1.2; overflow-
   .account-actions { margin-left: auto; }
   .paper { padding: 29px 18px 44px; }
 }
+
+/* 水墨版的裝飾依頁面安排，畫面不足時讓表單和正文回到完整單欄。 */
+.paper:is([data-ink-page="list"], [data-ink-page="article"], [data-ink-page="article-new"], [data-ink-page="login"], [data-ink-page="register"]) {
+  position: relative;
+  isolation: isolate;
+  min-height: 0;
+  padding: clamp(24px, 3.9vw, 48px) clamp(18px, 5vw, 75px) 42px;
+  background: var(--ink-paper);
+}
+.ink-art {
+  min-width: 0;
+  background: var(--ink-paper) url('/angular/ink-mountains.webp') left center / cover no-repeat;
+  background-blend-mode: multiply;
+}
+.paper[data-ink-page="article"] { padding-top: 0; }
+.paper[data-ink-page="article"] .ink-art {
+  height: clamp(60px, 11vw, 125px);
+  margin: 0 calc(-1 * clamp(18px, 5vw, 75px)) 20px;
+  background-position: center 36%;
+}
+.paper[data-ink-page="article"] > app-reading-page,
+.paper[data-ink-page="article"] > app-author-form { width: min(100%, 660px); margin-inline: auto; }
+.paper[data-ink-page="article-new"] > app-author-form { width: min(100%, 560px); margin-inline: auto; }
+.ink-account { text-align: center; }
+.ink-account h1 { font-size: clamp(32px, 4vw, 52px); margin-bottom: 21px; }
+.ink-account h1::after {
+  display: block;
+  width: 34px;
+  margin: 13px auto 0;
+  border-bottom: 2px solid var(--ink-accent);
+  content: "";
+}
+.ink-account app-account-form { text-align: start; }
+.paper[data-ink-page="register"] .ink-account { max-width: 420px; }
+
+@media (min-width: 768px) {
+  .paper[data-ink-page="list"] { --ink-art-width: 25%; }
+  .paper[data-ink-page="article-new"] { --ink-art-width: 23%; }
+  .paper[data-ink-page="register"] { --ink-art-width: 29%; }
+  .paper[data-ink-page="login"] { --ink-art-width: 24%; }
+  .paper:is([data-ink-page="list"], [data-ink-page="article-new"], [data-ink-page="register"]) {
+    padding-inline-end: calc(var(--ink-art-width) + clamp(19px, 5vw, 75px));
+  }
+  .paper[data-ink-page="login"] { padding-inline-start: calc(var(--ink-art-width) + clamp(19px, 5vw, 75px)); }
+  .paper:not([data-ink-page="article"]) > .ink-art {
+    position: absolute;
+    z-index: -1;
+    inset: 0 0 0 auto;
+    width: var(--ink-art-width);
+  }
+  .paper[data-ink-page="login"] > .ink-art { inset: 0 auto 0 0; }
+  .paper[data-ink-page="list"] > app-reading-page { max-width: 775px; margin-inline: auto; }
+  .paper[data-ink-page="login"] { min-height: 460px; }
+  .paper[data-ink-page="article-new"], .paper[data-ink-page="register"] {
+    min-height: max(460px, calc(100vh - 118px));
+  }
+}
+
+@media (max-width: 767px) {
+  .paper:not([data-ink-page="article"]) > .ink-art {
+    height: 65px;
+    margin: calc(-1 * clamp(24px, 3.9vw, 48px)) calc(-1 * clamp(18px, 5vw, 75px)) 24px;
+    background-position: center 39%;
+  }
+}

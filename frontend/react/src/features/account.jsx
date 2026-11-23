@@ -138,29 +138,33 @@ export function AccountForm({ returnTo, registered, mode, backend, onLogin, onDr
   }
 
   return (
-    <section className="account">
-      <p className="eyebrow">{register ? 'CREATE ACCOUNT' : 'MEMBER ACCESS'}</p>
-      <h1>{register ? '註冊會員' : inline ? '在原頁重新登入' : '會員登入'}</h1>
-      <p className="intro">{register ? '建立帳號後，請再登入。' : inline ? '登入成功後會留在目前頁面；若有保留的草稿，請確認後手動送出。' : '登入後可跨前端保留同一次登入期限。'}</p>
-      {!register && registered && <p className="notice success">註冊完成，請登入。</p>}
-      <ErrorNotice error={notice} focusRef={summary} />
-      {locked && <p className="lock-message">登入暫時鎖定，約剩 {formatCountdown(remaining)}</p>}
-      {unlocked && !locked && <p className="notice" role="status">可再次嘗試登入</p>}
-      <form noValidate onSubmit={submit}>
-        <label htmlFor="email">Email</label>
-        <input id="email" type="email" autoComplete="email" value={email} disabled={pending || locked} aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? 'email-error' : undefined} onChange={editEmail} />
-        {errors.email && <p className="field-error" id="email-error">{errors.email.join('；')}</p>}
-        {register && <>
-          <label htmlFor="nickname">暱稱</label>
-          <input id="nickname" value={nickname} disabled={pending} aria-invalid={Boolean(errors.nickname)} aria-describedby={errors.nickname ? 'nickname-error' : undefined} onChange={editNickname} />
-          {errors.nickname && <p className="field-error" id="nickname-error">{errors.nickname.join('；')}</p>}
-        </>}
-        <label htmlFor="password">密碼</label>
-        <input id="password" type="password" autoComplete={register ? 'new-password' : 'current-password'} value={password} disabled={pending || locked} aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? 'password-error' : undefined} onChange={editPassword} />
-        {errors.password && <p className="field-error" id="password-error">{errors.password.join('；')}</p>}
-        <button className="primary" type="submit" disabled={pending || locked}>{pending ? '處理中…' : register ? '建立帳號' : '登入'}</button>
-      </form>
-      <p className="account-link">{register ? <>已有帳號？ <a href="/react/login">前往登入</a></> : <>還沒有帳號？ <a href="/react/register">註冊會員</a></>}</p>
+    <section className={`account ${inline ? 'account-inline' : `account-page account-${register ? 'register' : 'login'}`}`}>
+      {!inline && <aside className="account-art" aria-hidden="true" />}
+      {/* 表單與裝飾照片分開，版面可重排而不改動欄位或送出流程。 */}
+      <div className={inline ? 'account-inline-content' : 'account-panel'}>
+        <p className="eyebrow">{register ? 'CREATE ACCOUNT' : 'MEMBER ACCESS'}</p>
+        <h1>{register ? '註冊會員' : inline ? '在原頁重新登入' : '會員登入'}</h1>
+        <p className="intro">{register ? '建立帳號後，請再登入。' : inline ? '登入成功後會留在目前頁面；若有保留的草稿，請確認後手動送出。' : '登入後可跨前端保留同一次登入期限。'}</p>
+        {!register && registered && <p className="notice success">註冊完成，請登入。</p>}
+        <ErrorNotice error={notice} focusRef={summary} />
+        {locked && <p className="lock-message">登入暫時鎖定，約剩 {formatCountdown(remaining)}</p>}
+        {unlocked && !locked && <p className="notice" role="status">可再次嘗試登入</p>}
+        <form noValidate onSubmit={submit}>
+          <label htmlFor="email">Email</label>
+          <input id="email" type="email" autoComplete="email" value={email} disabled={pending || locked} aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? 'email-error' : undefined} onChange={editEmail} />
+          {errors.email && <p className="field-error" id="email-error">{errors.email.join('；')}</p>}
+          {register && <>
+            <label htmlFor="nickname">暱稱</label>
+            <input id="nickname" value={nickname} disabled={pending} aria-invalid={Boolean(errors.nickname)} aria-describedby={errors.nickname ? 'nickname-error' : undefined} onChange={editNickname} />
+            {errors.nickname && <p className="field-error" id="nickname-error">{errors.nickname.join('；')}</p>}
+          </>}
+          <label htmlFor="password">密碼</label>
+          <input id="password" type="password" autoComplete={register ? 'new-password' : 'current-password'} value={password} disabled={pending || locked} aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? 'password-error' : undefined} onChange={editPassword} />
+          {errors.password && <p className="field-error" id="password-error">{errors.password.join('；')}</p>}
+          <button className="primary" type="submit" disabled={pending || locked}>{pending ? '處理中…' : register ? '建立帳號' : '登入'}</button>
+        </form>
+        <p className="account-link">{register ? <>已有帳號？ <a href="/react/login">前往登入</a></> : <>還沒有帳號？ <a href="/react/register">註冊會員</a></>}</p>
+      </div>
     </section>
   )
 }

@@ -40,3 +40,26 @@ h1 { margin: 0; font-size: clamp(30px, 3.6vw, 47px); line-height: 1.35; overflow
 .write-readback { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 
 .completion-link { display: inline-flex; align-items: center; min-height: 44px; margin-left: 12px; }
+
+/* 新稿以開放紙面排列，既有寫入狀態仍跟隨表單欄位。 */
+.ink-draft-back { display: flex; justify-content: center; align-items: center; min-height: 44px; margin-bottom: 4px; }
+.ink-draft-heading { display: block; text-align: center; border: 0; margin: 0; padding-bottom: 11px; }
+.ink-draft-heading h1::after {
+  display: block;
+  width: 34px;
+  margin: 11px auto 0;
+  border-bottom: 2px solid var(--ink-accent);
+  content: "";
+}
+.ink-draft, .ink-comment-form { margin: 12px auto 0; padding: 0; border: 0; background: transparent; }
+.ink-draft input, .ink-draft textarea, .ink-comment-form textarea { border-radius: 3px; }
+.ink-draft textarea { min-height: 155px; }
+.ink-comment-form textarea { min-height: 94px; }
+.ink-draft .field-error:empty, .ink-comment-form .field-error:empty { display: none; }
+.ink-draft .primary-button, .ink-comment-form .primary-button {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 44px;
+  margin: 5px 0 0;
+  border-radius: 3px;
+}

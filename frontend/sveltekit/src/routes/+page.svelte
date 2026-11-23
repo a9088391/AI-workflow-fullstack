@@ -60,8 +60,9 @@
 </svelte:head>
 
 <section class="poster-list" aria-labelledby="articles-heading">
-  <div class="poster-heading"><h1 id="articles-heading">所有文章</h1></div>
+  <div class="poster-art" aria-hidden="true"></div>
   <div class="poster-content">
+    <header class="poster-heading"><h1 id="articles-heading">文章列表</h1></header>
     {#if loading}
       <p class="state-panel" role="status">文章載入中…</p>
     {:else if error}
@@ -92,7 +93,7 @@
               </div>
               <div>
                 <dt>發布日期</dt>
-                <dd>{article.created_at.slice(0, 10)}</dd>
+                <dd><time datetime={article.created_at.slice(0, 10)}>{article.created_at.slice(0, 10)}</time></dd>
               </div>
               <div>
                 <dt>建立於</dt>

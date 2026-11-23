@@ -77,7 +77,11 @@
       }
     </header>
 
-    <main id="main" class="paper">
+    <main id="main" class="paper" [attr.data-ink-page]="route">
+      <!-- 墨山只用於展示頁構圖，閱讀和表單仍使用原本的資料及操作。 -->
+      @if (route === 'list' || route === 'article' || route === 'article-new' || route === 'login' || route === 'register') {
+        <div class="ink-art" aria-hidden="true"></div>
+      }
       @if (storageProblem()) { <p class="notice" role="alert">瀏覽器未開放此分頁儲存；可公開閱讀，但無法保留登入或後端選擇。</p> }
       @if (authState() === 'checking') { <p class="notice" role="status">正在驗證登入…</p> }
       @if (authError(); as failure) {
@@ -149,8 +153,8 @@
           (visibility)="changeVisibility($event.kind, $event.resource)"
           (invalidated)="invalidateReading($event.sent, $event.failure)" />
       } @else if (route === 'login' || route === 'register') {
-        <section class="account-card" aria-labelledby="account-title">
-          <h1 id="account-title">{{ route === 'register' ? '加入文章集' : '登入' }}</h1>
+        <section class="account-card ink-account" aria-labelledby="account-title">
+          <h1 id="account-title">{{ route === 'register' ? '註冊會員' : '會員登入' }}</h1>
           <app-account-form [mode]="route === 'register' ? 'register' : 'login'" [blocked]="writePending()"
             (dirtyChange)="accountDirtyChanged($event)" (completed)="accountCompleted($event)" />
         </section>
