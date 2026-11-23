@@ -3,6 +3,12 @@ set -eu
 umask 077
 
 cd "$(dirname "$0")/.."
+# 設定只支援原有backend-only選項；錯誤參數早於cleanup或金鑰副作用。
+case "$#:${1:-}" in
+    0:|1:--backend-only) ;;
+    *) echo '用法：ops/setup.sh [--backend-only]' >&2; exit 2 ;;
+esac
+. ops/service-selection.sh
 project_name="${COMPOSE_PROJECT_NAME:-ai-workflow-fullstack}"
 tty_hidden=0
 # 管理員輸入若中斷或失敗，恢復終端顯示並停掉本專案全部未完成的應用，保留 DB 與金鑰。
@@ -12,7 +18,7 @@ cleanup() {
         printf '\n'
     fi
     if [ ! -f ".local/setup-complete-$project_name" ]; then
-        docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit nginx >/dev/null 2>&1 || true
+        docker compose --profile rails stop $all_backends frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit nginx >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -20,7 +26,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir -p .local/keys .local/backups .local/laravel-logs
 if [ ! -f .env ]; then
-    if [ -n "$(find .local/keys -type f -print -quit)" ]; then
+    if [ -n "$(find .local/keys -mindepth 1 -print -quit)" ] || [ -e .env.pending ] || [ -L .env.pending ]; then
         echo '發現未完成的首次金鑰設定；拒絕重新產生金鑰' >&2
         exit 1
     fi
@@ -35,13 +41,13 @@ if [ ! -f .env ]; then
     } > .env.pending
 
     # .env 最後才落地；若中途失敗，下一次會因殘留金鑰停下供人工查核。
-    for backend in laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs; do
-        openssl rand -base64 32 > ".local/keys/$backend.key"
+    for backend in $all_backends; do
+        (set -C; openssl rand -base64 32 > ".local/keys/$backend.key")
     done
     mv .env.pending .env
 fi
 
-ops/check-keys.sh
+ops/check-keys.sh --initialize-rails
 
 # 先啟動資料與後端供管理員指令使用，成功建立後才開放前端入口。
 SETUP_IN_PROGRESS=1 ops/start.sh --backend-only
@@ -65,16 +71,16 @@ printf '\n'
 # printf 是 shell builtin；密碼只透過 stdin 送給容器，不進命令列參數或日誌。
 printf '%s\n%s\n%s\n' "$admin_email" "$admin_nickname" "$admin_password" | docker compose exec -T laravel php artisan app:create-initial-admin
 unset admin_password
-touch ".local/setup-complete-$project_name"
-
 if [ "${1:-}" != '--backend-only' ]; then
-    # 舊票隔離 Compose 只啟動當時存在的 Vue；一般首次設定啟動已完成前端。
-    frontend_services="frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit"
-    case "${COMPOSE_FILE:-}" in *ops/tests/*) frontend_services="frontend-vue" ;; esac
+    # 與start使用相同fixture選擇；一般首次設定等待六個前端及入口健康。
     docker compose up -d --build --wait $frontend_services nginx
+    # 前端健康後才留下完成標記，失敗時cleanup仍會停掉含Rails的未完成應用。
+    touch ".local/setup-complete-$project_name"
     if [ "$frontend_services" = 'frontend-vue' ]; then
         echo 'Vue／Laravel 展示已就緒：http://localhost:8080/vue/'
     else
         echo 'Vue／Nuxt／React／Next.js／Angular／SvelteKit／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/nuxt/、http://localhost:8080/react/、http://localhost:8080/next/、http://localhost:8080/angular/、http://localhost:8080/sveltekit/'
     fi
+else
+    touch ".local/setup-complete-$project_name"
 fi

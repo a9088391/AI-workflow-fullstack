@@ -54,8 +54,16 @@ CQ34_RECOVERY = None
 
 # 固定 preset 只能在尚未 guard 時選一次；不允許任意 project、埠或已開始的目標切換。
 def select_preset(name):
-    global PRESET
-    check(name == "cq34" and PRESET == "ticket57" and not SAFE, "不可切換隔離 preset")
+    global PRESET, CQ34_PROJECT, CQ34_FILES, CQ34_ROOT, BACKENDS, PORTS, BASES
+    check(name in ("cq34", "rails05") and PRESET == "ticket57" and not SAFE, "不可切換隔離 preset")
+    # Rails05 使用自己的固定 source／project，絕不接受呼叫者傳入任意目標。
+    if name == "rails05":
+        CQ34_PROJECT = "rails05_test"
+        CQ34_FILES = ("compose.yaml", ".local/rails05-compose.yaml")
+        CQ34_ROOT = CQ34_REPO / ".local/rails05-fixture"
+        BACKENDS = (*BACKENDS, "rails")
+        PORTS = {backend: 8081 + index for index, backend in enumerate(BACKENDS)}
+        BASES = {backend: f"http://127.0.0.1:{port}" for backend, port in PORTS.items()}
     PRESET = name
 
 
@@ -63,6 +71,13 @@ def select_preset(name):
 def key_path(backend):
     check(backend in BACKENDS, "未知金鑰後端")
     return Path(f".local/{'cq34-keys' if PRESET == 'cq34' else 'keys'}/{backend}.key")
+
+
+# Rails05 保留原十二版環狀交易配對；Rails 自己以 Laravel 為 peer，全面互通另用所有有向 pair。
+def peer_backend(backend):
+    check(backend in BACKENDS, "未知 peer 後端")
+    ring = BACKENDS[:-1] if PRESET == "rails05" and backend != "rails" else BACKENDS
+    return ring[(ring.index(backend) + 1) % len(ring)]
 
 
 # 不跟隨 redirect，避免 CQ34 固定目標的憑證或寫入被轉送別處。
@@ -78,7 +93,7 @@ CQ34_OPENER = build_opener(ProxyHandler({}), NoRedirect)
 # CQ34 禁用環境 proxy 與 redirect；舊票保留原 HTTP client 行為。
 def open_response(request, timeout):
     try:
-        return (CQ34_OPENER.open if PRESET == "cq34" else urlopen)(request, timeout=timeout)
+        return (CQ34_OPENER.open if PRESET in ("cq34", "rails05") else urlopen)(request, timeout=timeout)
     except HTTPError:
         # 完整 HTTP 錯誤仍交原契約驗證；不是 transport 未知結果。
         raise
@@ -91,7 +106,7 @@ def open_response(request, timeout):
 
 # transport 未知不會因 cleanup 完成而變成成功；持久記錄後禁止下一筆寫入或新 run。
 def mark_cq34_uncertain():
-    if PRESET == "cq34" and CQ34_RECOVERY is not None:
+    if PRESET in ("cq34", "rails05") and CQ34_RECOVERY is not None:
         packet, path, receipt = CQ34_RECOVERY
         receipt["uncertain"] = True
         import cq18_http
@@ -100,7 +115,7 @@ def mark_cq34_uncertain():
 
 # 已核 OID／definition 的原 receipt 才能落盤；沒有 receipt 的建立未知 gap 仍保留並停止。
 def record_boundary_receipt(owned):
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         check(CQ34_RECOVERY is not None, "CQ34 boundary 未綁 baseline")
         packet, path, receipt = CQ34_RECOVERY
         receipt["boundary"] = owned
@@ -111,14 +126,15 @@ def record_boundary_receipt(owned):
 # Compose argv 固定加入 CQ34 身分；舊票仍由原 COMPOSE 環境解析。
 def compose_argv(*args):
     prefix = ["docker", "compose"]
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         prefix += ["-p", CQ34_PROJECT, "-f", CQ34_FILES[0], "-f", CQ34_FILES[1]]
     return [*prefix, "--profile", "*", *args]
 
 
 # 逐一比對固定副本來源與 mode；NGINX 明確採 HEAD，不讀取秘密或套件產物。
 def cq34_source_identity():
-    ignored = {".local", ".git", ".scratch", "docs", "node_modules", "vendor", "dist", "__pycache__", "obj", "bin"}
+    # bin/obj 可能包含 tracked 建置入口；產物由 Git ignore 排除，不可按目錄名漏驗來源。
+    ignored = {".local", ".git", ".scratch", "docs", "node_modules", "vendor", "dist", "__pycache__"}
     names = subprocess.check_output(
         ["git", "-C", str(CQ34_REPO), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
          ".dockerignore", ".env.example", "compose.yaml", "backends", "frontend", "ops", "database"]
@@ -142,7 +158,7 @@ def cq34_source_identity():
 
 # 在首個人工時間寫入前保存原值；舊票無此額外 fixture，維持其既有執行流程。
 def record_time_fixture(table, account_id, *, event_id=None, epoch=None):
-    if PRESET != "cq34":
+    if PRESET not in ("cq34", "rails05"):
         return
     check(SAFE and CQ34_RECOVERY is not None and type(account_id) is int and account_id > 0, "CQ34 時間 fixture 未綁 baseline")
     packet, path, receipt = CQ34_RECOVERY
@@ -178,7 +194,7 @@ def check(condition, message):
 
 # compose 只使用呼叫者已核對的固定專案與檔案，不接受任意測試目標。
 def compose(*args):
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         check(Path.cwd().resolve() == CQ34_ROOT and CQ34_ROOT.resolve() == CQ34_ROOT, "CQ34 cwd 不是固定副本")
         result = subprocess.run(compose_argv(*args), text=True, capture_output=True, timeout=60)
         check(result.returncode == 0, "CQ34 Compose 執行失敗")
@@ -199,12 +215,12 @@ def container(service):
     check(len(ids) == 1, f"{service} 容器不唯一或未啟動")
     item = json.loads(subprocess.check_output(["docker", "inspect", ids[0]], text=True))[0]
     labels = item["Config"]["Labels"]
-    project = CQ34_PROJECT if PRESET == "cq34" else PROJECT
+    project = CQ34_PROJECT if PRESET in ("cq34", "rails05") else PROJECT
     check(labels.get("com.docker.compose.project") == project and
           labels.get("com.docker.compose.service") == service and
           item["State"]["Running"] and item["State"].get("Health", {}).get("Status") == "healthy" and
           project + "_default" in item["NetworkSettings"]["Networks"], f"{service} 非隔離健康容器")
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         check(labels.get("com.docker.compose.project.working_dir") == str(CQ34_ROOT) and
               labels.get("com.docker.compose.project.config_files", "").split(",") == [str(CQ34_ROOT / name) for name in CQ34_FILES] and
               set(item["NetworkSettings"]["Networks"]) == {project + "_default"}, "CQ34 容器來源不符")
@@ -217,15 +233,15 @@ def container(service):
 def guard():
     global SAFE
     SAFE = False
-    project = CQ34_PROJECT if PRESET == "cq34" else PROJECT
-    files = ":".join(CQ34_FILES) if PRESET == "cq34" else COMPOSE
-    subnet = "10.251.134.0/24" if PRESET == "cq34" else "10.251.57.0/24"
+    project = CQ34_PROJECT if PRESET in ("cq34", "rails05") else PROJECT
+    files = ":".join(CQ34_FILES) if PRESET in ("cq34", "rails05") else COMPOSE
+    subnet = {"cq34": "10.251.134.0/24", "rails05": "10.251.135.0/24"}.get(PRESET, "10.251.57.0/24")
     check(os.environ.get("COMPOSE_PROJECT_NAME") == project, "錯誤 Compose 專案")
     check(os.environ.get("COMPOSE_FILE") == files, "錯誤 Compose 檔")
     source = None
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         check(Path.cwd().resolve() == CQ34_ROOT and CQ34_ROOT.resolve() == CQ34_ROOT and CQ34_ROOT.is_dir(), "CQ34 cwd 不是固定副本")
-        check((CQ34_ROOT / CQ34_FILES[1]).read_bytes() == (CQ34_REPO / "ops/tests/cq34_compose.yaml").read_bytes(), "CQ34 template 不符")
+        check((CQ34_ROOT / CQ34_FILES[1]).read_bytes() == (CQ34_REPO / f"ops/tests/{PRESET}_compose.yaml").read_bytes(), "CQ34 template 不符")
         source = cq34_source_identity()
     config = json.loads(compose("config", "--format", "json"))
     check(config["name"] == project and
@@ -236,26 +252,33 @@ def guard():
               for m in db["Mounts"]), "DB 使用非隔離資料卷")
     keys, images = {}, {"db": db.get("Image")}
     volume = None
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         # 宣告與實際 network/volume 都須符合，DB 不可發布主機埠或使用外部資料卷。
         declared_volume = config["volumes"]["postgres_data"]
         check(declared_volume.get("driver", "local") == "local" and not declared_volume.get("driver_opts") and
               not declared_volume.get("external"), "CQ34 宣告資料卷不是原生 local")
         check(config["networks"]["default"]["ipam"]["config"] == [{"subnet": subnet}] and
-              config["services"]["db"]["environment"].get("CQ34_FIXTURE") == "isolated-cq34" and
-              "CQ34_FIXTURE=isolated-cq34" in db["Config"]["Env"] and not db["HostConfig"]["PortBindings"], "CQ34 DB 設定不符")
+              config["services"]["db"]["environment"].get(PRESET.upper() + "_FIXTURE") == "isolated-" + PRESET and
+              PRESET.upper() + "_FIXTURE=isolated-" + PRESET in db["Config"]["Env"] and not db["HostConfig"]["PortBindings"], "CQ34 DB 設定不符")
         network = json.loads(subprocess.check_output(["docker", "network", "inspect", project + "_default"], text=True))[0]
         check(network["Name"] == project + "_default" and network["Labels"].get("com.docker.compose.project") == project and
-              network["IPAM"]["Config"] == [{"Subnet": subnet, "Gateway": "10.251.134.1"}], "CQ34 實際網段不符")
+              network["IPAM"]["Config"] == [{"Subnet": subnet, "Gateway": subnet.removesuffix("0/24") + "1"}], "CQ34 實際網段不符")
         volume = json.loads(subprocess.check_output(["docker", "volume", "inspect", project + "_postgres_data"], text=True))[0]
         check(volume["Name"] == project + "_postgres_data" and volume["Labels"].get("com.docker.compose.project") == project and
               volume["Labels"].get("com.docker.compose.volume") == "postgres_data" and volume.get("Driver") == "local" and
               not volume.get("Options") and
               any(m.get("Type") == "volume" and m.get("Name") == volume["Name"] and m.get("Destination") == "/var/lib/postgresql"
                   for m in db["Mounts"]), "CQ34 實際資料卷不符")
-        default_paths = [CQ34_ROOT / f".local/keys/{name}.key" for name in BACKENDS]
-        check(all(path.resolve() == path and path.is_file() for path in default_paths), "CQ34 default key 來源不符")
-        defaults = {hashlib.sha256(path.read_bytes().strip()).hexdigest() for path in default_paths}
+        defaults = set()
+        if PRESET == "cq34":
+            # 舊 CQ34 仍須與展示用 default key 隔離；Rails05 的 source 副本本身即隔離環境。
+            default_paths = [CQ34_ROOT / f".local/keys/{name}.key" for name in BACKENDS]
+            check(all(path.resolve() == path and path.is_file() for path in default_paths), "CQ34 default key 來源不符")
+            defaults = {hashlib.sha256(path.read_bytes().strip()).hexdigest() for path in default_paths}
+        else:
+            marker = CQ34_ROOT / ".local/keys/.rails-initialized"
+            check(not marker.is_symlink() and marker.is_file() and marker.resolve() == marker and
+                  stat.S_IMODE(marker.stat().st_mode) == 0o600 and marker.read_bytes() == b"rails-jwt-v1\n", "Rails05 key 初始化 marker 不符")
     for service in BACKENDS:
         item = container(service)
         internal = "8080/tcp" if service == "aspnet-core" else "8000/tcp"
@@ -267,15 +290,19 @@ def guard():
         check(any(m.get("Destination") == key_target and m.get("RW") is False and
                   os.path.realpath(m.get("Source", "")) == os.path.realpath(key_path(service))
                   for m in item["Mounts"]), f"{service} 金鑰掛載不符")
-        if PRESET == "cq34":
+        if PRESET in ("cq34", "rails05"):
             path = key_path(service)
             check(not path.is_symlink() and path.resolve() == CQ34_ROOT / path and path.is_file() and stat.S_IMODE(path.stat().st_mode) == 0o600 and
                   item["HostConfig"]["PortBindings"] == {internal: [{"HostIp": "127.0.0.1", "HostPort": str(PORTS[service])}]}, "CQ34 key／額外埠不符")
-            encoded = path.read_bytes().strip()
+            encoded = path.read_bytes().rstrip(b"\n") if PRESET == "rails05" else path.read_bytes().strip()
             fingerprint = hashlib.sha256(encoded).hexdigest()
             check(len(base64.b64decode(encoded, validate=True)) == 32 and fingerprint not in defaults, "CQ34 key 未獨立")
+            if PRESET == "rails05":
+                # canonical Base64 與單一可選換行，不能把損毀 bytes 正規化後放行。
+                check(base64.b64encode(base64.b64decode(encoded, validate=True)) == encoded and
+                      path.read_bytes() in (encoded, encoded + b"\n"), "Rails05 key 編碼不符")
             keys[service], images[service] = fingerprint, item["Image"]
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         check(len(set(keys.values())) == len(BACKENDS), "CQ34 後端共用 key")
         for name in ("vue", "nuxt", "react", "next", "angular", "sveltekit"):
             service = "frontend-" + name
@@ -290,17 +317,19 @@ def guard():
         with open_response(base + "/up", timeout=5) as response:
             expected = b'{"status":"ok"}' if service in ("symfony", "aspnet-core") else b"OK"
             check(response.status == 200 and response.read() == expected, f"{service} HTTP 未就緒")
-        if PRESET == "cq34":
+        if PRESET in ("cq34", "rails05"):
             preflight = Request(base + "/api/auth/login", method="OPTIONS", headers={"Origin": "http://localhost:8080", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"})
             with open_response(preflight, timeout=5) as response:
                 check(response.status == 204 and response.headers.get("Access-Control-Allow-Origin") == "http://localhost:8080", "CQ34 Origin 不符")
     identity = compose("exec", "-T", "db", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles", "-c", "SELECT current_database()||':'||current_user")
     check(identity == "articles:articles_owner", "DB 身分不符")
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         system = compose("exec", "-T", "db", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles", "-c", "SELECT system_identifier FROM pg_control_system()")
         check(system.isdecimal(), "CQ34 DB cluster 身分不符")
+        if PRESET == "rails05":
+            check(compose("exec", "-T", "db", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "articles_owner", "-d", "articles", "-c", "SHOW cluster_name") == project, "Rails05 cluster_name 不符")
     result = None
-    if PRESET == "cq34":
+    if PRESET in ("cq34", "rails05"):
         result = {"project": project, "root": str(CQ34_ROOT), "source": source, "keys": keys, "images": images,
                   "volume": volume["Name"], "volume_created": volume["CreatedAt"], "database": system}
     SAFE = True
@@ -327,7 +356,7 @@ def expect(result, status, code=None, fields=None):
 
 # request 保留相同 method、path 與 body，讓每個後端走自己的公開 HTTP 入口。
 def request(backend, method, path, body=None, token=None):
-    if PRESET != "cq34":
+    if PRESET not in ("cq34", "rails05"):
         return call(BASES[backend], method, path, body, token)
     check(SAFE and backend in BACKENDS, "尚未核對 CQ34 HTTP 目標")
     check(CQ34_RECOVERY is not None and not CQ34_RECOVERY[2]["uncertain"] or method in ("GET", "HEAD", "OPTIONS"),
@@ -383,12 +412,21 @@ def trace_errors(backend, observed):
         matches = [line for line in lines if log_id in line]
         events = {event: [index for index, line in enumerate(matches) if re.search(rf"\b{event}\b", line)]
                   for event in ("IN", "EX", "OUT")}
-        # Symfony 的 JSON 日誌會把路徑斜線寫成 \/，比對前還原此表示法。
+        # 各版都必須保留同次識別碼、事件順序、方法與狀態；內部 log 欄位格式另外核對。
         check(len(events["IN"]) == 1 and 1 <= len(events["EX"]) <= 2 and len(events["OUT"]) == 1 and
               events["IN"][0] < events["EX"][0] < events["OUT"][0] and len(matches) <= 4 and
               method in matches[events["IN"][0]] and
-              path.lstrip("/") in matches[events["IN"][0]].replace("\\/", "/") and
               str(status) in matches[events["OUT"][0]], f"{backend} log_id IN／EX／OUT 對應不符")
+        if backend == "rails":
+            # Rails 安全格式刻意不記 URL；以完整欄位尾端比對 UUID／method／status，不接受 substring 冒名。
+            identifier = re.escape(log_id)
+            check(re.search(rf"\bIN log_id={identifier} method={re.escape(method)}\Z", matches[events["IN"][0]]) is not None and
+                  all(re.search(rf"\bEX log_id={identifier} status={status}\Z", matches[index]) is not None for index in events["EX"]) and
+                  re.search(rf"\bOUT log_id={identifier} status={status}\Z", matches[events["OUT"][0]]) is not None,
+                  "rails 安全 log 欄位對應不符")
+        else:
+            # 原十二版保留既有 path assertion；Symfony JSON 的斜線轉義先還原再比對。
+            check(path.lstrip("/") in matches[events["IN"][0]].replace("\\/", "/"), f"{backend} log_id IN／EX／OUT 對應不符")
 
 
 # checked_error 逐字比對 API15 回應，並保留當次追蹤碼供後續核對服務日誌。
@@ -439,6 +477,8 @@ def boundary_cases(backend, nonce):
 def user(backend, nonce, kind, nickname=None):
     email = f"t57-{nonce}-{backend}-{kind}@example.test"
     body = {"email": email, "password": "Abcd1234", "nickname": nickname or f"票57{kind}"}
+    # helper 加上的前綴／suffix 也須符合 API 長度，避免 invalid fixture 汙染後續診斷。
+    check(len(email) <= 254 and 1 <= len(body["nickname"]) <= 30 and "\x00" not in body["nickname"], "帳號 fixture 長度不合法")
     check(expect(request(backend, "POST", "/api/auth/register", body), 201) == {}, "註冊回應")
     account_id = int(sql(f"SELECT id FROM accounts WHERE email='{email}'"))
     if kind == "admin":
@@ -544,7 +584,7 @@ def backend_cases(backend, nonce):
                   f"22 設定跨後端讀取：{reader}")
     finally:
         check(expect(request(backend, "PUT", "/api/settings/login-lockout", original, admin_token), 200) == {}, "設定恢復失敗")
-    print(f"PASS {backend} 21–22 設定讀寫及十二後端互通", flush=True)
+    print(f"PASS {backend} 21–22 設定讀寫及 {len(BACKENDS)} 後端互通", flush=True)
 
     # 登出只撤銷這次新登入；所有內容測資保留供跨後端讀取核對。
     check(expect(request(backend, "POST", "/api/auth/logout", {}, new_token), 200) == {}, "03 登出")
@@ -566,7 +606,7 @@ def synchronized_request(backend, method, path, body, token, barrier):
 
 # contract_cases 用同樣的有效與無效輸入重播資料、副作用、搜尋及並行版本規則。
 def contract_cases(backend, nonce):
-    peer = BACKENDS[(BACKENDS.index(backend) + 1) % len(BACKENDS)]
+    peer = peer_backend(backend)
     marker = nonce + backend
     member = user(backend, nonce + "x", "member", "Aa%_\\Ä陳" + marker)
     other = user(backend, nonce + "x", "other", "aa%_\\ä陳" + marker)
@@ -660,11 +700,49 @@ def contract_cases(backend, nonce):
     expect(request(backend, "PUT", path + "/visibility", {"visibility": "visible", "version": 3}, token), 200)
     check(expect(request(peer, "GET", path), 200)["body"] == winner["body"], "跨後端恢復讀取")
     print(f"PASS {backend} 隱藏內容權限與跨後端恢復", flush=True)
+    if PRESET == "rails05":
+        # 保留原環狀 comparator，再補全部有向密碼／JWT 與共享寫入，避免 Rails 只碰到相鄰兩版。
+        interop_cases(backend, member, article_id, title, nonce)
+
+
+# 各建立者的 PHC 由其餘十二版驗證；同一作者逐版改文章／留言，來源始終不得改寫。
+def interop_cases(backend, member, article_id, title, nonce):
+    path = f"/api/articles/{article_id}"
+    marker = f"t57-{nonce}-{backend}-interop"
+    expect(request(backend, "POST", path + "/comments", {"body": marker}, member["token"]), 201)
+    comment_id = record_id("comments", "body", marker)
+    comment_path = f"/api/comments/{comment_id}"
+    version, comment_version = 4, 1
+    for peer in BACKENDS:
+        if peer == backend:
+            continue
+        # 先拒絕外來 JWT，再用同密碼登入；兩個方向由每個 backend 各自執行此相同案例。
+        expect(request(peer, "GET", "/api/me", token=member["token"]), 401, "E0002")
+        login = expect(request(peer, "POST", "/api/auth/login",
+                               {"email": member["email"], "password": "Abcd1234"}), 200)
+        peer_token = login["access_token"]
+        check(expect(request(peer, "GET", "/api/me", token=peer_token), 200)["id"] == member["id"], "全有向密碼驗證失敗")
+        expect(request(backend, "GET", "/api/me", token=peer_token), 401, "E0002")
+        # 每次讀取前版結果再更新，並由建立者讀回；這是共享寫入，非僅共享 GET。
+        article = expect(request(peer, "GET", path), 200)
+        comment = expect(request(peer, "GET", comment_path, token=peer_token), 200)
+        check(article["created_backend"] == backend and article["version"] == version and
+              comment["created_backend"] == backend and comment["version"] == comment_version, "共享寫入前來源／版本不符")
+        body = marker + "-" + peer
+        expect(request(peer, "PUT", path, {"title": title, "body": body, "version": version}, peer_token), 200)
+        expect(request(peer, "PUT", comment_path, {"body": body, "version": comment_version}, peer_token), 200)
+        version, comment_version = version + 1, comment_version + 1
+        article = expect(request(backend, "GET", path), 200)
+        comment = expect(request(backend, "GET", comment_path, token=member["token"]), 200)
+        check(article["body"] == body and article["version"] == version and article["created_backend"] == backend and
+              comment["body"] == body and comment["version"] == comment_version and comment["created_backend"] == backend,
+              "共享文章／留言寫入未精確讀回或來源改變")
+        print(f"PASS RAILS05 pair {backend}->{peer} PHC／JWT隔離／文章留言共享讀寫", flush=True)
 
 
 # lockout_cases 暫時調低門檻，核對跨後端共同計數與剩餘時間，並必定恢復設定。
 def lockout_cases(backend, nonce):
-    peer = BACKENDS[(BACKENDS.index(backend) + 1) % len(BACKENDS)]
+    peer = peer_backend(backend)
     admin = user(backend, nonce + "l", "admin")
     member = user(backend, nonce + "l", "member")
     admin_token = admin["token"]
@@ -950,7 +1028,7 @@ def lockout_edge_cases(backend, nonce):
 
 # database_cases 對相同隔離測資驗證跨後端唯一性及互斥寫入的提交結果。
 def database_cases(backend, nonce):
-    peer = BACKENDS[(BACKENDS.index(backend) + 1) % len(BACKENDS)]
+    peer = peer_backend(backend)
     email = f"t57-{nonce}-{backend}-race@example.test"
     body = {"email": "  " + email.upper() + "  ", "password": "Abcd1234", "nickname": "並行作者"}
     barrier = Barrier(2)
@@ -1248,7 +1326,7 @@ def extended_invalid_cases(backend, nonce, reference):
 
 # ordered_cases 用新資料重播每對操作的兩種確定先後，核對回應與已提交狀態。
 def ordered_cases(backend, nonce):
-    peer = BACKENDS[(BACKENDS.index(backend) + 1) % len(BACKENDS)]
+    peer = peer_backend(backend)
     admin = user(backend, nonce + "o", "admin")
     original = expect(request(backend, "GET", "/api/settings/login-lockout", token=admin["token"]), 200)
     count = 0

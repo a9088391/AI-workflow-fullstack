@@ -48,60 +48,72 @@ class Response:
 # 每個 guard fixture 正常載入真來源的新模組；只 mock Git／Docker／HTTP I/O，不改 shared 常數或 SAFE。
 class GuardFixture:
     # 從暫存 repository 的實際檔案位置推導固定 cwd，合成 key 與容器資料完全自有。
-    def __init__(self, folder):
+    def __init__(self, folder, preset="cq34"):
         # 真來源在暫存目錄正常 import，避免改 shared 的固定常數或繞過 guard。
         self.repo = Path(folder).resolve()
+        self.preset, self.project = preset, preset + "_test"
+        subnet = "10.251.135" if preset == "rails05" else "10.251.134"
         module_path = self.repo / "ops/tests/ticket57_http.py"
         module_path.parent.mkdir(parents=True)
         module_path.write_bytes(Path(shared.__file__).read_bytes())
         spec = importlib.util.spec_from_file_location("cq34_guard_subject", module_path)
         self.subject = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.subject)
-        self.subject.select_preset("cq34")
-        self.root = self.repo / ".local/cq34-fixture"
-        self.names = ["ops/tests/cq34_compose.yaml"]
-        for backend in shared.BACKENDS:
+        self.subject.select_preset(preset)
+        self.root = self.repo / f".local/{preset}-fixture"
+        self.names = [f"ops/tests/{preset}_compose.yaml", "backends/symfony/bin/console"]
+        for backend in self.subject.BACKENDS:
             self.names.append(f"backends/{backend}/Dockerfile")
         for name in self.names:
             for root in (self.repo, self.root):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("FROM scratch\n" if name.endswith("Dockerfile") else "fixed cq34 template\n")
-        override = self.root / ".local/cq34-compose.yaml"
+                if name == "backends/symfony/bin/console":
+                    # Symfony 的 tracked bin/console 是建置入口，正常 fixture 必須保留實際 bytes 與 mode。
+                    original = Path(shared.__file__).resolve().parents[2] / name
+                    path.write_bytes(original.read_bytes())
+                    path.chmod(stat.S_IMODE(original.stat().st_mode))
+                else:
+                    path.write_text("FROM scratch\n" if name.endswith("Dockerfile") else "fixed cq34 template\n")
+        override = self.root / f".local/{preset}-compose.yaml"
         override.parent.mkdir(parents=True)
         override.write_text("fixed cq34 template\n")
         # 每組 key 都是本測試生成的合成值；default 與 CQ34 各自獨立。
-        for index, backend in enumerate(shared.BACKENDS):
+        for index, backend in enumerate(self.subject.BACKENDS):
             for kind, offset in (("keys", 40), ("cq34-keys", 1)):
                 key = self.root / f".local/{kind}/{backend}.key"
                 key.parent.mkdir(parents=True, exist_ok=True)
                 key.write_bytes(base64.b64encode(bytes([index + offset]) * 32))
                 key.chmod(0o600)
+        if preset == "rails05":
+            marker = self.root / ".local/keys/.rails-initialized"
+            marker.write_bytes(b"rails-jwt-v1\n")
+            marker.chmod(0o600)
         # 假 inspect 保留完整身分、實際 port/mount/image，讓 production 斷言逐一執行。
-        names = ("db", *shared.BACKENDS, *("frontend-" + name for name in ("vue", "nuxt", "react", "next", "angular", "sveltekit")), "nginx")
+        names = ("db", *self.subject.BACKENDS, *("frontend-" + name for name in ("vue", "nuxt", "react", "next", "angular", "sveltekit")), "nginx")
         self.services = {}
         for name in names:
             self.services[name] = {"Config": {"Labels": {
-                "com.docker.compose.project": "cq34_test", "com.docker.compose.service": name,
+                "com.docker.compose.project": self.project, "com.docker.compose.service": name,
                 "com.docker.compose.project.working_dir": str(self.root),
-                "com.docker.compose.project.config_files": f"{self.root}/compose.yaml,{self.root}/.local/cq34-compose.yaml"}, "Env": []},
+                "com.docker.compose.project.config_files": f"{self.root}/compose.yaml,{self.root}/.local/{preset}-compose.yaml"}, "Env": []},
                 "State": {"Running": True, "Health": {"Status": "healthy"}},
-                "NetworkSettings": {"Networks": {"cq34_test_default": {}}}, "Image": "sha256:image-" + name,
+                "NetworkSettings": {"Networks": {self.project + "_default": {}}}, "Image": "sha256:image-" + name,
                 "Mounts": [], "HostConfig": {"PortBindings": {}}}
-        self.services["db"]["Config"]["Env"] = ["CQ34_FIXTURE=isolated-cq34"]
-        self.services["db"]["Mounts"] = [{"Type": "volume", "Name": "cq34_test_postgres_data", "Destination": "/var/lib/postgresql"}]
-        for index, name in enumerate(shared.BACKENDS):
+        self.services["db"]["Config"]["Env"] = [preset.upper() + "_FIXTURE=isolated-" + preset]
+        self.services["db"]["Mounts"] = [{"Type": "volume", "Name": self.project + "_postgres_data", "Destination": "/var/lib/postgresql"}]
+        for index, name in enumerate(self.subject.BACKENDS):
             item = self.services[name]
             item["Config"]["Env"] = ["DB_HOST=db", "DB_DATABASE=articles", "DB_USERNAME=articles_app"]
             item["HostConfig"]["PortBindings"] = {"8080/tcp" if name == "aspnet-core" else "8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(8081 + index)}]}
-            item["Mounts"] = [{"Type": "bind", "Source": str(self.root / f".local/cq34-keys/{name}.key"), "Destination": f"/run/secrets/{name}-jwt.key", "RW": False}]
+            item["Mounts"] = [{"Type": "bind", "Source": str(self.root / f".local/{'keys' if preset == 'rails05' else 'cq34-keys'}/{name}.key"), "Destination": f"/run/secrets/{name}-jwt.key", "RW": False}]
         self.services["nginx"]["HostConfig"]["PortBindings"] = {"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8080"}]}
         # 宣告設定與實際 network/volume 分開保留，可精確改動其中一項做反例。
-        self.config = {"name": "cq34_test", "volumes": {"postgres_data": {"name": "cq34_test_postgres_data"}},
-                       "services": {"db": {"environment": {"CQ34_FIXTURE": "isolated-cq34"}}},
-                       "networks": {"default": {"ipam": {"config": [{"subnet": "10.251.134.0/24"}]}}}}
-        self.network = {"Name": "cq34_test_default", "Labels": {"com.docker.compose.project": "cq34_test"}, "IPAM": {"Config": [{"Subnet": "10.251.134.0/24", "Gateway": "10.251.134.1"}]}}
-        self.volume = {"Name": "cq34_test_postgres_data", "Labels": {"com.docker.compose.project": "cq34_test", "com.docker.compose.volume": "postgres_data"}, "Driver": "local", "Options": None, "CreatedAt": "2026-11-04T00:00:00Z"}
+        self.config = {"name": self.project, "volumes": {"postgres_data": {"name": self.project + "_postgres_data"}},
+                       "services": {"db": {"environment": {preset.upper() + "_FIXTURE": "isolated-" + preset}}},
+                       "networks": {"default": {"ipam": {"config": [{"subnet": subnet + ".0/24"}]}}}}
+        self.network = {"Name": self.project + "_default", "Labels": {"com.docker.compose.project": self.project}, "IPAM": {"Config": [{"Subnet": subnet + ".0/24", "Gateway": subnet + ".1"}]}}
+        self.volume = {"Name": self.project + "_postgres_data", "Labels": {"com.docker.compose.project": self.project, "com.docker.compose.volume": "postgres_data"}, "Driver": "local", "Options": None, "CreatedAt": "2026-11-04T00:00:00Z"}
 
     # 模擬外部命令但驗證完整固定 argv；未列明的 SQL／Docker 指令不會意外成功。
     def command(self, args, **kwargs):
@@ -116,7 +128,7 @@ class GuardFixture:
             return json.dumps([self.network])
         if args[:3] == ("docker", "volume", "inspect"):
             return json.dumps([self.volume])
-        fixed = ("docker", "compose", "-p", "cq34_test", "-f", "compose.yaml", "-f", ".local/cq34-compose.yaml", "--profile", "*")
+        fixed = ("docker", "compose", "-p", self.project, "-f", "compose.yaml", "-f", f".local/{self.preset}-compose.yaml", "--profile", "*")
         if args[:len(fixed)] != fixed:
             raise AssertionError("unexpected compose argv")
         tail = args[len(fixed):]
@@ -129,6 +141,8 @@ class GuardFixture:
         if tail[:3] == ("exec", "-T", "db"):
             if tail[-1] == "SELECT current_database()||':'||current_user":
                 return "articles:articles_owner"
+            if tail[-1] == "SHOW cluster_name":
+                return getattr(self, "cluster_name", self.project)
             if tail[-1] == "SELECT system_identifier FROM pg_control_system()":
                 return "123456789"
         raise AssertionError("unexpected fake command")
@@ -150,7 +164,7 @@ class GuardFixture:
 
     # 真 guard 完整執行；正負案例都不能以替換 guard／SAFE 取得通過。
     def guard(self):
-        with chdir(self.root), patch.dict(os.environ, {"COMPOSE_PROJECT_NAME": "cq34_test", "COMPOSE_FILE": "compose.yaml:.local/cq34-compose.yaml"}), \
+        with chdir(self.root), patch.dict(os.environ, {"COMPOSE_PROJECT_NAME": self.project, "COMPOSE_FILE": f"compose.yaml:.local/{self.preset}-compose.yaml"}), \
                 patch.object(self.subject.subprocess, "check_output", self.command), \
                 patch.object(self.subject.subprocess, "run", self.process), \
                 patch.object(self.subject.CQ34_OPENER, "open", self.http):
@@ -206,6 +220,15 @@ def guard_tests():
     guard_case(lambda f: f.services["laravel"]["Mounts"][0].update(Source="/wrong/key"))
     # 拒絕 source hash 漂移。
     guard_case(lambda f: (f.root / "backends/laravel/Dockerfile").write_text("changed"))
+    # Symfony tracked 建置入口不能因 bin 目錄名而漏驗 bytes。
+    guard_case(lambda f: (f.root / "backends/symfony/bin/console").write_bytes(b"changed console\n"))
+    # 即使 bytes 相同，來源副本的 mode 不符也必須拒絕。
+    guard_case(lambda f: (f.root / "backends/symfony/bin/console").chmod(0o600))
+    # 缺少必要建置入口不能仍取得 SAFE。
+    guard_case(lambda f: (f.root / "backends/symfony/bin/console").unlink())
+    # 指回原來源的 symlink 也不屬於固定實體來源副本。
+    guard_case(lambda f: ((f.root / "backends/symfony/bin/console").unlink(),
+                          (f.root / "backends/symfony/bin/console").symlink_to(f.repo / "backends/symfony/bin/console")))
     # 拒絕 template 漂移。
     guard_case(lambda f: (f.root / ".local/cq34-compose.yaml").write_text("changed"))
     with tempfile.TemporaryDirectory(prefix="cq34-cwd-") as folder:
@@ -690,9 +713,55 @@ def transport_tests():
     shared.check(not failures, "；".join(failures))
 
 
+# 只替換 log reader I/O，驗證真 trace_errors 保留共同追查規則及各版現有格式。
+def trace_tests():
+    identifier = "f260a2e1-0824-44ce-8e9c-b95dbe477842"
+    observed = [(identifier, "GET", "/api/me", 422)]
+    # Rails 合法安全格式不含 URL；固定 UUID 與欄位形狀來自實際保留 trace。
+    lines = [f"I, [2026-11-22T16:46:37 #1] INFO -- : IN log_id={identifier} method=GET",
+             f"W, [2026-11-22T16:46:37 #1] WARN -- : EX log_id={identifier} status=422",
+             f"I, [2026-11-22T16:46:37 #1] INFO -- : OUT log_id={identifier} status=422"]
+    with patch.object(shared, "api_log_lines", return_value=lines):
+        shared.trace_errors("rails", observed)
+        # 同輪兩筆錯誤不能共用識別碼，即使各自都能找到完整 trace。
+        refused(lambda: shared.trace_errors("rails", observed * 2))
+
+    # 每個反例只變一個事件／欄位，不能因不記 URL 就放寬同次請求的對應。
+    invalid = [
+        lines[1:], lines[:1] + lines[2:], lines[:2],
+        [lines[0], *lines], [*lines, lines[2]],
+        [lines[1], lines[0], lines[2]],
+        [lines[0], f"NOTE log_id={identifier}", f"NOTE log_id={identifier}", *lines[1:]],
+        [lines[0].replace(identifier, "00000000-0000-4000-8000-000000000000"), *lines[1:]],
+        [lines[0].replace(f"log_id={identifier}", f"log_id=prefix-{identifier}"), *lines[1:]],
+        [lines[0].replace("method=GET", "method=POST"), *lines[1:]],
+        [lines[0], lines[1].replace("status=422", "status=401"), lines[2]],
+        [*lines[:2], lines[2].replace("status=422", "status=401")],
+        [lines[0] + " path=/api/me", *lines[1:]],
+        [lines[0].replace("method=GET", "method=GETTING"), *lines[1:]],
+        [*lines[:2], lines[2].replace("status=422", "status=4220")],
+    ]
+    for changed in invalid:
+        with patch.object(shared, "api_log_lines", return_value=changed):
+            # 只讀合成 log；缺 OUT 仍走原有限等待，不修改時間或追查函式。
+            refused(lambda: shared.trace_errors("rails", observed))
+
+    # 原十二版仍須 path、method、status 與事件對應，Rails 格式不能成為通用豁免。
+    for backend in shared.BACKENDS:
+        if backend == "rails":
+            continue
+        legacy = [f"IN log_id={identifier} GET /api/me", lines[1], lines[2]]
+        with patch.object(shared, "api_log_lines", return_value=legacy):
+            shared.trace_errors(backend, observed)
+        with patch.object(shared, "api_log_lines", return_value=lines):
+            # 即使其他欄位齊全，原十二版缺 path 仍必須拒絕。
+            refused(lambda: shared.trace_errors(backend, observed))
+
+
 # 所有自測都必須在不執行服務的條件下完成，測試錯誤不轉成成功訊息。
 def run():
     guard_tests()
+    trace_tests()
     # argparse 錯誤是預期非零；捕捉輸出避免 help 噪音掩蓋真自測結果。
     with patch("sys.stderr", new=io.StringIO()):
         for argv in ([], ["--unknown"], ["--backend", "wrong"], ["--all", "--guard"], ["--restore", ".local/cq33-recovery/recovery-cq34aabbccdd.json"]):

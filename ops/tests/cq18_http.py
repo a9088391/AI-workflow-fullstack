@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import hmac
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -35,12 +36,12 @@ RECOVERIES = {"cq18": RECOVERY, "cq19": Path(".scratch/code-quality/cq19"),
               "cq26": Path(".scratch/code-quality/cq26"), "cq27": Path(".scratch/code-quality/cq27"),
               "cq28": Path(".scratch/code-quality/cq28"), "cq29": Path(".scratch/code-quality/cq29"),
               "cq30": Path(".scratch/code-quality/cq30"), "cq31": Path(".scratch/code-quality/cq31"),
-              "cq34": Path(".local/cq34-recovery")}
+              "cq34": Path(".local/cq34-recovery"), "rails05": Path(".local/rails05-recovery")}
 NONCES = {"cq18": r"cq18(?:[0-9a-f]{12}|[0-9a-f]{16})", "cq19": r"cq19[0-9a-f]{8}",
           "cq20": r"cq20[0-9a-f]{8}", "cq21": r"cq21[0-9a-f]{8}", "cq22": r"cq22[0-9a-f]{8}",
           "cq23": r"cq23[0-9a-f]{8}", "cq24": r"cq24[0-9a-f]{8}", "cq25": r"cq25[0-9a-f]{8}",
           "cq26": r"cq26[0-9a-f]{8}", "cq27": r"cq27[0-9a-f]{8}", "cq28": r"cq28[0-9a-f]{8}", "cq29": r"cq29[0-9a-f]{8}",
-          "cq30": r"cq30[0-9a-f]{8}", "cq31": r"cq31[0-9a-f]{8}", "cq34": r"cq34[0-9a-f]{8}"}
+          "cq30": r"cq30[0-9a-f]{8}", "cq31": r"cq31[0-9a-f]{8}", "cq34": r"cq34[0-9a-f]{8}", "rails05": r"r05[0-9a-f]{8}"}
 
 
 # 先解析有限模式才觸碰 guard，讓未知參數及錯誤恢復路徑在任何服務操作前停止。
@@ -60,7 +61,13 @@ def arguments():
 # 保留原始 bytes、Query 與 HEAD 空內容，避免客戶端替框架改寫測資。
 def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_headers=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離 HTTP 目標")
-    shared.check(backend in ("laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber", "express", "fastify", "nestjs"), "未核准的額外 HTTP 後端")
+    # Rails05 沿固定十三版；舊票原 allowlist 保留，不能藉新 preset 擴大其權限。
+    allowed = shared.BACKENDS if shared.PRESET == "rails05" else (
+        "laravel", "aspnet-core", "django", "flask", "fastapi", "gin", "echo", "fiber", "express", "fastify", "nestjs")
+    shared.check(backend in allowed, "未核准的額外 HTTP 後端")
+    if shared.PRESET == "rails05":
+        shared.check(shared.CQ34_RECOVERY is not None and not shared.CQ34_RECOVERY[2]["uncertain"] or
+                     method in ("GET", "HEAD", "OPTIONS"), "Rails05 前筆結果未知，停止新寫入")
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if origin is not None:
         headers["Origin"] = origin
@@ -69,11 +76,17 @@ def raw_request(method, path, body=None, token=None, origin=ORIGIN, extra_header
         headers["Authorization"] = "Bearer " + token
     request = Request(shared.BASES[backend] + path, data=body, headers=headers, method=method)
     try:
-        response = urlopen(request, timeout=15)
+        response = (shared.open_response if shared.PRESET == "rails05" else urlopen)(request, timeout=15)
     except HTTPError as error:
         response = error
-    with response:
-        return response.status, response.read(), response.headers
+    try:
+        with response:
+            return response.status, response.read(), response.headers
+    except (OSError, TimeoutError, HTTPException, KeyboardInterrupt):
+        # 原始 body 讀取中斷也保留未知寫入；不能繞過共同 JSON client 的收束規則。
+        if shared.PRESET == "rails05" and method not in ("GET", "HEAD", "OPTIONS"):
+            shared.mark_cq34_uncertain()
+        raise
 
 
 # 僅在契約要求 JSON 時解析，不把伺服器原始回應放進錯誤訊息或 artifact。
@@ -144,11 +157,11 @@ def validate_packet(packet, *, ticket="cq18"):
                 shared.check(re.fullmatch(r"[A-Za-z0-9_-]{22}", item["jti"]) is not None, "時間恢復 jti 不符")
 
 
-# CQ34 在舊 baseline 外包身分與摘要；其他票的原 schema 與檔案格式維持不變。
+# CQ34／Rails05 在舊 baseline 外包各自身分與摘要；其他票的原 schema 維持不變。
 def wrapped_packet(packet, receipt):
     if receipt is None:
         return packet
-    shared.check(shared.PRESET == "cq34" and receipt["namespace"] == "cq34", "CQ34 receipt 目標不符")
+    shared.check(shared.PRESET in ("cq34", "rails05") and receipt["namespace"] == shared.PRESET, "CQ34 receipt 目標不符")
     body = {"receipt": receipt, "baseline": packet}
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {**body, "sha256": digest}
@@ -159,7 +172,7 @@ def unwrapped_packet(value, identity):
     shared.check(set(value) == {"receipt", "baseline", "sha256"}, "CQ34 recovery 外層欄位不符")
     body = {"receipt": value["receipt"], "baseline": value["baseline"]}
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    shared.check(value["sha256"] == digest and value["receipt"].get("namespace") == "cq34" and
+    shared.check(value["sha256"] == digest and value["receipt"].get("namespace") == ("rails05" if shared.PRESET == "rails05" else "cq34") and
                  value["receipt"].get("identity") == identity, "CQ34 recovery receipt／來源不符")
     return value["baseline"], value["receipt"]
 
@@ -186,9 +199,9 @@ def save_packet(packet, path, *, receipt=None):
 # 首次服務寫入前同步落盤 baseline；中斷後不需帳密或 JWT 也能精確恢復既有會員鎖定欄位。
 def capture_baseline(nonce, *, ticket="cq18", receipt=None, preflight=None):
     shared.check(ticket in RECOVERIES and re.fullmatch(NONCES[ticket], nonce) is not None, "恢復 marker 不符")
-    shared.check((ticket == "cq34") == (receipt is not None), "CQ34 baseline 必須綁定專用 receipt")
-    shared.check(callable(preflight) if ticket == "cq34" else preflight is None, "只有 CQ34 必須提供歷史 preflight")
-    if ticket == "cq34":
+    shared.check((ticket in ("cq34", "rails05")) == (receipt is not None), "CQ34 baseline 必須綁定專用 receipt")
+    shared.check(callable(preflight) if ticket in ("cq34", "rails05") else preflight is None, "只有 CQ34 必須提供歷史 preflight")
+    if ticket in ("cq34", "rails05"):
         # 與入口共用完整唯讀稽核；失敗先於 SQL／建檔，避免重複政策誤拒已完成的舊 source。
         preflight(receipt["identity"])
     recovery = RECOVERIES[ticket]
@@ -196,7 +209,7 @@ def capture_baseline(nonce, *, ticket="cq18", receipt=None, preflight=None):
     shared.clear_boundary_trigger()
     clean_boundary()
     recovery.mkdir(parents=True, exist_ok=True)
-    if ticket != "cq34":
+    if ticket not in ("cq34", "rails05"):
         # 舊票維持原 schema／掃描；CQ34 已由同一 preflight 核對所有檔案及 private 權限。
         for path in recovery.glob(f"recovery-{ticket}*.json"):
             old = json.loads(path.read_text(encoding="utf-8"))
@@ -580,7 +593,7 @@ def login_claims(login, account_id, role, *, backend=BACKEND):
 # 僅在原 guard 通過後讀對應後端已核對的 key，簽署 fixture；key、JWT 不落盤或印出。
 def signed_token(claims, header=None, *, backend=BACKEND):
     shared.check(shared.SAFE, "尚未核對隔離金鑰")
-    shared.check(backend in shared.BACKENDS and (backend != "symfony" or shared.PRESET == "cq34"), "未核准的簽署 fixture 後端")
+    shared.check(backend in shared.BACKENDS and (backend != "symfony" or shared.PRESET in ("cq34", "rails05")), "未核准的簽署 fixture 後端")
     key = base64.b64decode(shared.key_path(backend).read_bytes().rstrip(b"\n"), validate=True)
     shared.check(len(key) == 32, "隔離金鑰長度不符")
     parts = [base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=")
@@ -591,7 +604,7 @@ def signed_token(claims, header=None, *, backend=BACKEND):
 
 # 兩次真登入驗證不續期與選擇性撤銷；錯誤 claims 及跨後端 token 拒絕也必須無副作用。
 def session_cases(nonce, *, backend=BACKEND):
-    peer = PEER if backend == BACKEND else shared.BACKENDS[(shared.BACKENDS.index(backend) + 1) % len(shared.BACKENDS)]
+    peer = PEER if backend == BACKEND else shared.peer_backend(backend)
     for role in ("member", "admin"):
         actor = shared.user(backend, nonce + "s", role)
         login = shared.expect(shared.request(backend, "POST", LOGIN,
@@ -725,7 +738,7 @@ def unavailable_cases(nonce, *, backend=BACKEND):
     print("PASS CQ18 真 DB 不可用 500/E9999、讀寫拒絕與同 token 恢復", flush=True)
 
 
-# 指定後端建立的文章／留言仍由十二後端讀回，保留 created_backend 與內容差異的精確契約。
+# 指定後端建立的文章／留言由所選全部後端讀回，保留 created_backend 與內容差異。
 def readback(records, *, backend=BACKEND):
     article_id, comment_id = records
     for reader in shared.BACKENDS:
@@ -734,9 +747,8 @@ def readback(records, *, backend=BACKEND):
         comment = next((item for item in comments["list"] if item["id"] == comment_id), None)
         shared.check(article["created_backend"] == backend and article["id"] == article_id
                      and article["body"] == "更新後內文" and comment is not None and comment["created_backend"] == backend
-                     and comment["id"] == comment_id and comment["body"] == "更新後留言", "十二後端讀回來源／內容不符")
-    print("PASS CQ18 Laravel 建立資料由十二後端精確讀回" if backend == BACKEND
-          else f"PASS {backend} 建立資料由十二後端精確讀回", flush=True)
+                     and comment["id"] == comment_id and comment["body"] == "更新後留言", "跨後端讀回來源／內容不符")
+    print(f"PASS {backend} 建立資料由 {len(shared.BACKENDS)} 後端精確讀回", flush=True)
 
 
 # 保留原 shared guard 與全部必要案例；整體 PASS 只在 full suite 及 finally 恢復均完成後輸出。

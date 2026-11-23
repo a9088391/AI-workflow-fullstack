@@ -2,6 +2,7 @@
 
 從原工作區執行此檔，cwd 必須是 .local/cq34-fixture，並設定
 COMPOSE_PROJECT_NAME=cq34_test、COMPOSE_FILE=compose.yaml:.local/cq34-compose.yaml。
+--preset rails05 改用固定 .local/rails05-fixture、rails05_test 及 .local/rails05-compose.yaml。
 只支援 --guard、--self-test、--backend 固定名稱、--all、--restore 本 namespace。
 pending 或身分不符時不重送；此入口不清庫、不刪測資、不啟停其他環境。
 """
@@ -22,6 +23,7 @@ import cq18_http as recovery
 from cq23_http import report_failure, reporting_self_check
 import ticket57_http as shared
 
+NAMESPACE = "cq34"
 RECOVERY = Path(".local/cq34-recovery")
 LIMITS = {"accounts": 2500, "articles": 1000, "comments": 1000, "login_sessions": 10000, "login_failures": 5000}
 # 每組有限既有案例的保守預留；不在額度邊緣開跑後才發現這組無法完成。
@@ -31,17 +33,28 @@ RESERVE = {"accounts": 120, "articles": 80, "comments": 80, "login_sessions": 40
 # 有限命令先解析，未知後端、參數及恢復路徑在 guard／服務讀取之前即拒絕。
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preset", choices=("cq34", "rails05"), default="cq34")
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--guard", action="store_true")
     modes.add_argument("--self-test", action="store_true")
-    modes.add_argument("--backend", choices=shared.BACKENDS)
+    modes.add_argument("--backend", choices=(*shared.BACKENDS, "rails"))
     modes.add_argument("--all", action="store_true")
     modes.add_argument("--restore", type=Path)
     args = parser.parse_args(argv)
-    if args.restore is not None and (args.restore.parent != RECOVERY or
-            re.fullmatch(r"recovery-cq34[0-9a-f]{8}\.json", args.restore.name) is None):
-        parser.error("--restore 只接受 .local/cq34-recovery/recovery-cq34<8hex>.json")
+    if args.backend == "rails" and args.preset != "rails05":
+        parser.error("rails 只能使用固定 rails05 preset")
+    if args.restore is not None and (args.restore.parent != Path(f".local/{args.preset}-recovery") or
+            re.fullmatch(rf"recovery-{'r05' if args.preset == 'rails05' else 'cq34'}[0-9a-f]{{8}}\.json", args.restore.name) is None):
+        parser.error("--restore 只接受所選 preset 的固定 recovery 目錄及 nonce")
     return args
+
+
+# 唯一 CLI 選定 namespace 與固定目標；恢復／lock 不可跨票共用。
+def select_preset(name):
+    global NAMESPACE, RECOVERY
+    shared.select_preset(name)
+    NAMESPACE = name
+    RECOVERY = recovery.RECOVERIES[name]
 
 
 # private regular file 與固定目錄限定本輪恢復資料，不接受 symlink 或放寬權限的輸入。
@@ -55,7 +68,7 @@ def private_path(path, *, directory=False):
 # 固定 flock 防止兩個 process 同時通過 pending 掃描；SIGKILL 釋鎖但既有 pending 仍阻止重送。
 @contextmanager
 def run_lock():
-    path = Path(".local/cq34-run.lock")
+    path = Path(f".local/{NAMESPACE}-run.lock")
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         private_path(path)
@@ -70,7 +83,7 @@ def load_packet(path, identity):
     private_path(RECOVERY, directory=True)
     private_path(path)
     packet, receipt = recovery.unwrapped_packet(json.loads(path.read_text(encoding="utf-8")), identity)
-    recovery.validate_packet(packet, ticket="cq34")
+    recovery.validate_packet(packet, ticket=NAMESPACE)
     shared.check(path.name == f"recovery-{packet['nonce']}.json", "CQ34 recovery 檔名不符")
     shared.check(set(receipt) == {"namespace", "identity", "times", "boundary", "uncertain", "state", "counts_before", "groups"} and
                  type(receipt["uncertain"]) is bool and receipt["state"] in ("pending", "restoring", "restored", "incomplete") and
@@ -152,7 +165,7 @@ def preflight_packets(identity, restore=None):
     private_path(RECOVERY, directory=True)
     found = None
     for path in sorted(RECOVERY.iterdir()):
-        shared.check(re.fullmatch(r"recovery-cq34[0-9a-f]{8}\.json", path.name) is not None, "CQ34 recovery 有未知／pending 檔案")
+        shared.check(re.fullmatch(rf"recovery-{'r05' if NAMESPACE == 'rails05' else 'cq34'}[0-9a-f]{{8}}\.json", path.name) is not None, "CQ34 recovery 有未知／pending 檔案")
         if path == restore:
             packet, receipt = load_packet(path, identity)
             shared.check(not packet["restored"], "CQ34 recovery 已完成，拒絕重播")
@@ -189,14 +202,14 @@ def restore(packet, path, receipt):
     shared.clear_boundary_trigger(receipt["boundary"])
     receipt["boundary"] = None
     recovery.save_packet(packet, path, receipt=receipt)
-    recovery.restore_baseline(packet, path, ticket="cq34", mark_restored=False, receipt=receipt)
+    recovery.restore_baseline(packet, path, ticket=NAMESPACE, mark_restored=False, receipt=receipt)
     restore_times(packet, receipt)
     counts()
     packet["restored"] = True
     receipt["state"] = "incomplete" if receipt["uncertain"] else "restored"
     recovery.save_packet(packet, path, receipt=receipt)
-    print("INCOMPLETE CQ34 cleanup 已讀回，但遠端寫入結果未知；禁止新 run" if receipt["uncertain"] else
-          "PASS CQ34 精確恢復及讀回；合成資料保留", flush=True)
+    print(f"INCOMPLETE {NAMESPACE.upper()} cleanup 已讀回，但遠端寫入結果未知；禁止新 run" if receipt["uncertain"] else
+          f"PASS {NAMESPACE.upper()} 精確恢復及讀回；合成資料保留", flush=True)
 
 
 # 每個 backend 都用同一組既有入口；沒有複製 suite 或依框架接受不同錯誤。
@@ -212,7 +225,7 @@ def run_group(backend, case, nonce, packet, path, receipt, reference):
     shared.check(all(before[name] + RESERVE[name] <= maximum for name, maximum in LIMITS.items()), "CQ34 本組預留額度不足，停止新寫入")
     recovery.save_packet(packet, path, receipt=receipt)
     name = case.__name__
-    print(f"RUN CQ34 {backend} {name}", flush=True)
+    print(f"RUN {NAMESPACE.upper()} {backend} {name}", flush=True)
     if case is shared.extended_invalid_cases:
         result = case(backend, nonce, reference)
         shared.check(len(result) == 284, "CQ34 共同 284 invalid 覆蓋缺漏")
@@ -225,7 +238,7 @@ def run_group(backend, case, nonce, packet, path, receipt, reference):
     after = counts()
     receipt["groups"].append({"backend": backend, "name": name, "before": before, "after": after})
     recovery.save_packet(packet, path, receipt=receipt)
-    print("COUNT CQ34 " + backend + " " + name + " " + json.dumps({name: after[name] - before[name] for name in LIMITS}, sort_keys=True), flush=True)
+    print("COUNT " + NAMESPACE.upper() + " " + backend + " " + name + " " + json.dumps({name: after[name] - before[name] for name in LIMITS}, sort_keys=True), flush=True)
     return result
 
 
@@ -233,10 +246,10 @@ def run_group(backend, case, nonce, packet, path, receipt, reference):
 def suite(backends, identity):
     preflight_packets(identity)
     before = counts()
-    nonce = "cq34" + secrets.token_hex(4)
-    receipt = {"namespace": "cq34", "identity": identity, "times": [], "boundary": None, "uncertain": False,
+    nonce = ("r05" if NAMESPACE == "rails05" else "cq34") + secrets.token_hex(4)
+    receipt = {"namespace": NAMESPACE, "identity": identity, "times": [], "boundary": None, "uncertain": False,
                "state": "pending", "counts_before": before, "groups": []}
-    packet, path = recovery.capture_baseline(nonce, ticket="cq34", receipt=receipt, preflight=preflight_packets)
+    packet, path = recovery.capture_baseline(nonce, ticket=NAMESPACE, receipt=receipt, preflight=preflight_packets)
     shared.CQ34_RECOVERY = packet, path, receipt
     reference, records = {}, {}
     try:
@@ -245,7 +258,7 @@ def suite(backends, identity):
                 result = run_group(backend, case, nonce, packet, path, receipt, reference)
                 if case is shared.backend_cases:
                     records[backend] = result
-            # 同一組文章／留言由全部十二版讀回，來源識別與內容按原契約核對。
+            # 同一組文章／留言由所選 preset 的全部後端讀回，來源識別與內容按原契約核對。
             recovery.readback(records[backend], backend=backend)
             actual = counts()
             receipt["groups"].append({"backend": backend, "name": "readback", "before": actual, "after": actual})
@@ -256,14 +269,14 @@ def suite(backends, identity):
         finally:
             shared.CQ34_RECOVERY = None
     after = counts()
-    print("COUNT CQ34 run " + json.dumps({name: after[name] - before[name] for name in LIMITS}, sort_keys=True), flush=True)
-    print(f"PASS CQ34 {len(backends)} 後端共同案例與恢復；不代表前端／啟停／全部 CQ34 驗收完成", flush=True)
+    print("COUNT " + NAMESPACE.upper() + " run " + json.dumps({name: after[name] - before[name] for name in LIMITS}, sort_keys=True), flush=True)
+    print(f"PASS {NAMESPACE.upper()} {len(backends)} 後端共同案例與恢復；不代表前端／啟停／整票驗收完成", flush=True)
 
 
 # self-test 僅以暫存檔與 mock 驗證 fail-closed；不讀 keys、不接 Docker／HTTP／DB。
 def self_test():
     import cq34_test
-    reporting_self_check(ticket="cq34")
+    reporting_self_check(ticket=NAMESPACE)
     cq34_test.run()
 
 
@@ -271,12 +284,16 @@ def self_test():
 def main(argv=None):
     args = arguments(argv)
     if args.self_test:
+        if args.preset == "rails05":
+            import rails05_test
+            rails05_test.run()
+            return
         self_test()
         return
-    shared.select_preset("cq34")
+    select_preset(args.preset)
     identity = shared.guard()
     if args.guard:
-        print("PASS CQ34 固定隔離目標 guard", flush=True)
+        print(f"PASS {NAMESPACE.upper()} 固定隔離目標 guard", flush=True)
         return
     with run_lock():
         if args.restore is not None:
@@ -291,5 +308,5 @@ if __name__ == "__main__":
         main()
     except (Exception, KeyboardInterrupt) as error:
         # 沿用既有安全 reporter 保留 cause／context 類型與位置，不輸出例外訊息或秘密內容。
-        report_failure(error, ticket="cq34")
+        report_failure(error, ticket=NAMESPACE)
         sys.exit(1)

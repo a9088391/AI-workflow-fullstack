@@ -27,9 +27,9 @@ services:
       DB_USERNAME: articles_app
       DB_PASSWORD: ${DB_APP_PASSWORD:?set isolated DB application password}
       RAILS01_TEST_PROJECT: ${COMPOSE_PROJECT_NAME:?set explicit isolated project name}
-    volumes:
+    volumes: !override
       - ${RAILS01_FIXTURE_ROOT:?set dedicated absolute fixture root}/rails.key:/run/secrets/rails-jwt.key:ro
-    ports:
+    ports: !override
       - "127.0.0.1:${RAILS01_RAILS_PORT:?set isolated Rails port}:8000"
     depends_on:
       sql:

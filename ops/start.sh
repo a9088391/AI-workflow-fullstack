@@ -2,47 +2,46 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+# 先拒絕未知／重複參數，不能在輸入錯誤時停掉既有展示或變更金鑰。
+backend_only=0
+without_rails=0
+for option in "$@"; do
+    case "$option" in
+        --backend-only) [ "$backend_only" = 0 ] || { echo '重複參數：--backend-only' >&2; exit 2; }; backend_only=1 ;;
+        --without-rails) [ "$without_rails" = 0 ] || { echo '重複參數：--without-rails' >&2; exit 2; }; without_rails=1 ;;
+        *) echo "未知參數：$option；用法：ops/start.sh [--backend-only] [--without-rails]" >&2; exit 2 ;;
+    esac
+done
 if [ ! -f .env ]; then
     echo '尚未完成首次設定；請先執行 ops/setup.sh' >&2
     exit 1
 fi
-ops/check-keys.sh
 project_name="${COMPOSE_PROJECT_NAME:-ai-workflow-fullstack}"
 if [ ! -f ".local/setup-complete-$project_name" ] && [ "${SETUP_IN_PROGRESS:-0}" != '1' ]; then
     echo '首次管理員尚未設定完成；請執行 ops/setup.sh' >&2
     exit 1
 fi
 
-# 舊票隔離 override 沒有新增後端的專用埠；按 fixture 所屬票選擇服務。
-backend_services="laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs"
-case "${COMPOSE_FILE:-}" in
-    *ops/tests/*)
-        case "${COMPOSE_FILE}" in
-            *ops/tests/ticket22_compose.yaml*) backend_services="laravel fastapi" ;;
-            *ops/tests/ticket25_compose.yaml*) backend_services="laravel gin" ;;
-            *ops/tests/ticket28_compose.yaml*) backend_services="laravel echo" ;;
-            *ops/tests/ticket31_compose.yaml*) backend_services="laravel fiber" ;;
-            *ops/tests/ticket34_compose.yaml*) backend_services="laravel express" ;;
-            *ops/tests/ticket37_compose.yaml*|*ops/tests/ticket38_compose.yaml*|*ops/tests/ticket39_compose.yaml*) backend_services="laravel fastify" ;;
-            *ops/tests/ticket40_compose.yaml*|*ops/tests/ticket41_compose.yaml*) backend_services="laravel nestjs" ;;
-            *ops/tests/ticket19_compose.yaml*|*ops/tests/ticket20_compose.yaml*) backend_services="laravel flask" ;;
-            *ops/tests/ticket16_compose.yaml*) backend_services="laravel symfony aspnet-core django" ;;
-            *) backend_services="laravel symfony aspnet-core" ;;
-        esac
-        ;;
-esac
+# 僅在原十二份完整時明確執行一次Rails加入；完成後缺漏一律停止、不換key。
+ops/check-keys.sh --initialize-rails
+. ops/service-selection.sh
+if [ "$without_rails" = 1 ] && [ "$backend_services" = "$all_backends" ]; then
+    backend_services="$legacy_backends"
+fi
 
 # 既有資料若有待套用 SQL，先停所有本專案寫入，讓備份代表一致的更新前狀態。
-docker compose --profile fiber --profile express --profile fastify --profile nestjs stop laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit nginx >/dev/null
+docker compose --profile rails stop $all_backends frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit nginx >/dev/null
 docker compose up -d --wait db
 PROJECT_WRITERS_STOPPED=1 docker compose up --build --exit-code-from sql sql
 
-if [ "${1:-}" = '--backend-only' ]; then
+if [ "$backend_only" = 1 ]; then
     docker compose up -d --build --wait $backend_services
     if [ "$backend_services" = "laravel flask" ]; then
         echo 'Laravel／Flask 專用後端已就緒；前端尚未啟動'
-    elif [ "$backend_services" = "laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs" ]; then
-        echo 'Laravel／Symfony／ASP.NET Core／Django／Flask／FastAPI／Gin／Echo／Fiber／Express／Fastify／NestJS 後端已就緒；前端尚未啟動'
+    elif [ "$backend_services" = "$all_backends" ]; then
+        echo '十三後端已就緒（含 Rails：http://localhost:8093）；前端尚未啟動'
+    elif [ "$backend_services" = "$legacy_backends" ]; then
+        echo '十二後端模式已就緒；Rails 已停止；前端尚未啟動'
     elif [ "$backend_services" = "laravel fiber" ]; then
         echo 'Laravel／Fiber 專用後端已就緒；前端尚未啟動'
     elif [ "$backend_services" = "laravel express" ]; then
@@ -66,14 +65,17 @@ if [ "${1:-}" = '--backend-only' ]; then
         echo 'Laravel／Symfony／ASP.NET Core 後端已就緒；前端尚未啟動'
     fi
 else
-    # 一般展示啟動已完成前端；舊票隔離 fixture 保留原先僅 Vue 的服務範圍。
-    frontend_services="frontend-vue frontend-nuxt frontend-react frontend-next frontend-angular frontend-sveltekit"
-    case "${COMPOSE_FILE:-}" in *ops/tests/*) frontend_services="frontend-vue" ;; esac
+    # Compose --wait涵蓋所選全部應用，Rails不健康時正常模式不會宣告十三版就緒。
     docker compose up -d --build --wait $backend_services $frontend_services nginx
     if [ "$backend_services" = "laravel flask" ]; then
         echo 'Vue／Laravel／Flask 專用展示已就緒：http://localhost:8080/vue/；Flask API：http://localhost:8085'
-    elif [ "$backend_services" = "laravel symfony aspnet-core django flask fastapi gin echo fiber express fastify nestjs" ]; then
-        echo 'Vue／Nuxt／React／Next.js／Angular／SvelteKit／Laravel 展示已就緒：http://localhost:8080/vue/、http://localhost:8080/nuxt/、http://localhost:8080/react/、http://localhost:8080/next/、http://localhost:8080/angular/、http://localhost:8080/sveltekit/；Symfony API：http://localhost:8082；ASP.NET Core API：http://localhost:8083；Django API：http://localhost:8084；Flask API：http://localhost:8085；FastAPI API：http://localhost:8086；Gin API：http://localhost:8087；Echo API：http://localhost:8088；Fiber API：http://localhost:8089；Express API：http://localhost:8090；Fastify API：http://localhost:8091；NestJS API：http://localhost:8092'
+    elif [ "$backend_services" = "$all_backends" ] || [ "$backend_services" = "$legacy_backends" ]; then
+        if [ "$backend_services" = "$all_backends" ]; then
+            echo '十三後端及六前端已就緒；Rails API：http://localhost:8093'
+        else
+            echo '十二後端模式及六前端已就緒；Rails 已停止'
+        fi
+        echo 'Vue：http://localhost:8080/vue/；Nuxt：http://localhost:8080/nuxt/；React：http://localhost:8080/react/；Next.js：http://localhost:8080/next/；Angular：http://localhost:8080/angular/；SvelteKit：http://localhost:8080/sveltekit/'
     elif [ "$backend_services" = "laravel fiber" ]; then
         echo 'Vue／Laravel／Fiber 專用展示已就緒：http://localhost:18311/vue/；Fiber API：http://localhost:8089'
     elif [ "$backend_services" = "laravel express" ]; then

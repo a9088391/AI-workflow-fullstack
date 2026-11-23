@@ -1,0 +1,12 @@
+# 僅在專用source副本與獨立Compose project使用；固定port保留正式CORS契約。
+# DB標記與cluster_name供HTTP suite核對實際目標，不能拿展示庫替代。
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.251.135.0/24
+services:
+  db:
+    environment:
+      RAILS05_FIXTURE: isolated-rails05
+    command: ["postgres", "-c", "cluster_name=${COMPOSE_PROJECT_NAME:?set explicit isolated project name}"]

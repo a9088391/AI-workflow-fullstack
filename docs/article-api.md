@@ -1,6 +1,6 @@
 # 會員文章 API
 
-本文件描述本專案的 **22 個共同操作**。十二個後端只更換基底位址，例如 Laravel 是 `http://localhost:8081`，NestJS 是 `http://localhost:8092`；HTTP 方法、`/api/...` 路徑、欄位、權限與錯誤契約一致。所有基底位址見[系統架構](architecture.md)。
+本文件描述本專案的 **22 個共同操作**。十三個後端只更換基底位址，例如 Laravel 是 `http://localhost:8081`，NestJS 是 `http://localhost:8092`，Rails 是 `http://localhost:8093`；HTTP 方法、`/api/...` 路徑、欄位、權限與錯誤契約一致。所有基底位址見[系統架構](architecture.md)。
 
 ## 請求與回應慣例
 
@@ -75,11 +75,11 @@ JSON 請求使用 `Accept: application/json` 和 `Content-Type: application/json
 
 - `GET /api/me`、管理會員詳情回 `Account`：`id`, `email`, `nickname`, `role`, `status`, `created_at`。`role` 為 `member` 或 `admin`；`status` 為 `active` 或 `disabled`。公開作者僅有 `id`、`nickname`。
 - 登入成功的 `data` 為 `access_token`, `token_type:"Bearer"`, `expires_at`, `user:Account`。`GET /api/me` 的 `data` **直接是 Account**，不再包 `user`。登入期限固定八小時；後端 token 不互通。
-- 文章詳情及文章列表項目有 `id`, `title`, `body`, `author:{id,nickname}`, `version`, `created_backend`, `created_at`, `updated_at`, `visibility`, `can_restore`。留言同形但無 `title`，另有 `article_id`。`created_backend` 是建立時使用的十二種後端 ID 之一，不因後來改用別的後端而變更。
+- 文章詳情及文章列表項目有 `id`, `title`, `body`, `author:{id,nickname}`, `version`, `created_backend`, `created_at`, `updated_at`, `visibility`, `can_restore`。留言同形但無 `title`，另有 `article_id`。`created_backend` 是建立時使用的十三種後端 ID 之一，不因後來改用別的後端而變更。
 - 列表的 `data` 有 `list:[...]` 和 `pagination:{page,per_page,total,total_pages}`，按 `created_at`、`id` 降冪。合法超頁仍回 `200`、空 `list`、原請求頁碼及真實 `total`；`total=0` 時 `total_pages=0`。
 - `can_restore` 是後端按目前使用者與內容狀態算出的提示值；寫入時仍會重新驗權，不能當作永久授權。
 
-`created_backend` 使用的精確 ID 為 `laravel`、`symfony`、`aspnet-core`、`django`、`flask`、`fastapi`、`gin`、`echo`、`fiber`、`express`、`fastify`、`nestjs`。例如一筆文章及分頁的成功回應：
+`created_backend` 使用的精確 ID 為 `laravel`、`symfony`、`aspnet-core`、`django`、`flask`、`fastapi`、`gin`、`echo`、`fiber`、`express`、`fastify`、`nestjs`、`rails`。例如一筆文章及分頁的成功回應：
 
 ```json
 {

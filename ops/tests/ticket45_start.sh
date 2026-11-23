@@ -8,7 +8,7 @@ fixture=$(mktemp -d)
 cleanup() { rm -rf "$fixture"; }
 trap cleanup EXIT
 mkdir -p "$fixture/ops/tests" "$fixture/bin" "$fixture/.local" "$fixture/database/sql"
-cp "$repo_root/ops/start.sh" "$repo_root/ops/stop.sh" "$repo_root/ops/setup.sh" "$fixture/ops/"
+cp "$repo_root/ops/start.sh" "$repo_root/ops/stop.sh" "$repo_root/ops/setup.sh" "$repo_root/ops/service-selection.sh" "$fixture/ops/"
 cp "$repo_root/ops/tests/sql_entry.sh" "$fixture/ops/tests/"
 cp "$repo_root/database/sql/0001_accounts.sql" "$fixture/database/sql/"
 touch "$fixture/.env"

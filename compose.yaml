@@ -340,6 +340,31 @@ services:
       timeout: 3s
       retries: 20
 
+  rails:
+    # 正常入口明確指定Rails；舊隔離fixture預設up仍只載入其原有服務。
+    profiles: ["rails"]
+    build:
+      context: .
+      dockerfile: backends/rails/Dockerfile
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: articles
+      DB_USERNAME: articles_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:?run ops/setup.sh first}
+    volumes:
+      - ./.local/keys/rails.key:/run/secrets/rails-jwt.key:ro
+    ports:
+      - "127.0.0.1:8093:8000"
+    depends_on:
+      sql:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "ruby", "-rnet/http", "-e", "exit(Net::HTTP.get_response(URI('http://127.0.0.1:8000/up')).code == '200' ? 0 : 1)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   frontend-vue:
     build:
       context: ./frontend/vue
