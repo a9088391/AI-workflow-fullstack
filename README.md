@@ -1,10 +1,12 @@
 # 文章集｜AI-workflow-fullstack
 
-一套可在本機操作的會員文章與留言網站，用來比較不同框架如何實作同一套功能。**六種前端與十三種後端可獨立切換、自由搭配，共 78 種組合、19 個版本。** 所有組合透過同一份 API 契約存取同一個 PostgreSQL 資料庫。
+文章集是可在本機操作的會員文章與留言網站，用來比較不同框架如何實作同一套功能。**六種前端與十三種後端可獨立切換，共 78 種搭配。** 所有搭配透過同一份 API 契約讀寫同一個 PostgreSQL 資料庫。
+
+[使用技術](#使用技術) · [本機啟動](#本機啟動) · [如何測試](#如何測試)
 
 ![文章集的六個桌面版文章列表，依序為裝幀書牆、海岸玻璃、午夜放映、雕塑展廳、水墨長卷與孔版海報](docs/images/frontend-overview.jpg)
 
-*六種版型以同一批合成文章在本機展示。*
+*六種版型的實際畫面，使用同一批合成文章。*
 
 ## 主要功能
 
@@ -17,40 +19,38 @@
 
 ### 六種前端
 
-六版使用 JavaScript 或 TypeScript，由 NGINX 提供同一個入口 `http://localhost:8080`。每版有自己的視覺風格與頁面路徑。
+六版共用 Node.js 24.21.0 作為容器建置環境。NGINX 將六版放在同一個入口 `http://localhost:8080` 下。
 
-| 前端 | 視覺風格 | 頁面路徑 |
-| --- | --- | --- |
-| Vue 3 + Vite | 裝幀書牆 | `/vue/` |
-| Nuxt | 海岸玻璃 | `/nuxt/` |
-| React + Vite | 午夜放映 | `/react/` |
-| Next.js | 雕塑展廳 | `/next/` |
-| Angular | 水墨長卷 | `/angular/` |
-| SvelteKit | 孔版海報 | `/sveltekit/` |
+| 前端 | 技術 | 視覺風格 | 頁面路徑 |
+| --- | --- | --- | --- |
+| Vue 3 + Vite | JavaScript、Vue 3 單檔元件、Vite | 裝幀書牆 | `/vue/` |
+| Nuxt | JavaScript、Vue 3、Nuxt 4 | 海岸玻璃 | `/nuxt/` |
+| React + Vite | JavaScript、JSX、React 19、Vite | 午夜放映 | `/react/` |
+| Next.js | JavaScript、JSX、React 19、Next.js 16 App Router | 雕塑展廳 | `/next/` |
+| Angular | TypeScript、Angular 21、Angular CLI | 水墨長卷 | `/angular/` |
+| SvelteKit | JavaScript、Svelte 5、SvelteKit 2、Vite、Node adapter | 孔版海報 | `/sveltekit/` |
 
 ### 十三種後端
 
-| 後端 | 語言或執行環境 | API 基底位址 |
+| 後端 | 語言與容器執行環境 | API 基底位址 |
 | --- | --- | --- |
-| Laravel | PHP | `http://localhost:8081` |
-| Symfony | PHP | `http://localhost:8082` |
-| ASP.NET Core Controllers | C# | `http://localhost:8083` |
-| Django | Python | `http://localhost:8084` |
-| Flask | Python | `http://localhost:8085` |
-| FastAPI | Python | `http://localhost:8086` |
-| Gin | Go | `http://localhost:8087` |
-| Echo | Go | `http://localhost:8088` |
-| Fiber | Go | `http://localhost:8089` |
-| Express | Node.js | `http://localhost:8090` |
-| Fastify | Node.js | `http://localhost:8091` |
-| NestJS | Node.js | `http://localhost:8092` |
-| Ruby on Rails | Ruby | `http://localhost:8093` |
+| Laravel | PHP 8.4 | `http://localhost:8081` |
+| Symfony | PHP 8.4 | `http://localhost:8082` |
+| ASP.NET Core Controllers | C#、.NET 10 | `http://localhost:8083` |
+| Django | Python 3.13 | `http://localhost:8084` |
+| Flask | Python 3.13 | `http://localhost:8085` |
+| FastAPI | Python 3.13 | `http://localhost:8086` |
+| Gin | Go 1.26 | `http://localhost:8087` |
+| Echo | Go 1.26 | `http://localhost:8088` |
+| Fiber | Go 1.26 | `http://localhost:8089` |
+| Express | JavaScript、Node.js 24 | `http://localhost:8090` |
+| Fastify | JavaScript、Node.js 24 | `http://localhost:8091` |
+| NestJS | JavaScript、Node.js 24 | `http://localhost:8092` |
+| Ruby on Rails | Ruby 4.0 | `http://localhost:8093` |
 
 ### 共用資料庫與 API
 
-六個前端透過目前選用的後端讀寫資料。十三種後端遵守相同的 22 個 API 操作，讀寫**同一個 PostgreSQL 資料庫**。帳號、文章、留言與登入鎖定設定因此在各版本共用。資料庫結構由集中維護的版本化 SQL 更新。 [系統架構](docs/architecture.md) · [API 文件](docs/article-api.md)
-
-本機環境使用 Docker Compose，驗證涵蓋框架測試、HTTP／PostgreSQL 契約測試與 Playwright／Chrome 瀏覽器測試。
+Docker Compose 啟動六個前端、十三個後端、NGINX 1.30 與 PostgreSQL 18。十三個後端提供相同的 22 個 API 操作，共用帳號、文章、留言與登入鎖定設定。資料庫結構由集中維護的版本化 SQL 更新。 [系統架構](docs/architecture.md) · [API 文件](docs/article-api.md)
 
 ## 前後端如何切換
 
@@ -59,7 +59,7 @@
 | 操作 | 切換後的行為 |
 | --- | --- |
 | **換前端** | 同一分頁會開啟對應頁面，並保留目前後端與有效登入。登入期限沿用原到期時間。例如 `/vue/articles/101` 切到 Nuxt 後會開啟 `/nuxt/articles/101`。 |
-| **換後端** | 保留目前前端，清除舊憑證並前往登入頁。可用原帳號重新登入，在權限允許時回到原目標頁。各後端只接受自己簽發的 JWT，既有的登入鎖定也會在新後端生效。 |
+| **換後端** | 保留目前前端並清除舊憑證。接下來要使用會員或管理功能時，請用原帳號重新登入。各後端只接受自己簽發的 JWT，既有的登入鎖定也會在新後端生效。 |
 
 ### 切換限制
 
@@ -70,42 +70,36 @@
 
 [前後端選擇與頁面對照](docs/user-guide.md#選擇畫面與後端)
 
-## 本機啟動、停止與重設
+## 本機啟動
 
-以下指令在專案根目錄執行。需要 macOS、Linux 或 Windows WSL2 的 POSIX shell、已啟動的 Docker daemon、支援 `docker compose up --wait` 的 Compose plugin，以及主機上的 `sh` 和 OpenSSL；本次只在 macOS 實測，其他平台尚未確認。首次建置需要網路下載容器映像與套件，且本機連接埠 `8080`–`8093` 需可使用。
-
-先取得專案，再進入專案根目錄：
-
-```sh
-git clone https://github.com/a9088391/AI-workflow-fullstack.git
-cd AI-workflow-fullstack
-```
-
-主機不需安裝各語言的 SDK，也不需取得作者的備份或金鑰。首次設定會為這個本機安裝建立自己的資料庫設定、應用金鑰及後端金鑰，並提示輸入管理員 Email、暱稱與密碼；密碼須為 4–16 碼 ASCII 英文字母或數字，沒有預設管理員帳密。空資料庫一開始沒有文章，管理員登入後可自行發文，或註冊一般會員。既有安裝請保留原有 `.env` 與 `.local/keys/`，不要刪除它們來強制產生新金鑰。
+準備 Git、`sh`、OpenSSL、已啟動的 Docker，以及支援 `docker compose up --wait` 的 Compose plugin。請預留本機連接埠 `8080`–`8093`，首次建置需要網路下載映像與套件。主機只需上述工具，語言環境由容器提供。啟停流程已在 macOS 實測，Linux 與 Windows WSL2 待實機驗證。
 
 ### 首次啟動
 
 ```sh
+git clone https://github.com/a9088391/AI-workflow-fullstack.git &&
+cd AI-workflow-fullstack &&
 ./ops/setup.sh
 ```
 
-依終端提示建立第一位管理員。設定完成後開啟 [本機展示站](http://localhost:8080/)，預設使用 Vue 3 + Vite 與 Laravel。一般會員可從畫面註冊。
+第一次會建立本機資料庫設定與金鑰，並提示輸入管理員 Email、暱稱及 4–16 碼 ASCII 英數密碼。等指令完成後開啟 [本機展示站](http://localhost:8080/)，預設是 Vue 3 + Vite 搭配 Laravel。空資料庫可直接註冊一般會員，也可以用剛建立的管理員登入並發表第一篇文章。
 
-### 停止與重新啟動
+### 日常啟停與狀態查詢
+
+以下指令各自從專案根目錄執行。
 
 ```sh
+# 啟動完整展示站並等待服務就緒
+./ops/start.sh
+
+# 列出所有使用中的前後端與健康狀態
+docker compose --profile '*' ps
+
+# 停止並移除容器與 Compose 網路，保留資料卷與金鑰
 ./ops/stop.sh
 ```
 
-`stop.sh` 會停止並移除本機容器及 Compose 網路，保留 PostgreSQL 資料卷與本機金鑰。需要繼續使用時，執行日常啟動指令。
-
-```sh
-./ops/start.sh
-```
-
-一般入口會等待 DB、SQL、十三個後端、六個前端及 NGINX 就緒。Rails 故障時，可執行 `./ops/start.sh --without-rails` 暫用十二後端模式；修復後再執行 `./ops/start.sh` 恢復十三版。此模式不重設資料或金鑰，SQL 版本與 checksum 保護維持不變。
-
-需要查看服務狀態時可執行 `docker compose ps`。
+既有安裝請保留 `.env` 與 `.local/keys/`。只開發 API 時可執行 `./ops/start.sh --backend-only`。Rails 暫時不可用時，執行 `./ops/start.sh --without-rails` 啟動其餘十二個後端與六版前端，修復後用一般啟動指令恢復十三版。
 
 ### 重設管理員密碼
 
@@ -121,33 +115,69 @@ unset admin_password admin_email
 
 ## 如何測試
 
-### 手動驗證
+### 瀏覽器手動驗證
 
-1. 開啟展示站，註冊一般會員並登入。發表文章後進入文章詳情，新增一則留言。
+1. 開啟本機展示站，註冊測試會員並登入。發表文章後進入文章詳情，新增一則留言。
 2. 留在同一分頁，從工具列切換前端，確認同一篇文章、留言與登入狀態都能讀取。
 3. 切換後端，確認畫面要求重新登入。登入後核對原文章與留言。
-4. 使用首次設定建立的管理員登入，開啟會員管理與登入鎖定設定，確認可以搜尋會員及讀取目前的鎖定設定。
+4. 登出測試會員後，用首次設定建立的管理員登入。開啟會員管理與登入鎖定設定，確認可以搜尋會員及讀取目前的設定。
 
 [完整操作指南](docs/user-guide.md)
 
-### 自動化測試
+### 六版前端測試與建置
 
-前端套件各有獨立鎖檔及測試指令。使用對應 Dockerfile 的 Node.js 版本。下列命令會安裝 Vue 版依賴、執行測試並建置。
+在主機安裝 Node.js 24.21.0 與 npm，從專案根目錄執行。各版的 `npm ci` 會依該版鎖檔安裝套件。迴圈會在第一個失敗的版本停止。
 
 ```sh
 (
-  cd frontend/vue &&
-  npm ci &&
-  npm test &&
-  npm run build
+  set -e
+  for frontend_dir in vue nuxt react next angular sveltekit; do
+    printf '\n=== %s ===\n' "$frontend_dir"
+    (cd "frontend/$frontend_dir" && npm ci && npm test && npm run build) || exit 1
+  done
 )
 ```
 
-專案根目錄可用 Python 3.13 執行驗收工具的離線自測。
+也可以只進入要驗證的版本，例如在 `frontend/vue` 執行 `npm ci && npm test && npm run build`。Nuxt 與 Angular 可另外執行 `npm run typecheck`，SvelteKit 則執行 `npm run check`。
+
+### 後端健康檢查與驗收工具自測
+
+完整展示站啟動後，可從專案根目錄檢查十三個後端的 `/up`：
+
+```sh
+(
+  port=8081
+  while [ "$port" -le 8093 ]; do
+    curl -fsS --max-time 5 -o /dev/null "http://localhost:$port/up" || exit 1
+    printf '%s OK\n' "$port"
+    port=$((port + 1))
+  done
+)
+```
+
+有 Python 3.13 時，可從專案根目錄執行下列離線自測。這些指令驗證測試工具與啟停腳本的模擬流程。
 
 ```sh
 python3 -B ops/tests/cq34_http.py --self-test
+python3 -B ops/tests/cq34_http.py --preset rails05 --self-test
 python3 -B -m unittest discover -s ops/tests -p 'perf01_test.py'
+sh ops/tests/rails05_start.sh
 ```
 
-涉及 HTTP 寫入、PostgreSQL 或跨版本的整合測試使用獨立的 Compose 專案與資料卷。 [開發與測試指南](docs/developer-guide.md) · [驗證紀錄](docs/verification.md)
+### 十三版後端 HTTP 整合測試
+
+使用 Python 3.13，先依開發指南準備並啟動 `.local/rails05-fixture` 的獨立 Compose 專案，使用專用資料卷與金鑰。這組測試會寫入合成資料，並使用 `8080`–`8093`。若展示站占用連接埠，先從展示站的專案根目錄執行 `./ops/stop.sh`，或改在另一個環境測試。準備完成後，從原專案根目錄執行下列命令，環境檢查通過後才會開始回歸。 [測試環境設定](docs/developer-guide.md#rails05-十三後端-http-回歸)
+
+```sh
+(
+  set -e
+  repo_root=$(pwd -P)
+  cd "$repo_root/.local/rails05-fixture"
+  export COMPOSE_PROJECT_NAME=rails05_test
+  export COMPOSE_FILE=compose.yaml:.local/rails05-compose.yaml
+  python3 -B "$repo_root/ops/tests/cq34_http.py" --preset rails05 --guard
+  python3 -B "$repo_root/ops/tests/cq34_http.py" --preset rails05 --all
+)
+```
+
+[開發與測試指南](docs/developer-guide.md) · [已驗證的版本與範圍](docs/verification.md)
